@@ -8,6 +8,8 @@ import com.sprich.app.speech.stabilization.TranscriptStabilizer
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class WhisperEngine(
     private val context: Context,
@@ -50,6 +52,7 @@ class WhisperEngine(
 
     override fun supportedLanguages() = setOf(Language.EN, Language.DE, Language.ES, Language.AUTO)
     override fun isLoaded() = loaded
+    private val loadMutex = Mutex()
     override suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
         if (loaded) return@withContext Result.success(Unit)
         if (useMock) {
@@ -57,40 +60,59 @@ class WhisperEngine(
             loaded = true
             return@withContext Result.success(Unit)
         }
-        try {
-            // Copy asset to files for mmap (whisper.cpp prefers file path)
-            val outFile = java.io.File(context.filesDir, "whisper-base-q5_1.bin")
-            if (!outFile.exists() || outFile.length() < 10_000_000) {
-                context.assets.open(modelAssetPath).use { inp ->
-                    outFile.outputStream().use { out -> inp.copyTo(out) }
+        return@withContext loadMutex.withLock {
+            if (loaded) Result.success(Unit)
+            else try {
+                val outFile = java.io.File(context.filesDir, "whisper-base-q5_1.bin")
+                val tmpFile = java.io.File(context.filesDir, "whisper-base-q5_1.bin.tmp")
+                if (!outFile.exists() || outFile.length() < 50_000_000) {
+                    tmpFile.delete()
+                    context.assets.open(modelAssetPath).use { inp ->
+                        tmpFile.outputStream().use { out -> inp.copyTo(out) }
+                    }
+                    if (tmpFile.length() < 50_000_000) {
+                        tmpFile.delete()
+                        return@withLock Result.failure(Exception("asset copy truncated ${tmpFile.length()}"))
+                    }
+                    if (!tmpFile.renameTo(outFile)) {
+                        tmpFile.copyTo(outFile, overwrite = true)
+                        tmpFile.delete()
+                    }
+                    try { java.io.FileOutputStream(outFile, true).channel.force(true) } catch (_: Exception) {}
                 }
+                val ptr = WhisperJNI.nativeInit(outFile.absolutePath)
+                if (ptr == 0L) return@withLock Result.failure(Exception("nativeInit returned 0"))
+                ctxPtr = ptr
+                val threads = minOf(4, Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
+                WhisperJNI.nativeSetThreads(ctxPtr, threads)
+                loaded = true
+                Log.i("WhisperEngine", "Loaded ctx=$ptr threads=$threads file=${outFile.length()}")
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e("WhisperEngine", "load failed", e)
+                Result.failure(e)
             }
-            val ptr = WhisperJNI.nativeInit(outFile.absolutePath)
-            if (ptr == 0L) return@withContext Result.failure(Exception("nativeInit returned 0"))
-            ctxPtr = ptr
-            // Set threads = min(4, cores)
-            val threads = minOf(4, Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
-            WhisperJNI.nativeSetThreads(ctxPtr, threads)
-            loaded = true
-            Log.i("WhisperEngine", "Loaded ctx=$ptr threads=$threads")
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e("WhisperEngine", "load failed", e)
-            Result.failure(e)
         }
     }
 
+    private val ctxMutex = Mutex()
     override suspend fun unload() {
         segmentJob?.cancel()
+        try { segmentJob?.join() } catch (_: Exception) {}
         segmentJob = null
-        if (ctxPtr != 0L && !useMock) {
-            withContext(Dispatchers.IO) { try { WhisperJNI.nativeRelease(ctxPtr) } catch (_: Exception) {} }
-            ctxPtr = 0L
+        // Serialize nativeRelease vs nativeTranscribe
+        ctxMutex.withLock {
+            if (ctxPtr != 0L && !useMock) {
+                val ptr = ctxPtr
+                ctxPtr = 0L
+                withContext(Dispatchers.IO) { try { WhisperJNI.nativeRelease(ptr) } catch (_: Exception) {} }
+            } else {
+                ctxPtr = 0L
+            }
         }
         loaded = false
         pcmRing.clear()
         stabilizer.reset()
-        // Break scope leak — cancel stale children, recreate scope for next load
         scope.coroutineContext.cancelChildren()
     }
 
@@ -137,11 +159,9 @@ class WhisperEngine(
         return rms < 0.018
     }
 
-    private fun transcribeSnapshot(pcm: ShortArray): String {
-        // Silence gate — prevents "Hello" spam on silence/quiet mic
+    private suspend fun transcribeSnapshot(pcm: ShortArray): String {
         if (isSilence(pcm)) return ""
         if (useMock) {
-            // Deterministic mock: map voiced pcm length to canned phrases; silence already handled
             val sec = pcm.size / 16000f
             return when {
                 sec < 1.0 -> "Hello"
@@ -151,16 +171,20 @@ class WhisperEngine(
                 else -> "Hello world this is Sprich speaking"
             }
         }
-        if (ctxPtr == 0L) return ""
+        val ptr = ctxPtr
+        if (ptr == 0L) return ""
         val lang = when (sessionConfig?.language) {
             Language.DE -> "de"; Language.ES -> "es"; Language.EN -> "en"; else -> "auto"
         }
-        // Pass last 10s window to avoid huge context — snapshotLast avoids extra copy
         val window = if (pcm.size > 16000 * 10) pcm.copyOfRange(pcm.size - 16000 * 10, pcm.size) else pcm
         return try {
-            WhisperJNI.nativeTranscribe(ctxPtr, window, lang) ?: ""
+            // Serialize whisper_full via ctxMutex — native whisper_full NOT thread-safe for same ctx
+            ctxMutex.withLock { WhisperJNI.nativeTranscribe(ptr, window, lang) ?: "" }
         } catch (e: Exception) {
             Log.w("WhisperEngine", "nativeTranscribe error", e)
+            ""
+        } catch (e: Throwable) {
+            Log.w("WhisperEngine", "nativeTranscribe throwable", e)
             ""
         }
     }
@@ -171,10 +195,11 @@ class WhisperEngine(
 
     override fun partialTranscript(): Flow<TranscriptUpdate> = transcriptFlow.asSharedFlow()
 
-    override suspend fun endUtterance(): FinalTranscript = withContext(Dispatchers.Default) {
+    override suspend fun endUtterance(): FinalTranscript = withContext(scope.coroutineContext) {
         segmentJob?.cancel()
+        try { segmentJob?.join() } catch (_: Exception) {}
         val snapshot = pcmRing.snapshotLast(30f)
-        val finalText = try { transcribeSnapshot(snapshot) } catch (e: Exception) { "" }
+        val finalText = try { transcribeSnapshot(snapshot) } catch (e: Exception) { "" } catch (e: Throwable) { "" }
         if (finalText.isBlank()) {
             transcriptFlow.tryEmit(TranscriptUpdate("", "", isFinal = true))
             pcmRing.clear()

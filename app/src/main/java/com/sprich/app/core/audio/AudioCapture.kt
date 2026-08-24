@@ -66,18 +66,22 @@ class AudioCapture(
             val thread = Thread({
                 val readBuf = ShortArray(1024)
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
-                while (isCapturing.get() && rec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                    val n = rec.read(readBuf, 0, readBuf.size)
-                    if (n > 0) {
-                        val now = SystemClock.elapsedRealtimeNanos()
-                        val copy = readBuf.copyOf(n)
-                        ringBuffer.write(copy)
-                        try { onChunk(copy, now) } catch (e: Exception) { Log.w(TAG, "onChunk error", e) }
-                    } else if (n == AudioRecord.ERROR_INVALID_OPERATION || n == AudioRecord.ERROR_BAD_VALUE) {
-                        Log.w(TAG, "AudioRecord read error $n")
-                        break
+                try {
+                    while (isCapturing.get() && rec.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                        val n = try { rec.read(readBuf, 0, readBuf.size) } catch (e: IllegalStateException) {
+                            Log.w(TAG, "read IllegalState after release", e); break
+                        } catch (e: Exception) { Log.w(TAG, "read error", e); break }
+                        if (n > 0) {
+                            val now = SystemClock.elapsedRealtimeNanos()
+                            val copy = readBuf.copyOf(n)
+                            ringBuffer.write(copy)
+                            try { onChunk(copy, now) } catch (e: Exception) { Log.w(TAG, "onChunk error", e) }
+                        } else if (n == AudioRecord.ERROR_INVALID_OPERATION || n == AudioRecord.ERROR_BAD_VALUE) {
+                            Log.w(TAG, "AudioRecord read error $n")
+                            break
+                        }
                     }
-                }
+                } catch (e: Exception) { Log.w(TAG, "audio thread outer", e) }
             }, "SprichAudio")
             thread.isDaemon = true
             audioThread = thread
@@ -94,12 +98,14 @@ class AudioCapture(
 
     fun stop() {
         if (!isCapturing.getAndSet(false)) return
+        val threadToJoin = audioThread
         try {
             record?.stop()
         } catch (_: Exception) {}
         try { record?.release() } catch (_: Exception) {}
         record = null
-        // Do NOT clear ringBuffer immediately — allow final flush; cleared on next start or session end
+        try { threadToJoin?.join(300) } catch (_: Exception) {}
+        audioThread = null
     }
 
     fun snapshotPrebufferMs(ms: Int): ShortArray {

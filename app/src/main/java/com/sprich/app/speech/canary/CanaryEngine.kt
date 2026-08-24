@@ -49,9 +49,9 @@ class CanaryEngine(
             recognizer = createSherpaRecognizer()
             loaded = recognizer != null
             if (loaded) Result.success(Unit) else Result.failure(Exception("sherpa init failed"))
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e("CanaryEngine", "load failed", e)
-            Result.failure(e)
+            Result.failure(Exception(e.message, e))
         }
     }
 
@@ -124,26 +124,34 @@ class CanaryEngine(
     override fun cancelSession() { job?.cancel(); pcmRing.clear(); stabilizer.reset(); scope.launch { flow.emit(TranscriptUpdate("","",true)) } }
     override fun reset() = cancelSession()
 
-    private fun isSherpaAvailable(): Boolean = try { Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer"); true } catch (_: Exception){ false }
+    private fun isSherpaAvailable(): Boolean = try { Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer"); true } catch (_: Throwable){ false }
 
     private fun createSherpaRecognizer(): Any? {
-        // Reuse logic similar to NostrShot but simplified. Reflection fallback if ctor mismatch.
         return try {
             val dir = modelManager.canaryDir() ?: return null
             val encoder = java.io.File(dir, "encoder.int8.onnx").absolutePath
             val decoder = java.io.File(dir, "decoder.int8.onnx").absolutePath
             val tokens = java.io.File(dir, "tokens.txt").absolutePath
-            // We use direct construction via available classes: this is best-effort; if fails, return null to trigger mock
-            // Actual implementation uses featureConfig etc; here we attempt simplest
             val offlineCanaryCfgClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineCanaryModelConfig")
             val offlineModelCfgClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineModelConfig")
             val offlineRecCfgClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizerConfig")
             val offlineRecClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer")
             val featCfgClass = Class.forName("com.k2fsa.sherpa.onnx.FeatureConfig")
-            val feat = featCfgClass.getConstructor(Int::class.java, Int::class.java).newInstance(16000, 80)
+            // Real 1.12.11 FeatureConfig(int sampleRate, int featureDim, float dither) — try 3-arg first, fallback 2-arg
+            val feat = try {
+                featCfgClass.getConstructor(Int::class.java, Int::class.java, Float::class.java).newInstance(16000, 80, 0.0f)
+            } catch (_: Throwable) {
+                featCfgClass.getConstructor(Int::class.java, Int::class.java).newInstance(16000, 80)
+            }
             val src = when(cfg?.language){ Language.DE -> "de"; Language.ES->"es"; else->"en"}
-            val canary = offlineCanaryCfgClass.getConstructor(String::class.java, String::class.java, String::class.java, String::class.java, String::class.java)
-                .newInstance(encoder, decoder, tokens, src, src) // src,tgt
+            // Real OfflineCanaryModelConfig(String encoder, String decoder, String srcLang, String tgtLang, boolean usePnc)
+            val canary = try {
+                offlineCanaryCfgClass.getConstructor(String::class.java, String::class.java, String::class.java, String::class.java, Boolean::class.java)
+                    .newInstance(encoder, decoder, src, src, true)
+            } catch (_: Throwable) {
+                offlineCanaryCfgClass.getConstructor(String::class.java, String::class.java, String::class.java, String::class.java, String::class.java)
+                    .newInstance(encoder, decoder, tokens, src, src)
+            }
             val modelCfg = offlineModelCfgClass.getConstructor().newInstance()
             offlineModelCfgClass.getDeclaredField("canary").apply{isAccessible=true; set(modelCfg, canary)}
             offlineModelCfgClass.getDeclaredField("tokens").apply{isAccessible=true; set(modelCfg, tokens)}
@@ -152,14 +160,15 @@ class CanaryEngine(
             val recCfg = offlineRecCfgClass.getConstructor().newInstance()
             offlineRecCfgClass.getDeclaredField("featConfig").apply{isAccessible=true; set(recCfg, feat)}
             offlineRecCfgClass.getDeclaredField("modelConfig").apply{isAccessible=true; set(recCfg, modelCfg)}
+            // Use null AssetManager to force newFromFile (filesDir/canary, not assets)
             try {
+                offlineRecClass.getConstructor(offlineRecCfgClass).newInstance(recCfg)
+            } catch (_: Throwable){
                 val am = context.assets
                 offlineRecClass.getConstructor(android.content.res.AssetManager::class.java, offlineRecCfgClass).newInstance(am, recCfg)
-            } catch (_: Exception){
-                offlineRecClass.getConstructor(offlineRecCfgClass).newInstance(recCfg)
             }
-        } catch (e: Exception){
-            Log.w("CanaryEngine", "sherpa create failed ${e.message}")
+        } catch (e: Throwable){
+            Log.w("CanaryEngine", "sherpa create failed ${e.message}", e)
             null
         }
     }
@@ -179,9 +188,14 @@ class CanaryEngine(
             rec.javaClass.getMethod("decode", streamClass).invoke(rec, stream)
             val result = rec.javaClass.getMethod("getResult", streamClass).invoke(rec, stream)
             try{ stream.javaClass.getMethod("release").invoke(stream)}catch(_:Exception){}
-            val txt = result.javaClass.getDeclaredField("text").apply{isAccessible=true}.get(result) as String
+            // Use getText() method if field access fails due to R8
+            val txt = try {
+                result.javaClass.getMethod("getText").invoke(result) as String
+            } catch (_: Throwable) {
+                result.javaClass.getDeclaredField("text").apply{isAccessible=true}.get(result) as String
+            }
             txt.trim()
-        } catch (e: Exception){
+        } catch (e: Throwable){
             Log.w("CanaryEngine", "transcribe error", e)
             ""
         }

@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <atomic>
 #include <android/log.h>
 #include "whisper.h"
 
@@ -9,7 +10,7 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-static int g_threads = 4;
+static std::atomic<int> g_threads{4};
 
 extern "C" {
 
@@ -17,16 +18,16 @@ JNIEXPORT jlong JNICALL Java_com_sprich_app_speech_whisper_WhisperJNI_nativeInit
     if (jpath == nullptr) return 0;
     const char* path = env->GetStringUTFChars(jpath, nullptr);
     if (!path) return 0;
+    std::string cppPath(path);
+    env->ReleaseStringUTFChars(jpath, path);
     struct whisper_context_params cparams = whisper_context_default_params();
     cparams.use_gpu = false;
-    // mmap is default when available; keep as is
-    struct whisper_context* ctx = whisper_init_from_file_with_params(path, cparams);
-    env->ReleaseStringUTFChars(jpath, path);
+    struct whisper_context* ctx = whisper_init_from_file_with_params(cppPath.c_str(), cparams);
     if (!ctx) {
-        LOGE("whisper_init_from_file_with_params failed for %s", path);
+        LOGE("whisper_init_from_file_with_params failed for %s", cppPath.c_str());
         return 0;
     }
-    LOGI("whisper_init success %p threads=%d", ctx, g_threads);
+    LOGI("whisper_init success %p threads=%d path=%s", ctx, g_threads.load(), cppPath.c_str());
     return reinterpret_cast<jlong>(ctx);
 }
 
@@ -38,9 +39,8 @@ JNIEXPORT void JNICALL Java_com_sprich_app_speech_whisper_WhisperJNI_nativeRelea
 }
 
 JNIEXPORT void JNICALL Java_com_sprich_app_speech_whisper_WhisperJNI_nativeSetThreads(JNIEnv* env, jobject, jlong ctx, jint n) {
-    if (n > 0 && n <= 16) g_threads = n;
-    LOGI("nativeSetThreads %d", g_threads);
-    // whisper_context does not store threads; passed per whisper_full call
+    if (n > 0 && n <= 16) g_threads.store(n);
+    LOGI("nativeSetThreads %d", g_threads.load());
 }
 
 JNIEXPORT jstring JNICALL Java_com_sprich_app_speech_whisper_WhisperJNI_nativeTranscribe(JNIEnv* env, jobject, jlong ctx, jshortArray pcmArray, jstring jlang) {
@@ -81,7 +81,7 @@ JNIEXPORT jstring JNICALL Java_com_sprich_app_speech_whisper_WhisperJNI_nativeTr
     }
 
     struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    wparams.n_threads = g_threads;
+    wparams.n_threads = g_threads.load();
     wparams.n_max_text_ctx = 64;
     wparams.translate = false;
     wparams.no_context = true;
