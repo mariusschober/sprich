@@ -1,0 +1,69 @@
+<resources>
+    <string name="app_name">Sprich</string>
+    <string name="ime_label">Sprich</string>
+    <string name="ime_subtype_en">English</string>
+    <string name="ime_subtype_de">Deutsch</string>
+    <string name="ime_subtype_es">Español</string>
+
+    <!-- Onboarding -->
+    <string name="onboard_title_1">Speak. It’s there.</string>
+    <string name="onboard_sub_1">Local speech-to-text for every text field.</string>
+    <string name="onboard_title_2">Nothing leaves your phone.</string>
+    <string name="onboard_bullet_1">Speech is processed locally</string>
+    <string name="onboard_bullet_2">Audio is not saved</string>
+    <string name="onboard_bullet_3">Works offline</string>
+    <string name="onboard_ime_title">Enable Sprich keyboard</string>
+    <string name="onboard_ime_desc">Sprich works as a keyboard so it can insert text at the cursor. You can still switch to Gboard anytime.</string>
+    <string name="onboard_try_title">Try it.</string>
+    <string name="onboard_try_hint">Tap the field and say: “This is much faster than typing.”</string>
+
+    <!-- Home -->
+    <string name="home_ready">Ready</string>
+    <string name="home_sub">Fast · English / Deutsch / Español · Offline</string>
+    <string name="home_try">Try dictation</string>
+
+    <!-- Settings -->
+    <string name="settings_dictation">Dictation</string>
+    <string name="settings_instant">Instant Dictation</string>
+    <string name="settings_instant_sub">Start when a text field is focused</string>
+    <string name="settings_language">Language</string>
+    <string name="settings_model">Speech model</string>
+    <string name="settings_personalization">Personalization</string>
+    <string name="settings_vocab">Personal vocabulary</string>
+    <string name="settings_learn">Learn my corrections</string>
+    <string name="settings_behavior">Behavior</string>
+    <string name="settings_haptics">Haptic feedback</string>
+    <string name="settings_commands">Spoken editing</string>
+    <string name="settings_silence">Stop after silence</string>
+    <string name="settings_privacy">Privacy</string>
+    <string name="settings_audio_storage">Audio storage</string>
+    <string name="settings_network">Network use</string>
+    <string name="settings_clear_data">Clear local data</string>
+    <string name="settings_advanced">Advanced</string>
+    <string name="settings_benchmark">Benchmark</string>
+    <string name="settings_diagnostics">Diagnostics</string>
+    <string name="settings_licenses">Open-source licenses</string>
+
+    <!-- Model -->
+    <string name="model_fast">Fast</string>
+    <string name="model_fast_sub">57 MB · Included</string>
+    <string name="model_fast_desc">Fastest compatibility and lowest resource use.</string>
+    <string name="model_accurate">Accurate</string>
+    <string name="model_accurate_sub">~198 MB · Download</string>
+    <string name="model_accurate_desc">Higher recognition quality.</string>
+    <string name="model_streaming">Instant Streaming</string>
+    <string name="model_streaming_sub">~500–700 MB · Download</string>
+    <string name="model_streaming_desc">Lowest potential live latency on capable phones.</string>
+
+    <!-- Errors -->
+    <string name="err_mic_busy">Microphone is being used by another app.</string>
+    <string name="err_model_missing">Speech model isn’t available.</string>
+    <string name="err_storage">Not enough storage.</string>
+    <string name="err_model_slow">This model is struggling to keep up on this phone. Switch to Fast?</string>
+
+    <!-- Notification -->
+    <string name="notif_dictating">Dictating locally</string>
+    <string name="notif_stop">Stop</string>
+
+    <!-- Haptics off -->
+</resources>

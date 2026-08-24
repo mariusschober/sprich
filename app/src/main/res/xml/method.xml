@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="com.sprich.app.ui.MainActivity">
+    <subtype
+        android:imeSubtypeLocale="en"
+        android:imeSubtypeMode="keyboard"
+        android:label="@string/ime_subtype_en" />
+    <subtype
+        android:imeSubtypeLocale="de"
+        android:imeSubtypeMode="keyboard"
+        android:label="@string/ime_subtype_de" />
+    <subtype
+        android:imeSubtypeLocale="es"
+        android:imeSubtypeMode="keyboard"
+        android:label="@string/ime_subtype_es" />
+</input-method>

@@ -1,0 +1,19 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <!-- Pleasure Dot — minimalism + passion: radial #FF7A67 → #FF4D76 → #E92B8E, tactile mic stem, breath smile -->
+    <path
+        android:pathData="M512 178C684 178 824 307 824 474C824 633 699 755 548 769L548 823C548 843 532 859 512 859C492 859 476 843 476 823L476 769C325 755 200 633 200 474C200 307 340 178 512 178Z"
+        android:fillColor="#FF4D76">
+        <!-- Approximate radial gradient via solid #FF4D76 (center pink) — gradient definition kept for launcher adaptive background -->
+    </path>
+    <path
+        android:pathData="M405 553C434 585 470 601 512 601C554 601 590 585 619 553"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="28"
+        android:strokeLineCap="round"
+        android:strokeAlpha="0.94"
+        android:fillColor="#00000000" />
+</vector>

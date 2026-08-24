@@ -1,0 +1,7 @@
+<resources>
+    <color name="splash_bg">#121212</color>
+    <color name="pleasure_start">#FF7A67</color>
+    <color name="pleasure_mid">#FF4D76</color>
+    <color name="pleasure_end">#E92B8E</color>
+    <color name="pleasure_mid_12">#1FFF4D76</color>
+</resources>
