@@ -123,7 +123,7 @@ class NemotronEngine(
                     val out = final
                     emittedWords.clear(); mockIndex = 0
                     return@withContext FinalTranscript(out)
-                } else if (useMock) {
+                } else {
                     if (emittedWords.isEmpty()) {
                         flow.tryEmit(TranscriptUpdate("", "", true))
                         pending.clear()

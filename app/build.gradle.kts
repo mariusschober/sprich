@@ -9,9 +9,9 @@ android {
     namespace = "com.sprich.app"
     compileSdk = 36
 
-    // Version from git if available, else 1 — Play requires monotonic (outside android block to avoid script scope issues)
-    val gitCount = 1
-    val gitHash = "unknown"
+    // Version from git (repo initialized) — Play requires monotonic
+    val gitCount = try { providers.exec { commandLine("git", "rev-list", "--count", "HEAD") }.standardOutput.asText.get().trim().toInt() } catch (_: Exception) { 1 }
+    val gitHash = try { providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }.standardOutput.asText.get().trim() } catch (_: Exception) { "unknown" }
     defaultConfig {
         applicationId = "com.sprich.app"
         minSdk = 26

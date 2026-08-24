@@ -79,7 +79,6 @@ fun BenchmarkScreen(onBack: ()->Unit){
 private fun runRealBenchmark(ctx: android.content.Context): String {
     return try {
         if (!WhisperJNI.isAvailable()) {
-            kotlinx.coroutines.delay(400)
             return mockResult()
         }
         // Ensure model file exists in filesDir (same path WhisperEngine uses)
