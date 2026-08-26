@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="canary/"/>
+        <exclude domain="file" path="nemotron/"/>
+        <exclude domain="sharedpref" path="sprich_prefs.xml"/>
+        <exclude domain="sharedpref" path="sprich_vocab.xml"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="canary/"/>
+        <exclude domain="file" path="nemotron/"/>
+        <exclude domain="sharedpref" path="sprich_prefs.xml"/>
+        <exclude domain="sharedpref" path="sprich_vocab.xml"/>
+    </device-transfer>
+</data-extraction-rules>

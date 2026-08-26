@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="canary/" />
+    <exclude domain="file" path="nemotron/" />
+    <exclude domain="file" path="vocab/" />
+    <exclude domain="sharedpref" path="sprich_prefs.xml" />
+    <exclude domain="sharedpref" path="sprich_vocab.xml" />
+</full-backup-content>

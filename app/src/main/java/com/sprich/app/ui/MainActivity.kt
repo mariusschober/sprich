@@ -1,0 +1,85 @@
+package com.sprich.app.ui
+
+import android.content.Intent
+import android.os.Bundle
+import android.provider.Settings
+import android.view.inputmethod.InputMethodManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.navigation.compose.*
+import com.sprich.app.storage.Preferences
+import com.sprich.app.ui.benchmark.BenchmarkScreen
+import com.sprich.app.ui.home.HomeScreen
+import com.sprich.app.ui.onboarding.OnboardingScreen
+import com.sprich.app.ui.settings.SettingsScreen
+import com.sprich.app.ui.theme.SprichTheme
+import com.sprich.app.ui.vocab.VocabScreen
+import kotlinx.coroutines.flow.first
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
+        installSplashScreen()
+        super.onCreate(savedInstanceState)
+        val prefs = Preferences(this)
+        setContent {
+            SprichTheme {
+                val nav = rememberNavController()
+                var startDest by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(Unit) {
+                    val done = try { prefs.onboardingDone.first() } catch (_: Exception) { false }
+                    startDest = if (done) "home" else "onboarding"
+                }
+                Scaffold(
+                    modifier = Modifier.fillMaxSize(),
+                    contentWindowInsets = WindowInsets.safeDrawing,
+                    containerColor = MaterialTheme.colorScheme.surface
+                ) { innerPadding ->
+                    if (startDest == null) {
+                        Box(
+                            Modifier.fillMaxSize().padding(innerPadding).consumeWindowInsets(innerPadding),
+                            contentAlignment = androidx.compose.ui.Alignment.Center
+                        ) {
+                            CircularProgressIndicator(strokeWidth = 1.5.dp, modifier = Modifier.size(24.dp))
+                        }
+                    } else {
+                        NavHost(
+                            navController = nav,
+                            startDestination = startDest!!,
+                            modifier = Modifier.fillMaxSize().padding(innerPadding).consumeWindowInsets(innerPadding)
+                        ) {
+                            composable("onboarding") {
+                                OnboardingScreen(
+                                    onDone = {
+                                        nav.navigate("home") { popUpTo("onboarding") { inclusive = true } }
+                                    },
+                                    onOpenImeSettings = { openImeSettings() }
+                                )
+                            }
+                            composable("home") { HomeScreen(onSettings = { nav.navigate("settings") }, onBenchmarkTap = { nav.navigate("benchmark") }) }
+                            composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }, onBenchmark = { nav.navigate("benchmark") }, onVocab = { nav.navigate("vocab") }) }
+                            composable("vocab") { VocabScreen(onBack = { nav.popBackStack() }) }
+                            composable("benchmark") { BenchmarkScreen(onBack = { nav.popBackStack() }) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun openImeSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+        } catch (_: Exception) {
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showInputMethodPicker()
+        }
+    }
+}
