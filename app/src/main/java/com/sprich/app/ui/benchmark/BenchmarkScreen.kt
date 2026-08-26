@@ -8,13 +8,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.sprich.app.SprichApp
+import com.sprich.app.core.audio.Pcm16Wav
 import com.sprich.app.core.perf.BenchmarkRecorder
-import com.sprich.app.speech.whisper.WhisperJNI
+import com.sprich.app.speech.api.Language
+import com.sprich.app.speech.api.SpeechSessionConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.PI
-import kotlin.math.sin
 
 @Composable
 fun BenchmarkScreen(onBack: ()->Unit){
@@ -48,7 +49,7 @@ fun BenchmarkScreen(onBack: ()->Unit){
                     result = r
                 }
             }, modifier = Modifier.fillMaxWidth()){
-                Text("Run quick benchmark (2s synthetic)")
+                Text("Run speech-path benchmark")
             }
             Card(Modifier.fillMaxWidth()){
                 Text(result, modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
@@ -70,62 +71,46 @@ fun BenchmarkScreen(onBack: ()->Unit){
             }, modifier = Modifier.fillMaxWidth()){
                 Text("Export JSON (local only)")
             }
-            Text("No data leaves the device. Benchmark uses bundled test audio (if available) or synthetic mock on emulator.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("No data leaves the device. Benchmark uses the bundled public-domain JFK speech fixture and the same Fast engine as dictation.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
-/** Real whisper_full on 2s synthetic PCM (440Hz sine), falls back to mock if native unavailable. */
-private fun runRealBenchmark(ctx: android.content.Context): String {
+/** Runs the same process-wide engine used by the IME against deterministic real speech. */
+private suspend fun runRealBenchmark(ctx: android.content.Context): String {
     return try {
-        if (!WhisperJNI.isAvailable()) {
-            return mockResult()
-        }
-        // Ensure model file exists in filesDir (same path WhisperEngine uses)
-        val outFile = java.io.File(ctx.filesDir, "whisper-base-q5_1.bin")
-        if (!outFile.exists() || outFile.length() < 10_000_000) {
-            ctx.assets.open("models/whisper-base-q5_1.bin").use { inp ->
-                outFile.outputStream().use { out -> inp.copyTo(out) }
-            }
-        }
+        val engine = (ctx.applicationContext as SprichApp).fastEngine
         val loadStart = System.nanoTime()
-        val ptr = WhisperJNI.nativeInit(outFile.absolutePath)
-        if (ptr == 0L) return mockResult()
+        val loadResult = engine.load()
+        if (loadResult.isFailure) return "Benchmark failed: ${loadResult.exceptionOrNull()?.message}"
+        val loadMs = (System.nanoTime() - loadStart) / 1_000_000
+        val audio = ctx.assets.open("jfk.wav").use(Pcm16Wav::read)
+        engine.cancelSession()
+        engine.beginSession(SpeechSessionConfig(language = Language.EN))
         try {
-            val threads = minOf(4, Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
-            WhisperJNI.nativeSetThreads(ptr, threads)
-
-            val sampleRate = 16000
-            val seconds = 2
-            val n = sampleRate * seconds
-            val pcm = ShortArray(n) { i -> (sin(2.0 * PI * 440.0 * i / sampleRate) * 8000).toInt().toShort() }
-
             val t0 = System.nanoTime()
-            val text = WhisperJNI.nativeTranscribe(ptr, pcm, "en") ?: ""
+            engine.pushAudio(audio.samples, System.nanoTime())
+            val text = engine.endUtterance().text
             val elapsedNs = System.nanoTime() - t0
-
-            val loadMs = (System.nanoTime() - loadStart) / 1_000_000
             val inferMs = elapsedNs / 1_000_000
-            val rtf = inferMs / (seconds * 1000.0)
+            val audioMs = audio.samples.size * 1000.0 / audio.sampleRate
+            val rtf = inferMs / audioMs
             buildString {
                 appendLine("Engine: Whisper Base Q5_1 (real)")
                 appendLine("Load: ${loadMs}ms")
-                appendLine("Inference (${seconds}s audio): ${inferMs}ms")
+                appendLine("Inference (${audioMs.toLong()}ms speech): ${inferMs}ms")
                 appendLine(String.format(java.util.Locale.US, "RTF: %.3f", rtf))
-                appendLine("Threads: $threads · Backend: CPU · Thermal: normal")
+                appendLine("Backend: CPU · Thermal: device reported")
                 appendLine("Output: \"${text.take(80)}\"")
                 appendLine("Peak RSS approx: ${(Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory())/1024/1024} MB heap")
             }
         } finally {
-            WhisperJNI.nativeRelease(ptr)
+            engine.cancelSession()
         }
-    } catch (e: Exception) {
-        "Benchmark failed: ${e.message}"
+    } catch (t: Throwable) {
+        "Benchmark failed: ${t.message}"
     }
 }
-
-private fun mockResult(): String =
-    "Engine: Whisper Base Q5_1 (mock)\nRTF: 0.200\nFirst partial: 320ms (mock)\nFinal: 420ms (mock)\nPeak RSS: 180 MB (mock)\nBackend: CPU 4 threads\nThermal: normal"
 
 private fun extractRtf(s: String): Double =
     Regex("RTF:\\s*([0-9.]+)").find(s)?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0

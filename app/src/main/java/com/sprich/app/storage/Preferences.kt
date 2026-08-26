@@ -25,6 +25,16 @@ class Preferences(context: Context) {
         val KEY_SILENCE_MODE = stringPreferencesKey("silence_mode") // auto, manual
         val KEY_VOCAB = stringPreferencesKey("vocab_json")
         val KEY_LEARN_CORRECTIONS = booleanPreferencesKey("learn_corrections")
+        // Backup remote STT (OpenAI-compatible /audio/transcriptions: Grok x.ai, Groq, fal Wizper, custom)
+        val KEY_STT_MODE = stringPreferencesKey("stt_mode") // local | fallback | remote
+        val KEY_STT_BASE_URL = stringPreferencesKey("stt_base_url")
+        val KEY_STT_API_KEY = stringPreferencesKey("stt_api_key")
+        val KEY_STT_MODEL = stringPreferencesKey("stt_model")
+        // AI polish (OpenAI-compatible /chat/completions)
+        val KEY_AI_ENABLED = booleanPreferencesKey("ai_polish_enabled")
+        val KEY_AI_BASE_URL = stringPreferencesKey("ai_base_url")
+        val KEY_AI_API_KEY = stringPreferencesKey("ai_api_key")
+        val KEY_AI_MODEL = stringPreferencesKey("ai_model")
     }
 
     val onboardingDone: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_ONBOARDING_DONE] ?: false }
@@ -41,6 +51,28 @@ class Preferences(context: Context) {
     }
     val haptics: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_HAPTICS] ?: true }
     val commands: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_COMMANDS] ?: true }
+
+    enum class SttMode { LOCAL, FALLBACK, REMOTE }
+    enum class AiMode { OFF, REMOTE }
+
+    val sttModeRaw: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_MODE] ?: "local" }
+    val sttBaseUrl: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_BASE_URL] ?: "" }
+    val sttApiKey: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_API_KEY] ?: "" }
+    val sttModel: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_MODEL] ?: "whisper-large-v3" }
+
+    val aiEnabled: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_AI_ENABLED] ?: false }
+    val aiBaseUrl: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_AI_BASE_URL] ?: "" }
+    val aiApiKey: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_AI_API_KEY] ?: "" }
+    val aiModel: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_AI_MODEL] ?: "" }
+
+    suspend fun setSttMode(v: SttMode){ context.ds.edit{it[KEY_STT_MODE]= when(v){ SttMode.LOCAL->"local"; SttMode.FALLBACK->"fallback"; SttMode.REMOTE->"remote" }}}
+    suspend fun setSttBaseUrl(v: String){ context.ds.edit{it[KEY_STT_BASE_URL]=v.trim().trimEnd('/')} }
+    suspend fun setSttApiKey(v: String){ context.ds.edit{it[KEY_STT_API_KEY]=v.trim()} }
+    suspend fun setSttModel(v: String){ context.ds.edit{it[KEY_STT_MODEL]=v.trim()} }
+    suspend fun setAiEnabled(v: Boolean){ context.ds.edit{it[KEY_AI_ENABLED]=v} }
+    suspend fun setAiBaseUrl(v: String){ context.ds.edit{it[KEY_AI_BASE_URL]=v.trim().trimEnd('/')} }
+    suspend fun setAiApiKey(v: String){ context.ds.edit{it[KEY_AI_API_KEY]=v.trim()} }
+    suspend fun setAiModel(v: String){ context.ds.edit{it[KEY_AI_MODEL]=v.trim()} }
 
     suspend fun setOnboardingDone(v: Boolean){ context.ds.edit{it[KEY_ONBOARDING_DONE]=v} }
     suspend fun setInstantMode(v: Boolean){ context.ds.edit{it[KEY_INSTANT_MODE]=v} }

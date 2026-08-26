@@ -1,5 +1,6 @@
 package com.sprich.app.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.rememberScrollState
@@ -17,10 +18,11 @@ import com.sprich.app.models.manager.ModelStatus
 import com.sprich.app.speech.api.EngineType
 import com.sprich.app.speech.api.Language
 import com.sprich.app.storage.Preferences
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @Composable
-fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit){
+fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = {}){
     val ctx = LocalContext.current
     val prefs = remember { Preferences(ctx) }
     val mm = remember { ModelManager(ctx) }
@@ -29,11 +31,10 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit){
 
     val instant by prefs.instantMode.collectAsState(initial = false)
     val lang by prefs.language.collectAsState(initial = Language.AUTO)
-    val engine by prefs.engineType.collectAsState(initial = EngineType.FAST)
+    val engine by prefs.engineType.collectAsState(initial = EngineType.ACCURATE)
     val haptics by prefs.haptics.collectAsState(initial = true)
     val commands by prefs.commands.collectAsState(initial = true)
     val canaryStatus by mm.canaryStatus.collectAsState()
-    val nemoStatus by mm.nemotronStatus.collectAsState()
 
     Scaffold(
         topBar = {
@@ -55,18 +56,15 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit){
             ModelSection(
                 engine = engine,
                 canaryStatus = canaryStatus,
-                nemoStatus = nemoStatus,
-                onSelect = { scope.launch{ prefs.setEngine(it)} },
+                onSelect = { scope.launch{ prefs.setEngine(EngineType.ACCURATE)} },
                 onDownloadCanary = { scope.launch { try{ dm.downloadCanary() } catch (_:Exception){} } },
                 onDeleteCanary = { scope.launch { mm.deleteCanary() } },
-                onDownloadNemotron = { scope.launch { try{ dm.downloadNemotron() } catch (_:Exception){} } },
-                onDeleteNemotron = { scope.launch { mm.deleteNemotron() } },
                 onCancel = { dm.cancel() }
             )
 
             HorizontalDivider()
             Text("Personalization", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            SettingsRow("Personal vocabulary", "Manage names & terms"){}
+            SettingsRow("Personal vocabulary", "Manage names & terms", onClick = onVocab)
             SettingsToggle("Learn my corrections", "Off by default", false){}
 
             HorizontalDivider()
@@ -76,14 +74,19 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit){
             SettingsRow("Stop after silence", "Automatic"){ }
 
             HorizontalDivider()
+            BackupSttSection(prefs)
+            HorizontalDivider()
+            AiPolishSection(prefs)
+
+            HorizontalDivider()
             Text("Privacy", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             SettingsRow("Audio storage", "Never"){}
             SettingsRow("Network use", "Models only"){}
-            SettingsRow("Clear local data", "", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); mm.deleteCanary(); mm.deleteNemotron() } })
+            SettingsRow("Clear local data", "", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); mm.deleteCanary() } })
 
             HorizontalDivider()
             Text("Advanced", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            SettingsRow("Current engine", when(engine){ EngineType.FAST->"Whisper Base Q5_1"; EngineType.ACCURATE->"Canary 180M Flash"; EngineType.STREAMING->"Nemotron 0.6B" }){}
+            SettingsRow("Current engine", "Canary 180M Flash INT8") {}
             SettingsRow("Benchmark", "", actionLabel = "Open", onClick = onBenchmark)
             SettingsRow("Diagnostics", ""){}
             SettingsRow("Open-source licenses", ""){}
@@ -103,7 +106,10 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit){
 }
 
 @Composable private fun SettingsRow(title:String, sub:String, actionLabel:String? = null, onClick:()->Unit = {}){
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween){
+    // Whole row is tappable when there's no action button — otherwise onClick lives on the button only.
+    val rowModifier = if (actionLabel == null) Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onClick() }
+                      else Modifier.fillMaxWidth().padding(vertical = 4.dp)
+    Row(rowModifier, horizontalArrangement = Arrangement.SpaceBetween){
         Column(Modifier.weight(1f)){
             Text(title, style = MaterialTheme.typography.bodyMedium)
             if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -128,20 +134,14 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit){
 @Composable private fun ModelSection(
     engine: EngineType,
     canaryStatus: ModelStatus,
-    nemoStatus: ModelStatus,
     onSelect:(EngineType)->Unit,
     onDownloadCanary:()->Unit,
     onDeleteCanary:()->Unit,
-    onDownloadNemotron:()->Unit,
-    onDeleteNemotron:()->Unit,
     onCancel:()->Unit,
 ){
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)){
         Text("Speech model", style = MaterialTheme.typography.bodyMedium)
-        ModelCard("Fast", "57 MB · Included", "Fastest compatibility and lowest resource use.", selected = engine==EngineType.FAST, status = ModelStatus.Ready, onClick = { onSelect(EngineType.FAST) })
-        ModelCardAdvanced("Accurate", "147 MB · Download", "Higher recognition quality.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 147)
-        ModelCardAdvanced("Instant Streaming", "630 MB · Download", "Lowest potential live latency on capable phones.", selected = engine==EngineType.STREAMING, status = nemoStatus, onClick = { onSelect(EngineType.STREAMING) }, onDownload = onDownloadNemotron, onDelete = onDeleteNemotron, onCancel = onCancel, totalMb = 630)
-        TextButton(onClick = {}){ Text("Technical details", style = MaterialTheme.typography.labelSmall) }
+        ModelCardAdvanced("Canary 180M Flash", "147 MB · On-device", "Primary accurate model. Optimized for your TCL T807D.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 147)
     }
 }
 
@@ -206,6 +206,79 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit){
             if (status is ModelStatus.Failed) {
                 TextButton(onClick = onDownload){ Text("Retry", style = MaterialTheme.typography.labelSmall)}
             }
+        }
+    }
+}
+
+@Composable
+private fun BackupSttSection(prefs: Preferences) {
+    val scope = rememberCoroutineScope()
+    val modeRaw by prefs.sttModeRaw.collectAsState(initial = "local")
+    var baseUrl by remember { mutableStateOf("") }
+    var apiKey by remember { mutableStateOf("") }
+    var model by remember { mutableStateOf("whisper-large-v3") }
+    LaunchedEffect(Unit) {
+        baseUrl = prefs.sttBaseUrl.first()
+        apiKey = prefs.sttApiKey.first()
+        model = prefs.sttModel.first().ifBlank { "whisper-large-v3" }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Backup speech-to-text", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        Text("OpenAI-compatible endpoint. Works with Grok (x.ai), Groq, Wizper via fal proxies, or any custom gateway.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = modeRaw == "local", onClick = { scope.launch { prefs.setSttMode(Preferences.SttMode.LOCAL) } }, label = { Text("Local only", style = MaterialTheme.typography.labelSmall) })
+            FilterChip(selected = modeRaw == "fallback", onClick = { scope.launch { prefs.setSttMode(Preferences.SttMode.FALLBACK) } }, label = { Text("Local→Cloud fallback", style = MaterialTheme.typography.labelSmall) })
+            FilterChip(selected = modeRaw == "remote", onClick = { scope.launch { prefs.setSttMode(Preferences.SttMode.REMOTE) } }, label = { Text("Cloud primary", style = MaterialTheme.typography.labelSmall) })
+        }
+        if (modeRaw != "local") {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                AssistChip(onClick = { baseUrl = "https://api.x.ai/v1"; scope.launch { prefs.setSttBaseUrl(baseUrl); prefs.setSttModel(model) } }, label = { Text("Grok x.ai", style = MaterialTheme.typography.labelSmall) })
+                AssistChip(onClick = { baseUrl = "https://api.groq.com/openai/v1"; model = "whisper-large-v3"; scope.launch { prefs.setSttBaseUrl(baseUrl); prefs.setSttModel(model) } }, label = { Text("Groq Whisper", style = MaterialTheme.typography.labelSmall) })
+                AssistChip(onClick = { scope.launch { prefs.setSttBaseUrl(baseUrl); prefs.setSttModel(model) } }, label = { Text("Custom / fal", style = MaterialTheme.typography.labelSmall) })
+            }
+            OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttBaseUrl(baseUrl) } }) { Text("Save") } })
+            OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, label = { Text("API key") }, singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttApiKey(apiKey) } }) { Text("Save") } })
+            OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("Model") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttModel(model) } }) { Text("Save") } })
+        }
+    }
+}
+
+@Composable
+private fun AiPolishSection(prefs: Preferences) {
+    val scope = rememberCoroutineScope()
+    val enabled by prefs.aiEnabled.collectAsState(initial = false)
+    var baseUrl by remember { mutableStateOf("") }
+    var apiKey by remember { mutableStateOf("") }
+    var model by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        baseUrl = prefs.aiBaseUrl.first()
+        apiKey = prefs.aiApiKey.first()
+        model = prefs.aiModel.first()
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("AI polish", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        SettingsToggle(
+            "Fix grammar & punctuation with AI",
+            "Sends transcript to a fast LLM after dictation. Off = fully on-device.",
+            enabled,
+        ) { scope.launch { prefs.setAiEnabled(it) } }
+        if (enabled) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                AssistChip(onClick = { baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; model = "gemini-2.0-flash-lite"; scope.launch { prefs.setAiBaseUrl(baseUrl); prefs.setAiModel(model) } }, label = { Text("Gemini fast", style = MaterialTheme.typography.labelSmall) })
+                AssistChip(onClick = { baseUrl = "https://api.openai.com/v1"; model = "gpt-4o-mini"; scope.launch { prefs.setAiBaseUrl(baseUrl); prefs.setAiModel(model) } }, label = { Text("GPT mini", style = MaterialTheme.typography.labelSmall) })
+                AssistChip(onClick = { baseUrl = "https://api.x.ai/v1"; model = "grok-3-mini"; scope.launch { prefs.setAiBaseUrl(baseUrl); prefs.setAiModel(model) } }, label = { Text("Grok mini", style = MaterialTheme.typography.labelSmall) })
+            }
+            OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text("Base URL (OpenAI-compatible)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setAiBaseUrl(baseUrl) } }) { Text("Save") } })
+            OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, label = { Text("API key") }, singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setAiApiKey(apiKey) } }) { Text("Save") } })
+            OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("Model") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setAiModel(model) } }) { Text("Save") } })
         }
     }
 }

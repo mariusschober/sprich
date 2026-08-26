@@ -5,11 +5,4 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-    <domain-config cleartextTrafficPermitted="false">
-        <domain includeSubdomains="true">github.com</domain>
-        <domain includeSubdomains="true">huggingface.co</domain>
-        <pin-set expiration="2027-01-01">
-            <!-- Pin placeholder — replace with real pins after first verified download -->
-        </pin-set>
-    </domain-config>
 </network-security-config>

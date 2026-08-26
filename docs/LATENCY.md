@@ -12,12 +12,12 @@ Goal: collapse intention→speech→text.
 
 ## How we chase it
 
-1. ** Already ready **: model prewarmed via `ModelWarmthManager` when IME `onCreate`/`onStartInputView`. Assets mmap, JNI methods resolved, threads ready, audio ring pre-allocated, vocab trie compiled (when wired).
+1. **Single warm runtime**: `SprichApp` owns and preloads one verified Whisper context. IME and benchmark share it; trim callbacks do not race a just-starting session.
 2. ** No clipping **: 4s ring buffer holds pre-roll; instant mode starts audio in 40ms post-focus.
 3. ** VAD cheap **: energy RMS, noise floor calibrated first 300ms, 64ms chunks, onset 90ms, hesitation 450ms, endpoint 700ms, long silence 2s. No ML VAD.
-4. ** Speculative decode **: every 320ms, window 10s max, only if >0.6s new audio, adaptive if queue backs up. Whisper/Canary share same layer.
+4. **Cancellable speculative decode**: Fast checks for new audio and caps partial windows at 10s. Endpoint/cancel requests interrupt the current native decode before final inference.
 5. ** Stable prefix **: LCP of last 2, word-level, never show churn. Composing via `setComposingText`, not field replace.
-6. ** Streaming **: Nemotron feeds 160ms chunks (profile 80/160/240/320), CPU default, Vulkan optional, measure per device.
+6. **No unvalidated fallback**: Canary and Nemotron are disabled rather than consuming memory or crashing during model switches.
 
 ## Instrumentation
 
@@ -26,9 +26,9 @@ Goal: collapse intention→speech→text.
 ## What slows us intentionally
 
 - No animation delays text (80-160ms transitions are for chrome only).
-- R8 fullMode + shrinkResources trimmed APK 19MB→1.5MB debug→release (before real model).
+- The verified 59,707,625-byte model dominates APK size by design.
 - Desugaring + `isJniDebuggable` only in debug.
 
-## Measured (synthetic)
+## Measured status
 
-CI emulator mock: RTF 0.2, firstPartial 320ms, final 420ms, 4 threads, CPU. Gate pending on budget phone for real.
+The native gate uses real speech and the real model. Software-emulated ARM validates correctness but is not a performance claim. Warm latency and sustained RTF remain physical-device gates.

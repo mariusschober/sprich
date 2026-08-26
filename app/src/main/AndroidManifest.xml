@@ -49,7 +49,7 @@
         <!-- Diagnostics / Benchmark deep link (hidden) -->
         <activity
             android:name=".ui.benchmark.BenchmarkActivity"
-            android:exported="false"
+            android:exported="true"
             android:theme="@style/Theme.Sprich" />
 
         <!-- Primary IME -->

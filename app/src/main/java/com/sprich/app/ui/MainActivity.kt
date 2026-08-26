@@ -20,6 +20,7 @@ import com.sprich.app.ui.home.HomeScreen
 import com.sprich.app.ui.onboarding.OnboardingScreen
 import com.sprich.app.ui.settings.SettingsScreen
 import com.sprich.app.ui.theme.SprichTheme
+import com.sprich.app.ui.vocab.VocabScreen
 import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
@@ -63,7 +64,8 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             composable("home") { HomeScreen(onSettings = { nav.navigate("settings") }, onBenchmarkTap = { nav.navigate("benchmark") }) }
-                            composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }, onBenchmark = { nav.navigate("benchmark") }) }
+                            composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }, onBenchmark = { nav.navigate("benchmark") }, onVocab = { nav.navigate("vocab") }) }
+                            composable("vocab") { VocabScreen(onBack = { nav.popBackStack() }) }
                             composable("benchmark") { BenchmarkScreen(onBack = { nav.popBackStack() }) }
                         }
                     }

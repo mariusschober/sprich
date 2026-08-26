@@ -42,15 +42,11 @@ android {
             isJniDebuggable = true
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+            isShrinkResources = false
             isDebuggable = false
             isJniDebuggable = false
-            signingConfig = signingConfigs.findByName("release")
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -83,7 +79,7 @@ android {
     lint {
         disable += setOf("MissingLeanbackLauncher", "ImpliedTouchscreenHardware", "UnsupportedTvHardware")
         warningsAsErrors = false
-        abortOnError = false
+        abortOnError = true
         checkReleaseBuilds = true
     }
 
@@ -94,6 +90,8 @@ android {
         }
     }
     ndkVersion = "27.0.12077973"
+
+    // JFK fixture now in app/src/main/assets/jfk.wav (whisper deleted, Canary focus)
 }
 
 dependencies {
@@ -120,16 +118,16 @@ dependencies {
     // Desugaring
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 
-    // Coroutines & serialization
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-
     // Networking only for model download (isolated)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.apache.commons:commons-compress:1.26.2")
 
     // Sherpa-ONNX for Canary 180M Flash INT8 (local AAR, speech isolation preserved)
     implementation(files("libs/sherpa-onnx-1.12.11.aar"))
+
+    // Coroutines & serialization
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

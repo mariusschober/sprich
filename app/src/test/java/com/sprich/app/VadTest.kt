@@ -9,6 +9,7 @@ class VadTest {
 
     private fun silence(samples: Int = 1024): ShortArray = ShortArray(samples) { 0 }
     private fun speech(samples: Int = 1024): ShortArray = ShortArray(samples) { (sin(it * 0.1) * 12000).toInt().toShort() }
+    private fun quietSpeech(samples: Int = 1024): ShortArray = ShortArray(samples) { (sin(it * 0.1) * 500).toInt().toShort() }
     private fun noiseFloorCalibrate(vad: Vad) {
         repeat(5) { vad.process(silence(), 64) }
     }
@@ -54,5 +55,30 @@ class VadTest {
         vad.process(speech(), 64)
         vad.reset()
         assertTrue(vad.currentState() == Vad.State.SILENCE)
+    }
+
+    @Test
+    fun immediateSpeechIsNotLearnedAsNoise() {
+        val vad = Vad()
+        var state = Vad.State.SILENCE
+        repeat(6) { state = vad.process(quietSpeech(), 64).state }
+        assertTrue(state == Vad.State.SPEECH || state == Vad.State.HESITATION)
+        assertTrue(vad.hasSpeech())
+    }
+
+    @Test
+    fun delayedQuietSpeechStillTriggersAfterLongSilence() {
+        val vad = Vad()
+        repeat(160) { vad.process(silence(), 64) }
+        var state = Vad.State.SILENCE
+        repeat(4) { state = vad.process(quietSpeech(), 64).state }
+        assertTrue(state == Vad.State.SPEECH || state == Vad.State.HESITATION)
+    }
+
+    @Test
+    fun emptyFrameIsSafe() {
+        val result = Vad().process(ShortArray(0), 0)
+        assertEquals(Vad.State.SILENCE, result.state)
+        assertEquals(0f, result.rms)
     }
 }

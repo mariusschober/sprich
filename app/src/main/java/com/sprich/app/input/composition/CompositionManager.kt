@@ -15,8 +15,9 @@ class CompositionManager {
     private var composingActive = false
     private var cachedCursorStart = -1
     private var cachedCursorEnd = -1
-    private var lastCommitted: String? = null
     private var lastComposing: String? = null
+    private var compositionRejected = false
+    private var leadingSpaceNeeded: Boolean? = null
 
     fun reset() {
         lastStable = ""
@@ -24,6 +25,8 @@ class CompositionManager {
         composingActive = false
         cachedCursorStart = -1
         lastComposing = null
+        compositionRejected = false
+        leadingSpaceNeeded = null
     }
 
     /**
@@ -64,35 +67,36 @@ class CompositionManager {
                 }.trim()
                 if (finalText.isEmpty()) {
                     if (composingActive) {
-                        ic.finishComposingText()
+                        val finishOk = try { ic.finishComposingText() } catch (_: Exception) { false }
                         composingActive = false
+                        Log.i("Composition", "finish empty composing finishOk=$finishOk")
                     }
                     lastStable = ""; lastUnstable = ""; lastComposing = null
+                    leadingSpaceNeeded = null
                     return true
                 }
-                // Prevent duplicate commit spam (HelloHello) — dedupe
-                if (finalText == lastCommitted && composingActive) {
-                    // Same as last committed, just finish composing
-                    ic.finishComposingText()
-                    composingActive = false
-                    lastStable = ""; lastUnstable = ""; lastComposing = null
-                    return true
-                }
-                // Smart spacing: check char before cursor, not lastStable
-                val needsSpace = try {
-                    val before = ic.getTextBeforeCursor(1, 0)?.toString()
-                    before != null && before.isNotEmpty() && !before.endsWith(" ") && !before.endsWith("\n") && !finalText.startsWith(" ")
-                } catch (_: Exception) { false }
+                // Once composing text is visible, getTextBeforeCursor() may return
+                // the hypothesis itself. Preserve the cursor context captured before
+                // the first partial so finalization cannot invent a leading space.
+                val needsSpace = leadingSpaceNeeded ?: needsSpaceBeforeCursor(ic, finalText)
                 val toCommit = if (needsSpace) " $finalText" else finalText
-                if (composingActive) {
-                    ic.commitText(toCommit, 1)
+                val commitOk = if (composingActive) {
+                    val ok = ic.commitText(toCommit, 1)
                     composingActive = false
+                    ok
                 } else {
                     ic.commitText(toCommit, 1)
                 }
-                lastCommitted = finalText
+                Log.i("Composition", "commitText chars=${toCommit.length} needsSpace=$needsSpace composingActiveBefore=${composingActive} commitOk=$commitOk")
+                if (!commitOk) {
+                    // Fallback: try commit without composing state if editor rejected.
+                    val fallbackOk = try { ic.commitText(toCommit, 1) } catch (_: Exception) { false }
+                    Log.w("Composition", "commitText fallback fallbackOk=$fallbackOk")
+                    if (!fallbackOk) return false
+                }
                 lastComposing = null
                 lastStable = ""; lastUnstable = ""
+                leadingSpaceNeeded = null
                 return true
             }
 
@@ -108,13 +112,25 @@ class CompositionManager {
                     composingActive = false
                 }
                 lastStable = stable; lastUnstable = unstable; lastComposing = null
+                leadingSpaceNeeded = null
                 return true
             }
+            // Some editors reject composing spans. Do not commit every partial as a fallback;
+            // doing so duplicates the growing hypothesis. The final update will commit once.
+            if (compositionRejected) return false
             // Dedupe: don't re-set same composing text nonstop (HelloHello spam)
             if (composing == lastComposing) return true
-            val ok = ic.setComposingText(composing, 1)
+            if (leadingSpaceNeeded == null) {
+                leadingSpaceNeeded = needsSpaceBeforeCursor(ic, composing)
+            }
+            val visibleComposing = if (leadingSpaceNeeded == true) " $composing" else composing
+            val ok = ic.setComposingText(visibleComposing, 1)
             if (!ok) {
-                ic.commitText(composing, 1)
+                compositionRejected = true
+                lastStable = stable
+                lastUnstable = unstable
+                lastComposing = null
+                return false
             } else {
                 composingActive = true
             }
@@ -139,7 +155,17 @@ class CompositionManager {
             composingActive = false
         }
         lastStable = ""; lastUnstable=""; lastComposing = null
+        compositionRejected = false
+        leadingSpaceNeeded = null
     }
 
     fun hasComposing(): Boolean = composingActive
+
+    private fun needsSpaceBeforeCursor(ic: InputConnection, text: String): Boolean = try {
+        val before = ic.getTextBeforeCursor(1, 0)?.toString()
+        before != null && before.isNotEmpty() &&
+            !before.endsWith(" ") && !before.endsWith("\n") && !text.startsWith(" ")
+    } catch (_: Exception) {
+        false
+    }
 }

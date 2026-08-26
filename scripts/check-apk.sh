@@ -6,5 +6,6 @@ ls -lh "$APK"
 echo "--- contents (no canary/nemotron expected in assets) ---"
 unzip -l "$APK" | grep -E "assets|lib|dex" | head -n 80
 echo "--- verify no network in speech (lint) ---"
-if grep -r "okhttp" app/src/main/java/com/sprich/app/speech 2>/dev/null; then echo "FAIL: speech imports okhttp"; exit 1; else echo "speech network-free OK"; fi
+# speech/remote is the explicit opt-in backup STT; all other speech code must stay network-free.
+if grep -r "okhttp" app/src/main/java/com/sprich/app/speech --include="*.kt" | grep -v "speech/remote"; then echo "FAIL: unexpected okhttp outside speech/remote"; exit 1; else echo "speech network-free OK (remote opt-in isolated in speech/remote)"; fi
 echo "Done"

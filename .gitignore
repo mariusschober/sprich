@@ -9,9 +9,9 @@ local.properties
 keystore.properties
 *.keystore
 *.jks
-# APK
+# APK - all builds ignored (keep latest locally only)
 *.apk
-!Sprich-debug.apk
+*.sha256
 # Model cache
 native/whisper/build/
 # OS

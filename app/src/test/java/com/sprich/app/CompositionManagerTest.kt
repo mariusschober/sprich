@@ -14,11 +14,12 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class CompositionManagerTest {
 
-    private class FakeIC : InputConnection {
+    private class FakeIC(private val acceptsComposition: Boolean = true) : InputConnection {
         var committed = StringBuilder()
         var composing: String? = null
         var finishCount = 0
-        override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence? = committed.toString().takeLast(n)
+        override fun getTextBeforeCursor(n: Int, flags: Int): CharSequence? =
+            (committed.toString() + (composing ?: "")).takeLast(n)
         override fun getTextAfterCursor(n: Int, flags: Int): CharSequence? = ""
         override fun getSelectedText(flags: Int): CharSequence? = null
         override fun getCursorCapsMode(reqModes: Int): Int = 0
@@ -32,10 +33,18 @@ class CompositionManagerTest {
         }
         override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean { committed.delete(committed.length - beforeLength, committed.length); return true }
         override fun deleteSurroundingTextInCodePoints(b: Int, a: Int): Boolean = deleteSurroundingText(b,a)
-        override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean { composing = text?.toString(); return true }
+        override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+            if (!acceptsComposition) return false
+            composing = text?.toString()
+            return true
+        }
         override fun setComposingRegion(start: Int, end: Int): Boolean = true
         override fun finishComposingText(): Boolean { if (composing!=null) { committed.append(composing); composing=null; finishCount++ }; return true}
-        override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean { if (composing!=null){ committed.append(composing); composing=null } ; committed.append(text); return true}
+        override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+            composing = null
+            committed.append(text)
+            return true
+        }
         override fun commitCompletion(c: android.view.inputmethod.CompletionInfo?): Boolean = false
         override fun commitCorrection(c: android.view.inputmethod.CorrectionInfo?): Boolean = false
         override fun setSelection(start: Int, end: Int): Boolean = true
@@ -68,7 +77,7 @@ class CompositionManagerTest {
         val ic = FakeIC()
         cm.applyUpdate(ic, "Hello", "world", false)
         cm.applyUpdate(ic, "Hello world", "", true)
-        assertTrue(ic.committed.toString().contains("Hello world"))
+        assertEquals("Hello world", ic.committed.toString())
         assertNull(ic.composing)
     }
 
@@ -97,5 +106,33 @@ class CompositionManagerTest {
         cm.applyUpdate(ic, "a", "b", false)
         cm.finishIfActive(ic)
         assertNull(ic.composing)
+    }
+
+    @Test
+    fun rejectedCompositionWaitsForSingleFinalCommit() {
+        val cm = CompositionManager()
+        val ic = FakeIC(acceptsComposition = false)
+        assertFalse(cm.applyUpdate(ic, "Hello", "", false))
+        assertFalse(cm.applyUpdate(ic, "Hello world", "", false))
+        assertEquals("", ic.committed.toString())
+
+        assertTrue(cm.applyUpdate(ic, "Hello world", "", true))
+        assertEquals("Hello world", ic.committed.toString())
+    }
+
+    @Test
+    fun finalAfterPartialUsesOriginalCursorForSpacing() {
+        val cm = CompositionManager()
+        val emptyField = FakeIC()
+        cm.applyUpdate(emptyField, "Hello", "", false)
+        cm.applyUpdate(emptyField, "Hello world", "", true)
+        assertEquals("Hello world", emptyField.committed.toString())
+
+        val populatedField = FakeIC().apply { committed.append("Before") }
+        cm.reset()
+        cm.applyUpdate(populatedField, "hello", "", false)
+        assertEquals(" hello", populatedField.composing)
+        cm.applyUpdate(populatedField, "hello world", "", true)
+        assertEquals("Before hello world", populatedField.committed.toString())
     }
 }

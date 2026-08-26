@@ -1,56 +1,32 @@
 # BENCHMARK
 
-Hidden developer screen: tap version 7× on Home → Benchmark.
+Open the hidden developer screen by tapping the version seven times on Home.
 
-## Metrics
+## What it runs
 
-- deviceModel, androidVersion, SoC, RAM, engine, quantization, backend, threads
-- modelLoadTime (cold/warm)
-- audio→VAD latency
-- speechOnset→firstHypothesis / firstVisibleText
-- endpoint→final, textCommitted
-- RTF = processingMs / audioMs (sustained, not burst)
-- peak RSS (native heap + mapped model)
-- avg CPU, GPU/backend, temperature, throttling flag, dropped chunks, transcript revisions, stable-prefix revisions
-- p50/p90/p95 over runs
+The benchmark loads the same process-wide Fast engine used by the IME and transcribes the bundled public-domain `jfk.wav` fixture. It does not use a sine wave, mock transcript, or alternate runtime.
 
-## Methodology
+Reported values:
 
-- Same synthetic audio for all engines: 5s clips EN/DE/ES, quiet/street/car, male/female, fast/slow, hesitations. Stored in `testAssets` not APK.
-- Real device required for thermal/power claims; emulator only validates pipeline. Mark physical gate.
-- Marks use `SystemClock.elapsedRealtimeNanos()` monotonic.
-- Bench runs don't need mic: bundled deterministic PCM fed directly to engine.
+- model load time;
+- audio duration;
+- native inference time;
+- real-time factor (`inference time / audio duration`);
+- CPU backend and approximate Java heap use.
 
-## Adaptive recommendation
+The optional JSON export is written only to `files/benchmark/export.json`.
 
-On first launch, run 10s synthetic on `Dispatchers.Default` (no mic):
-- if Canary RTF <0.7 → recommend Accurate
-- if Nemotron RTF <0.5 with 160ms chunks → recommend Streaming
-- else Fast
+## Interpretation
 
-Never auto-download; recommendation only.
+- An emulator run proves that the asset, JNI library, model initialization, inference, UTF-8 result path, and engine lifecycle work together.
+- Emulator RTF is not comparable to a physical arm64 phone, especially when ARM is software-emulated.
+- A performance claim requires repeated warm runs plus 5- and 15-minute sustained runs on the named device, with thermal state and RTF drift recorded.
+- Do not run the benchmark while an IME dictation session is active; both intentionally share one native context.
 
-## Export
+## Physical-device protocol
 
-`Export JSON (local only)` writes `files/benchmark/export.json`:
-```json
-[{"engine":"whisper-base-q5_1","rtf_avg":0.22,"firstPartialMs":320,"backend":"cpu","threads":4}]
-```
-No transmission.
-
-## Report (measured on CI emulator, placeholder)
-
-Because CI is macOS emulator without physical budget phone, values are synthetic mock from `WhisperEngine` mock. Real measurements need `Pixel 4a`/`Galaxy A32` class device.
-
-```
-Device: emulator arm64
-Engine: Whisper Base Q5_1 mock
-RTF: 0.2 (mock, real target <0.5)
-First partial: 320ms mock (target <450 stretch 300)
-Final: 420ms mock (target <500)
-Peak RSS: 180 MB mock
-Backend: CPU 4 threads
-Thermal: normal (emulator)
-```
-
-Run `adb shell cmd package compile -r bg-dexopt` before sustained tests. For thermals: 30s/5m/15m/30m continuous dictation, track RTF drift >1.1 fails.
+1. Reboot the phone and wait for idle thermal state.
+2. Run one cold benchmark and five warm benchmarks.
+3. Record median and worst RTF, load time, Android version, SoC, RAM, and thermal state.
+4. Run continuous samples for 5 and 15 minutes; fail if crashes occur or RTF degrades beyond the agreed threshold.
+5. Separately test real microphone dictation. A fixture benchmark does not validate AudioRecord, VAD, or InputConnection behavior.

@@ -9,19 +9,20 @@ import kotlin.math.sqrt
  * States: SILENCE -> SPEECH -> HESITATION -> UTTERANCE_END -> LONG_SILENCE
  */
 class Vad(
-    var speechOnsetMs: Int = 90,
-    var hesitationMs: Int = 450,
-    var utteranceEndMs: Int = 700,
-    var longSilenceMs: Int = 2000,
-    var energyThreshold: Float = 0.015f, // tuned empirically, normalized [-1,1]
-    var calibrationMs: Int = 300,
+    var speechOnsetMs: Int = 45,
+    var hesitationMs: Int = 400,
+    var utteranceEndMs: Int = 650,
+    var longSilenceMs: Int = 1800,
+    var energyThreshold: Float = 0.0012f,
+    var calibrationMs: Int = 150,
 ) {
     enum class State { SILENCE, SPEECH, HESITATION, UTTERANCE_END, LONG_SILENCE }
 
     private var state = State.SILENCE
-    private var noiseFloor: Float = 0.008f
+    private var noiseFloor: Float = 0.0015f
     private var calibrating = true
-    private var calSamples = 0
+    private var calibrationElapsedMs = 0L
+    private var quietCalibrationFrames = 0
     private var calEnergySum = 0f
     private var speechMsAcc: Long = 0
     private var silenceMsAcc: Long = 0
@@ -32,17 +33,27 @@ class Vad(
     @Synchronized fun reset() {
         state = State.SILENCE
         calibrating = true
-        calSamples = 0; calEnergySum = 0f; noiseFloor = 0.008f
+        calibrationElapsedMs = 0
+        quietCalibrationFrames = 0
+        calEnergySum = 0f
+        noiseFloor = 0.0015f
         speechMsAcc = 0; silenceMsAcc = 0; hasSpeechEver = false
     }
 
-    @Synchronized fun calibrateIfNeeded(samples: ShortArray): Float {
+    @Synchronized fun calibrateIfNeeded(samples: ShortArray, durationMs: Long = 64): Float {
         val rms = rms(samples)
         if (calibrating) {
-            calEnergySum += rms
-            calSamples++
-            if (calSamples >= 5) {
-                noiseFloor = (calEnergySum / calSamples) * 1.8f + 0.004f
+            calibrationElapsedMs += durationMs
+            // Never learn a likely speech frame as room noise. This is what lets a user
+            // speak immediately after tapping without raising the threshold above speech.
+            if (rms < energyThreshold) {
+                calEnergySum += rms
+                quietCalibrationFrames++
+            }
+            if (calibrationElapsedMs >= calibrationMs) {
+                if (quietCalibrationFrames > 0) {
+                    noiseFloor = calEnergySum / quietCalibrationFrames
+                }
                 calibrating = false
             }
         }
@@ -50,8 +61,8 @@ class Vad(
     }
 
     @Synchronized fun process(samples: ShortArray, durationMs: Long): Result {
-        val rms = calibrateIfNeeded(samples)
-        val threshold = if (calibrating) energyThreshold else maxOf(energyThreshold, noiseFloor * 1.6f)
+        val rms = calibrateIfNeeded(samples, durationMs)
+        val threshold = maxOf(energyThreshold, noiseFloor * 1.15f)
         val isSpeechFrame = rms > threshold
 
         // Update accumulators
@@ -86,6 +97,7 @@ class Vad(
     }
 
     private fun rms(samples: ShortArray): Float {
+        if (samples.isEmpty()) return 0f
         var sum = 0.0
         for (s in samples) {
             val f = s / 32768f
@@ -97,4 +109,7 @@ class Vad(
     @Synchronized fun hasSpeech(): Boolean = hasSpeechEver
     @Synchronized fun currentState(): State = state
     @Synchronized fun isCalibrating(): Boolean = calibrating
+    @Synchronized fun calibrationInfo(): String = "calibrating=$calibrating noiseFloor=$noiseFloor threshold=${maxOf(energyThreshold, noiseFloor * 1.15f)}"
+    @Synchronized fun noiseFloorValue(): Float = noiseFloor
+    @Synchronized fun currentThreshold(): Float = maxOf(energyThreshold, noiseFloor * 1.15f)
 }

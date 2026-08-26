@@ -1,57 +1,61 @@
 # TEST REPORT
 
-## Unit tests (debug)
+Verified locally on 2026-08-24 after the reliability refactor. Physical-device items remain unchecked until observed.
 
-Run: `./gradlew :app:testDebugUnitTest`
+## Automated gates
 
-Results 2026-08-24 (local macOS, JDK 18):
+Commands:
 
+```bash
+./scripts/apply-whisper-patches.sh
+./gradlew --no-daemon --max-workers=2 \
+  :app:testDebugUnitTest \
+  :app:assembleDebug \
+  :app:assembleDebugAndroidTest \
+  :app:lintDebug
+
+./gradlew --no-daemon --max-workers=1 :app:connectedDebugAndroidTest
+./scripts/verify-models.sh
+./scripts/check-apk.sh
 ```
-BUILD SUCCESSFUL — 34 unit tests, 0 failures
-```
 
-Suites:
+Results:
 
-- `TranscriptStabilizerTest` (5): stablePrefixRequiresAgreement, shrinkingHypothesisRevisesStable, neverDuplicatesCommitted, unstableChurnDoesNotAffectStable, emptyHypothesisKeepsStable — validates LCP algorithm, requires 2 consecutive agreements, handles revision, churn.
-- `CompositionManagerTest` (5): applyUpdateSetsComposing, finalCommitMerges, noDuplicationOnOverlappingHypothesis, handlesEmptyGracefully, finishIfActiveClears — ensures `setComposingText`/`commitText` delta no duplication.
-- `SpokenEditingParserTest` (7): punctuation inline EN/DE/ES, delete commands, ITN email, commandsDisabled, noFalsePositive — deterministic layer, conservative.
-- `SessionFsmTest` (4): validTransitions, impossibleTransitionIgnored, errorRecovery, passwordFieldNeverStarts — FSM guards impossible states.
-- `VadTest` (4): calibratesAndDetectsSpeech, silenceStaysSilence, utteranceEndAfterSilence, resetsCleanly — energy threshold 0.015, calibration 300ms, onset 90ms.
-- `AudioRingBufferTest` (4): writeAndDrain, overwritesOldestOnOverflow, snapshotLastSeconds, clearResets — overflow discards oldest, snapshot last seconds correct.
-- `ModelManagerTest` (5): initialStatusNotDownloaded, canaryReadyAfterFakeInstall, atomicRollbackOnFailedDownload, deleteModelClears, shaBlankPasses — atomic rename, integrity, rollback.
+- `BUILD SUCCESSFUL`: debug APK, Android-test APK, unit tests, and strict debug lint.
+- 40 unit tests, 0 failures, 0 errors.
+- Lint: 0 Error/Fatal findings with `abortOnError = true`.
+- Android 36 arm64 software emulator: 3 instrumentation tests, 0 failures.
+- Real 10-second bundled speech: 2 Whisper segments, 100 output characters. Software-emulated inference took 68,698 ms; this is correctness evidence, not a performance claim.
+- Active native inference cancellation: 505 ms in the same final run (previously 63,353 ms before the scheduler callback fix).
+- Bundled model: exact 59,707,625 bytes and SHA-256 `422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898`.
+- APK contains no Canary/Nemotron model or runtime, no HTTP/archive dependency, and requests no Internet permission.
+- `zipalign -c -P 16 -v 4`: successful. All `libsprich_whisper.so` ELF `LOAD` segments report `0x4000` alignment.
 
-Coverage: stabilizer/command/FSM/ring buffer are latency-critical paths; composition delta is duplication-critical.
+Final debug APK before handoff copy:
 
-## Build verification
+- Size: 111,844,386 bytes.
+- SHA-256: `e722b2379a4c09c290480967951e59c579e51f509fa6e9bfcde941c1f3a131c8`.
 
-- `assembleDebug` — 19 MB (placeholder whisper 179B + 8 dex + libs). Success in 20s.
-- `assembleRelease` — 1.5 MB optimized with R8 (placeholder). Real release with 57MB whisper will be ~60 MB. Minify + shrinkResources enabled.
-- APK checks:
-  - `verify-models.sh` confirms placeholder detected, APK clean (no `canary`/`nemotron` leaked).
-  - `check-apk.sh` confirms `speech/*` no `okhttp` import (architectural isolation).
-  - `unzip -l` shows `assets/models/whisper-base-q5_1.bin` present (179B placeholder, gate is >50 MB for release).
+Coverage includes:
 
-## Manual / instrumentation (requires device)
+- VAD calibration, immediate/quiet speech, endpoint, reset, and empty frames;
+- InputConnection composing/final behavior, rejected composition, spacing, and duplication prevention;
+- transcript stabilization, commands, session FSM, ring buffer, WAV parsing, and model manager;
+- real native transcription of bundled deterministic speech;
+- cancellation of an active native decode;
+- rapid begin/cancel session cycling without unloading the process-wide engine.
 
-Not yet automated on CI emulator; gates for physical hardware:
+## Physical-device gate
 
-- [ ] IME lifecycle: `onStartInput` for password vs normal, composing across app switch, rotation, low memory trim, incoming call interruption, Bluetooth route change, mic permission revoked mid-session.
-- [ ] Focus matrix: native EditText, Compose TextField, WebView contenteditable, Chrome input, HTML textarea, email/URL/numeric fields (decline).
-- [ ] App matrix: Chrome, Gmail, Keep, WhatsApp, Telegram, Signal, Slack, Discord, Notion, Reddit — minimal 10-app smoke with `w: 0.5s` utterance.
-- [ ] Rapid 3-field switch: Google search → messaging → docs, no stale/lost text, no model reload.
-- [ ] Airplane mode: kill app → enable airplane → dictate via Fast → verify identical (no network, no degraded UI).
-- [ ] Budget phone sustained: 5m/15m continuous dictation, measure RTF drift, thermals, battery, listening-silence idle.
+- [ ] Install the final artifact on a representative arm64 phone.
+- [ ] Grant microphone, enable Sprich IME, and transcribe a normal sentence into at least three editor implementations.
+- [ ] Verify immediate speech is not clipped and quiet speech triggers VAD.
+- [ ] Repeat at least 20 utterances and switch fields/apps without stale or duplicated text.
+- [ ] Verify password fields never start capture.
+- [ ] Revoke/regrant microphone and recover without process restart.
+- [ ] Repeat in airplane mode and confirm no network traffic.
+- [ ] Run 5- and 15-minute thermal/memory tests.
 
-## Instrumentation workbench
+## Claim boundary
 
-- Latency marks captured via `LatencyTracker` (monotonic). Bench screen exports JSON locally; mock benchmark shows RTF 0.2, firstPartial 320ms, final 420ms. Real values need physical burst vs sustained runs.
-
-## Known races tested
-
-- Overlapping hypothesis (stable/unstable), shortened hypothesis, punctuation change during composition, cursor movement mid-dictation (should finalize), user typing while dictating (manual edit wins), IME restart, focus transition partial after finalization — covered by `CompositionManagerTest`.
-
-## Privacy audit
-
-- No analytics dependency in `app/build.gradle`; no `com.google.firebase`, `mixpanel`, `sentry`.
-- `core/privacy/PrivacyGuard` sanitizes logs; release logs minimal.
-- End-to-end airplane test pending physical gate (see above).
+Unit, lint, APK, and emulator-native success establish repository and pipeline correctness. They do not establish physical microphone, editor interoperability, latency, thermal stability, battery use, or store readiness.

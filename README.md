@@ -11,6 +11,7 @@ Sprich is a private, offline speech-to-text input method for Android. No cloud, 
 ```bash
 # Prerequisites: JDK 17+, Android SDK 36, NDK 27.0.12077973, CMake 3.22+
 export ANDROID_HOME=/Users/schober/Documents/Circadiano/.android-sdk
+./scripts/apply-whisper-patches.sh
 ./gradlew :app:assembleDebug
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -33,49 +34,48 @@ See [PLAN.md](PLAN.md) for full product thesis and latency targets.
 
 - `core/audio` — 16k mono PCM, ring buffer 4s, zero-first-phoneme clipping, timestamps monotonic.
 - `core/vad` — tiny energy VAD, calibrated noise floor, configurable onset/hesitation/endpoint.
-- `speech/api` — `SpeechEngine` abstraction with capabilities (streaming, punc, etc.).
-- `speech/whisper` — whisper.cpp via NDK, Q5_1 multilingual, speculative windowing + stable-prefix.
-- `speech/canary` — sherpa-onnx INT8 offline, same windowing, reflection isolate.
-- `speech/nemotron` — NeMo-Speech.cpp streaming 160ms chunks, CPU default, Vulkan optional.
-- `input/ime` — SprichIME, Instant/Tap modes, password guard, haptics tick, warm model.
-- `input/composition` — `setComposingText`/`commitText` delta, no duplication, cursor-move abort.
+- `speech/api` — `SpeechEngine` contract and language/session configuration.
+- `speech/whisper` — one process-wide whisper.cpp context, verified Q5_1 model, serialized JNI, cancellable inference.
+- `speech/canary` / `speech/nemotron` — dormant prototypes; not packaged, selectable, or supported in this build.
+- `input/ime` — SprichIME, Instant/Tap modes, password guard, explicit preparing/error states.
+- `input/composition` — `setComposingText`/`commitText` delta with single-final fallback for editors that reject composing spans.
 - `input/commands` — deterministic EN/DE/ES punctuation & delete, no LLM.
-- `models/manager` — manifest, SHA256, atomic install, free-space check, rollback.
+- Fast model install — exact byte count + SHA-256, staged copy, atomic replacement.
 - `vocab` — local trie for names, deterministic post-recognition.
 
 Full: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Models
 
-| Model | Size | Delivery | Runtime |
-|-------|------|----------|---------|
-| **Fast** Whisper Base Q5_1 multilingual | 57 MB bundled | assets/models | whisper.cpp NDK |
-| **Accurate** Canary 180M Flash INT8 | 198 MB download | files/canary | sherpa-onnx |
-| **Streaming** Nemotron 0.6B Q4_K | ~620 MB download | files/nemotron | NeMo-Speech.cpp |
+| Model | Size | Delivery | Runtime | Status |
+|-------|------|----------|---------|--------|
+| **Fast** Whisper Base Q5_1 multilingual | 59,707,625 bytes | bundled | whisper.cpp NDK | Supported |
+| **Accurate** Canary 180M Flash INT8 | — | not shipped | none packaged | Disabled |
+| **Streaming** Nemotron 0.6B | — | not shipped | not implemented | Disabled |
 
-Only Fast is bundled. Optional models need explicit user download via Settings. See [docs/MODELS.md](docs/MODELS.md) for acquisition, verification, and licensing.
+The reliability build deliberately exposes only Fast. A model cannot return to Settings until its native lifecycle, cancellation, memory use, and real-audio instrumentation gates pass. See [docs/MODELS.md](docs/MODELS.md).
 
 ## Privacy
 
 - No cloud ASR, no telemetry, no analytics SDK, no crash SDK, no AD_ID.
 - Audio in RAM ring buffer, never written to storage, discarded on session end.
 - `speech:*` never imports `okhttp`/`java.net` (lint-enforced).
-- Works in airplane mode. Network only for model download with user consent.
+- The reliability build requests no Internet permission and packages no HTTP client dependency.
 
 See [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Benchmark
 
-Hidden screen: tap version 7× on Home. Measures RTF, first-partial, end-to-final, RSS, backend, thermal, exports JSON locally.
+Hidden screen: tap version 7× on Home. It transcribes the bundled public-domain `jfk.wav` through the same process-wide Fast engine and reports load time, inference time, and RTF.
 
-Instructions & synthetic methodology: [docs/BENCHMARK.md](docs/BENCHMARK.md)
+Instructions and limitations: [docs/BENCHMARK.md](docs/BENCHMARK.md)
 
 ## Build reproducibility
 
 ```bash
-./scripts/verify-models.sh      # SHA check bundled whisper + optional manifests
-./scripts/build-native.sh       # builds whisper.cpp libs with NDK
-./gradlew :app:assembleRelease  # R8 + shrinkResources, fails if optional models leaked into APK
+./scripts/verify-models.sh      # exact size/SHA and optional-runtime absence
+./scripts/apply-whisper-patches.sh
+./gradlew :app:assembleDebug    # builds the arm64 reliability APK
 ./gradlew :app:testDebugUnitTest
 ```
 
@@ -83,15 +83,15 @@ CI check fails if `canary/` or `nemotron/` artifacts appear inside APK.
 
 ## Testing
 
-- Unit: `TranscriptStabilizerTest`, `CompositionManagerTest`, `SpokenEditingParserTest`, `VadTest`, `SessionFsmTest`, `AudioRingBufferTest`, `ModelManagerTest`.
-- Instrumentation: IME lifecycle, focus switch, password guard, interruption matrix (call, headset, rotation).
+- Unit: stabilizer, composition, spoken commands, VAD, session FSM, ring buffer, WAV parsing, and model manager.
+- Instrumentation: real bundled model transcription, cancellation of active native inference, and rapid session reset.
 - Manual matrix: Chrome, WhatsApp, Telegram, Signal, Gmail, Slack, Notion, WebView, Compose fields.
 
 ## Known limitations (v1)
 
-- Physical mid-range device testing pending instrumentation gate (emulator only in CI).
-- whisper.cpp real inference requires NDK-built `libsprich_whisper.so` + 57MB model; debug uses mock for speed.
-- Nemotron Vulkan benchmark needs per-device profiling; CPU fallback is default.
+- Physical mid-range IME/microphone and sustained thermal testing is still required.
+- Only arm64-v8a and the Fast model are supported in this build.
+- Canary and Nemotron remain disabled; their prototype source is not a working product path.
 - Accessibility companion labeled experimental; Play policy restricts overlay.
 
 ## License
