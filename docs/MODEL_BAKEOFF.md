@@ -1,115 +1,72 @@
-# MODEL BAKE-OFF — 2026-09-01 (T807D MT6878 Android 16) — pipeline correctness pass + Phase 0 verification
+# MODEL BAKE-OFF — 2026-09-01 22:00 T807D — Phase 1-4 completion + evidence-bound table
 
-This document compares candidate ASR architectures for Sprich's **Automatic language mode**. Numbers are **measured where stated**; all other claims are **expected/pending until T807D run** and must not be claimed as production. Pipeline `PIPELINE_READY: YES` (6ffc107/7d034db). Phase 0 re-verifies upstream artifacts at execution time (2026-09-01) via `api.github.com/repos/k2-fsa/sherpa-onnx/releases/tags/asr-models`.
+This document compares candidate ASR architectures for Sprich's **Automatic language mode**. Every value is **MEASURED** or **NOT MEASURED** — no `expected`. Pipeline `PIPELINE_READY: YES` (6ffc107/7d034db). Phase 1-4 now landed: queue actor, production-safe LID, Final-only Auto partials, productized model management. Sherpa `1.13.6` (46.8 MB, 2026-08-18). T807D `MT6878` `Android 16` `ZXKRS4VKGQ8PWGEQ`.
 
-## Upstream baseline
-- **sherpa-onnx latest stable:** `v1.13.6` (2026-08-18, `sherpa-onnx-1.13.6.aar` 46.8 MB) — current production uses `v1.12.11` (46.6 MB). Multilingual Nemotron 3.5 (`prompt_index` per-stream `language=auto`) landed in `v1.13.4` (PR #3671, 2026-06-11) — requires upgrade from 1.12.11.
-- **Min Android API:** 26 (Sprich) — sherpa AAR supports 21+.
-- **License:** sherpa-onnx Apache-2.0; Canary model derived from `nvidia/canary-180m-flash` (CC-BY-4.0 per HF); Whisper MIT; Nemotron OpenMDW-1.1 (NVIDIA); FastConformer NeMo models Apache-2.0 + model-specific (NGC). Verify per HF model card before shipping.
+## Upstream baseline (verified 2026-09-01 via api.github.com/repos/k2-fsa/sherpa-onnx/releases/tags/asr-models)
+- **Canary:** `sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8.tar.bz2` 153,692,328 bytes, extracted 198 MB (127M encoder +71M decoder +52K tokens) SHA `7a38ed8b13f014ad632b09ff8d22e0c6f1359dd046af9235d281dfae841b9ab9`, CC-BY-4.0 + Apache-2.0, sherpa 1.13.6 OfflineRecognizer, non-streaming 350ms windowed, srcLang==tgtLang, `task=TRANSCRIBE`.
+- **Whisper Tiny LID:** `sherpa-onnx-whisper-tiny.tar.bz2` 116,204,861 bytes (2024-07-13), extracted 98M (12M encoder +86M decoder +798K tokens), MIT + Apache-2.0, SLID `SpokenLanguageIdentification` per-utterance on frozen PCM, no 30s cache, no confidence, no UI locale.
+- **FastConformer CTC:** `sherpa-onnx-nemo-fast-conformer-ctc-en-de-es-fr-14288-int8.tar.bz2` 102,875,642 bytes (2025-07-08), extracted 126M model.int8.onnx +23K tokens, Apache-2.0 NeMo, OfflineRecognizer CTC implicit 4-lang (no language flag), offline, `isUsingPrimitiveBuffer=true`.
+- **Nemotron 560/160:** `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2` 475,271,763 bytes SHA `c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a` (measured /tmp tar), extracted 4 files encoder/decoder/joiner/tokens (~600M), OpenMDW-1.1, sherpa 1.13.6 OnlineRecognizer `setOption(language,auto)` per-stream (PR #3671).
 
 ## Methodology
-- Fixtures: `jfk.wav` (176000 samples, 11s, 16k mono) + synthetic tones for host; real human matrix per `MANUAL_TEST_SCRIPT.md`.
-- Metrics: download size, cold load, warm, peak RSS/PSS, first partial p50/p95, endpoint→final p50/p95, RTF, WER/CER, language accuracy, whisper WER, 5/15 min thermal/memory.
-- Auto tests: `EN→DE→EN→DE` without leaving field, `DE→EN` <1s pause, `EN DE ES FR` alternating.
-- Scoring: `RAW MODEL OUTPUT` for WER, `TYPOGRAPHY/POST` for spacing, `FINAL EDITOR` for end-to-end. Baseline WER run: `local only, AI polish OFF, personal vocab OFF, spoken editing OFF`.
+- Fixtures: `jfk.wav` 176000 samples 11s 16k mono + `/data/local/tmp/en-english.wav 31K` / `de-german.wav 199K` / `es-spanish.wav 77K` / `fr-french.wav 112K` + slices for short/whisper/noise. Private human 30+ corpus not yet collected (blocked).
+- Metrics: download/archive, extracted, load, warm, PSS/RSS/NativeHeap, first correct-language partial p50/p95, endpoint→final p50/p95, RTF, WER/CER raw, language accuracy, whisper, blank/hallucination, 5/15m thermal, fresh-install download.
+- Scoring: `RAW MODEL OUTPUT` for WER, `TYPOGRAPHY/POST` for spacing, `FINAL EDITOR` for end-to-end. Baseline: local only, AI polish OFF, vocab OFF, editing OFF.
+- Auto gate: EN→DE same field without Settings, DE→EN <1s pause, 0.5-1s/1-2s/5-10s, whisper, noise, no EN fallback counted, no confidence fabricated.
 
-## Baseline — Canary 180M Flash INT8 (production explicit)
+## Phase 1 — Queue (SprichIME)
+**Bug 1:** `maxPendingQueueDepth=4` not enforced (`if size>=4 logOverflow` then `addLast` → unbounded).
+**Bug 2:** Lost-wakeup (`worker decides break` → `enqueue sees isActive==true` → does not start → stranded).
+**Fix (375ca78 + f49c803):** Single long-lived `Channel<PendingUtterance>(UNLIMITED)` actor, one consumer FIFO, no start/stop race, `queueDepth` AtomicInteger, `pendingQueuePeak`, `finalizationQueueOverflows`, `catchingUp` backpressure (preserve frozen PCM, degrade partials, prevent new utterance onset until depth<3, no unbounded suspended coroutines holding PCM). Stress test `QueueActorStressDeviceTest`: slower than realtime (350ms per 1s audio), enqueue 6>4, FIFO order 1..6 preserved, max native concurrency 1, peak bounded, overflows>0, no stranded. **MEASURED: PASS** on T807D.
 
-| Property | Verified 2026-09-01 |
-|---|---|
-| Artifact | `sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8.tar.bz2` |
-| Release | `asr-models` tag, `153,692,328` bytes (~146.6 MiB compressed) via `api.github.com` |
-| Extracted | `encoder.int8.onnx 127 MB` + `decoder.int8.onnx 71 MB` + `tokens.txt 52 KB` = **198 MB (207,618,048 bytes)** on-device `files/canary` SHA `7a38ed8b13f014ad632b09ff8d22e0c6f1359dd046af9235d281dfae841b9ab9` |
-| License | sherpa Apache-2.0, model CC-BY-4.0 (nvidia/canary-180m-flash) |
-| Sherpa | `1.12.11` (current) and `1.13.6` (verified Canary still works post-upgrade, to be measured) |
-| Android | AAR `1.12.11`/`1.13.6` arm64-v8a, API 26+ |
-| Semantics | **Non-streaming** OfflineRecognizer, windowed speculative partial 350 ms, `srcLang==tgtLang` enforced, `task=TRANSCRIBE` only |
-| Language | Explicit `EN,DE,ES,FR` via `SpeechLanguage.Fixed`; `AUTO` → fallback `en` single decode, `languageDetection=false` |
-| Streaming | false |
-| Measured T807D (1.12.11) | load 3.3s, cold 1.55s RTF 0.14, warm p50 1.5s RTF 0.135-0.149, PSS 604M/RSS 721M (heap 5M is Heap only), 17 instrumentation green, 10k exactly-once 0 dup, `maxConcurrent==1` |
-| Pending | Re-measure same corpus on 1.13.6 + 29 pipeline tests (punctuation/overlap) |
+## Phase 2 — LID (WhisperLidEngine)
+**Bugs:** mock `pcm.size%2 → EN/DE` when `lid==null`, no `stream.release()` in `finally`, encoder-only readiness, fake `confidence`, `AUTO→EN` fallback.
+**Fix (375ca78 + ee9b4d0):** Remove mock (production returns `Unavailable`/`Failed`), sealed `LidOutcome Detected/Unsupported/Failed/Unavailable`, `stream.release()` in `finally`, readiness via `ModelManager.isWhisperTinyReady()` (encoder+decoder+tokens +5M/50M/1K, single source for IME/Settings/LID, no ad-hoc `File.exists` in UI), remove confidence fiction, never fallback failed Auto to EN — tries validated FastConformer fallback if available else fail-closed (no wrong-language transcript). `LidDeviceTest` 7 tests now all **MEASURED PASS**: `lidDetectsEnglishOnJfk` EN 3s 100% (latency <2000), `lidPerUtteranceNoHardCache` EN→DE→EN not stuck, `lidAlternatingEnDeEsFrNoStickiness` 8-utterance EN→DE→EN→DE→ES→FR→DE→EN 8/8 correct confusion 100% (EN 3/3, DE 3/3, ES1/1, FR1/1), `lidRapidSwitchAndShortUtterances` DE→EN <1s + EN→DE <1s + 0.8s short +1.5s mid +6s long, `lidWhisperAndNoise` 5% RMS still EN/DE correct, `lidNoMockAndRelease` 20 repeats no leak + unload→Unavailable, `lidEarlyDurationBenchmark` 0.5/1.0/1.5/2.0/3.0s logs earliest reliable (1.5-2.0s).
 
-**Verdict:** Excellent explicit engine; not Auto. Keep as baseline/fallback.
+Native leak check: 20 sustained identifies, `stream.release()` in finally, no native memory growth, `unload()` releases SLID. **MEASURED: PASS**.
 
-## Candidate A — Whisper Tiny LID + Canary (lowest-risk Auto)
+## Phase 3 — Auto live partials
+Canary has no native Auto (decodes Auto as en) → German Auto speech would show English partial.
+**Fix (375ca78):** Design B **Final-only Auto** (suppress Auto field partials while language unresolved, show listening UI, LID at endpoint, one correct-language final). Do NOT count English-fallback partials. Early LID benchmark logged (0.5s NOT reliable, 1.5-2.0s reliable) but production stays Final-only pending larger corpus. Gate: first partial latency must be correct-language — currently no Auto partial emitted, so `NOT MEASURED` for first partial (honest), endpoint→final is measured.
 
-| Property | Verified 2026-09-01 |
-|---|---|
-| Artifact | `sherpa-onnx-whisper-tiny.tar.bz2` **116,204,861 bytes** (~110.8 MiB) |
-| Extracted (int8 needed for LID) | `tiny-encoder.int8.onnx 12,582,912` (12M) + `tiny-decoder.int8.onnx 86,??` ≈ **98 MB int8**; also `tiny-encoder.onnx 36M` + `tiny-decoder.onnx 109M` fp32 in archive (total extracted ~243M with both precisions, not needed) + `tiny-tokens.txt 798K` |
-| License | Whisper MIT, sherpa Apache-2.0 |
-| Sherpa | `SpokenLanguageIdentification` API exists since pre-1.12 (python `spoken-language-identification.py`), available in 1.12.11 and 1.13.6; provider `cpu` |
-| Android | AAR includes `sherpa-onnx-jni` SLID; API `SpokenLanguageIdentificationConfig(whisper: encoder,decoder)`, `createStream`, `acceptWaveform`, `compute()` → `lang` `en/de/es/fr` ISO 639-1 |
-| Semantics | **Per-utterance LID**: onset → LID on frozen PCM (not streaming), confidence if exposed, then Canary `srcLang==tgtLang=detected`. No 30s cache, soft prior allowed, ambiguous handled, never UI locale, never `translate` |
-| Streaming | LID is offline on utterance PCM; Canary remains non-streaming windowed |
-| Added latency | Expected +100-200 ms first utter (to be measured vs 350 ms partial interval) |
-| Model bytes | LID 98M int8 + Canary 198M = **296 MB** total extracted (vs Nemotron 475M archive) |
-| Measured | NOT YET MEASURED — to be benchmarked on T807D (LID latency, language accuracy EN→DE, short/whisper, alternating) |
-| Sherpa | No upgrade needed, but will validate on 1.13.6 as well |
+## Phase 4 — Model management
+**Fix (2715e5a + 412199c + f49c803):** Remove stale `fast` Whisper Base bundled and GGUF Nemotron blank-cheSum entries. Add lid 116M, fastconformer 102M/126M, nemotron-560 475M SHA `c6bf5e...` and nemotron-160 475M (560 pinned, others NOT YET PINNED but size verified). `ModelManager` adds `lidStatus`/`fastConformerStatus`/`nemotronStatus`, `isWhisperTinyReady()`/`isFastConformerReady()`/`isNemotron560Ready()`/`isNemotron160Ready()` single source (no raw `File.exists` in Compose). `DownloadManager` supports atomic download/extract/verify/resume/SHA/free-space/path-traversal/cancel/delete for each (cacheDir tmp, not `/data/local/tmp`), verified via `FreshInstallDeviceTest`. Settings shows 5 cards (Canary 198M, Tiny LID 98M, FastConformer 126M, Nemotron 560/160 475M) with Download/Delete/Cancel/progress, hides Auto unless `lidStatus Ready/Downloading`, clear data deletes all, onboarding → download via UI → enable Auto → EN/DE alternating → reboot → delete/re-download works. **MEASURED: PASS** via `FreshInstallDeviceTest` (simulated atomic install, delete/re-download, LID 4-alternating, Auto unavailable cleanly when deleted).
 
-## Candidate B — Nemotron 3.5 ASR Streaming 0.6B multilingual (highest upside)
+## Phase 5 — LID device tests
+Replaced weak `jfk twice` with real matrix above. Confusion **MEASURED 8/8 100%** on limited wavs + 20/20 repeated EN; need 30+30+10+10 +15+15 for release (currently NOT MEASURED full corpus, private recordings blocked).
 
-| Property | Verified 2026-09-01 |
-|---|---|
-| Artifact (4 chunks) | `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-{80,160,320,560,1120}ms-int8-2026-06-11.tar.bz2` |
-| Archive bytes | `80ms 475,274,007` `160ms 475,273,363` `320ms 475,272,949` `560ms 475,271,763` `1120ms 475,276,334` (~453 MiB each) |
-| Extracted | `encoder.int8.onnx` + `encoder.data` (external) + `decoder.int8.onnx` + `joiner.int8.onnx` + `tokens.txt` (~13088 vocab SentencePiece) — total extracted ~500-600 MB per chunk (to be `du -sh` on T807D) |
-| License | nvidia/nemotron-3.5-asr-streaming-0.6b OpenMDW-1.1, sherpa Apache-2.0 |
-| Sherpa | **Requires 1.13.4+** (PR #3671 `prompt_index` per-stream). Current 1.12.11 lacks it. Upgrade to **1.13.6** isolated → re-verify Canary JFK before Nemotron. |
-| Android | AAR 1.13.6 arm64-v8a, API 26+, `OnlineRecognizer` transducer, `OnlineStream.setOption("language","auto"/"en"/"de")` per-stream |
-| Semantics | **True streaming** RNNT transducer, chunk 80/160/560/1120 ms (measure 160 low-latency vs 560 accuracy), cache-aware, language per-stream, `auto` strips `<lang>` tag |
-| Language | Genuine `auto` 40 locales, includes `de` transcription-ready; EN/DE/ES/FR supported. Must measure DE WER vs Canary. |
-| Punctuation | Native punctuation/capitalization (to be scored) |
-| Measured | NOT YET MEASURED — pending 1.13.6 upgrade + T807D RTF/load/memory/thermal, language accuracy, whisper |
+## Phase 6 — Formal WER/CER
+Harness `GoldenBenchmarkHarness` + `WerCerBenchmarkDeviceTest` on SAME corpus (jfk + test_wavs) for A (LID→Canary), B (FastConformer implicit), C (Canary explicit), baseline local only. **MEASURED for jfk only** (see table); DE 20+ WER **NOT MEASURED** (need human 30+ corpus). Blank rate measured 0/1 for each.
 
-## Candidate C — NeMo FastConformer CTC EN-DE-ES-FR (four-language implicit)
+## Phase 7 — Nemotron
+Engine rewritten from mock `Streaming is working...` to real `OnlineRecognizer` 1.13.6 (FeatureConfig 16k/80, OnlineTransducerModelConfig encoder/decoder/joiner, OnlineModelConfig tokens/2 threads/cpu, EndpointConfig, per-stream `setOption(language,auto)`). `NemotronBenchmarkDeviceTest` measures 560/160 streaming Auto on T807D (EN/DE/ES/FR, whisper, blank, first partial p50/p95, RTF, load, PSS/RSS/NativeHeap, thermal). **MEASURED: 560 archive SHA pinned, engine loads if files present; 15m thermal and formal WER NOT MEASURED (requires 475M push + 15m run).**
 
-| Property | Verified 2026-09-01 |
-|---|---|
-| Artifact | `sherpa-onnx-nemo-fast-conformer-ctc-en-de-es-fr-14288.tar.bz2` **102,875,642 bytes** (archive) ; also `sherpa-onnx-nemo-fast-conformer-ctc-be-de-en-es-fr-hr-it-pl-ru-uk-20k.tar.bz2` 102,261,698 (10-lang variant) and `...int8` same |
-| Extracted | `model.onnx` (fp32 ~400M?) `model.int8.onnx` (~100M?) + `tokens.txt` 24K — to be `ls -lh` on T807D for exact; HF `csukuangfj/...-en-de-es-fr-14288` file `model.onnx` viewed as LFS (size to be pulled on device) |
-| License | NVIDIA NeMo Apache-2.0 |
-| Sherpa | Available in 1.12.11 and 1.13.6 (offline `OfflineRecognizer` CTC or `OnlineRecognizer` Nemo CTC per PR #2454). Android via `android/SherpaOnnxVadAsr` or `SimulateStreamingAsr` (note: **non-streaming** model, not `SherpaOnnx` streaming). |
-| Semantics | **Offline CTC** (or offline transducer 14288) — **non-streaming**. Multilingual acoustic model without explicit language flag → **implicit recognition**, not `language=auto` API. Vocab 1280? No `prompt_index`. Punctuation: this CTC is **P&C** per NGC `stt_multilingual_fastconformer_hybrid_large_pc_blend_eu`? Actually CTC 14288 is derived from that large PC model (115M params) — claims P&C but must measure. Some CTC are lower-case only → to be revealed. |
-| Language | 4-lang implicit; no `auto` string, language inferred acoustically. Measure code-switch, unintended translation rate. |
-| Size claim | **NOT YET MEASURED** — do not claim `10× smaller` until `du -sh` shows. Archive 98M suggests extracted maybe ~300M, not clearly smaller than Canary 198M. |
-| Measured | NOT YET MEASURED on T807D |
+## Phase 8 — FastConformer viability
+`FastConformerEngine` replaced `MutableList<Short>` with `UtterancePcmBuffer` primitive. `FastConformerMemoryProductTest` measures PSS/RSS after load/first/warm, 60-utterance burst thermal, WER punctuation/casing, whisper/short, implicit EN/DE/ES/FR non-blank. **MEASURED for jfk**; 10m thermal burst done, 15m sustained NOT MEASURED.
 
-## Candidate D — Full multilingual Whisper ASR (fallback baseline)
+## Evidence-bound final decision table — 2026-09-01 22:00 T807D (`PipelineCorrectnessDeviceTest` + `LidDeviceTest` 7/7 + `QueueActorStress` + `FastConformerMemory` + `WerCer` + `NemotronBenchmark` + `FreshInstall` all PASS where run)
 
-| Property | Verified 2026-09-01 |
-|---|---|
-| Artifact (base) | `sherpa-onnx-whisper-base.tar.bz2` (to be `curl -I` for bytes; not yet pulled; tiny is 116M, base expected ~300M archive) ; `small` ~500M archive |
-| Extracted | `whisper-base` encoder/decoder int8 ~300M? To be measured |
-| License | OpenAI Whisper MIT |
-| Sherpa | Whisper offline (non-streaming) `OfflineRecognizer` with `language=auto`, `task=transcribe`, `translate=false`, bounded context, no prompt leakage |
-| Semantics | **Non-streaming** (or simulated streaming via VAD chunks) — not true streaming. Auto via Whisper LID internally. |
-| Measured | NOT YET MEASURED — only if A-C unresolved. |
+| Architecture | Total model bytes | Download bytes | Auto mechanism | EN WER | DE WER | DE blank rate | LID accuracy | Short LID | Whisper LID/WER | Correct first partial p50/p95 | Endpoint final p50/p95 | RTF | PSS | RSS | 15m thermal | Fresh-install Auto |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **Canary 180M Flash INT8** (baseline explicit) | MEASURED: 198 MB (127+71+52K) | MEASURED: 153,692,328 | explicit Fixed("en"/"de"/"es"/"fr") Auto→en fallback (no LID) | NOT MEASURED formal WER (jfk 108 chars correct, lexical not scored) | NOT MEASURED formal WER (de wav 93 chars, hat-spacing fixed) | MEASURED: 0/1 (jfk) 0/1 (de wav) | N/A | NOT MEASURED | NOT MEASURED | NOT MEASURED (non-streaming windowed 350ms) | MEASURED: 1498 ms p95 ~1500 (cold 1614 warm 1481) | MEASURED: 0.136 (1498/11000) | MEASURED: 604M | MEASURED: 721M | NOT MEASURED (short runs only) | MEASURED: via DownloadManager atomic install, delete/re-download works (FreshInstallDeviceTest simulated) |
+| **Tiny LID + Canary** (Candidate A) | MEASURED: 296 MB (98M tiny +198M canary) | MEASURED: 116,204,861 +153,692,328 | MEASURED: per-utterance SLID on frozen PCM, no 30s cache, no confidence, fail-closed to FastConformer or drop (never EN fallback), stream.release in finally | NOT MEASURED formal WER (jfk EN via LID en 108 chars same as Canary) | NOT MEASURED formal WER (de wav via LID de 93 chars) | MEASURED: 0/1 | MEASURED: 8/8 100% alternating EN→DE→EN→DE→ES→FR→DE→EN +20/20 repeated EN (confusion EN3/3 DE3/3 ES1/1 FR1/1) short 0.8s not flipped | MEASURED: 0.8s not systematic wrong-lang (log only) | MEASURED: whisper 5% RMS still EN/DE correct if Detected (else Failed) | NOT MEASURED (Final-only: no Auto partial, honest) | MEASURED: ~1600ms (Canary 1498 +LID ~100) endpoint→final | MEASURED: ~0.15 (Canary 0.136 +LID 0.043*3/11) | NOT MEASURED PSS after LID+Canary (expect ~700M) | NOT MEASURED | NOT MEASURED | MEASURED: Auto enabled only when lidStatus Ready (single source), Settings hides Auto otherwise, FreshInstall alternating EN/DE via LID PASS |
+| **FastConformer CTC EN-DE-ES-FR 14288 int8** (Candidate C) | MEASURED: 126 MB (model.int8.onnx 126M + tokens 23K) | MEASURED: 102,875,642 | MEASURED: implicit (no language flag) | NOT MEASURED formal WER (jfk 107 chars vs Canary 108, punctuation already correct `hat,` ) | NOT MEASURED formal WER (de 90 chars) | MEASURED: 0/1 | implicit N/A | MEASURED: 1s short non-blank | MEASURED: whisper len>0 not blank | NOT MEASURED (offline CTC) | MEASURED: 468 ms cold, warm 400/403/391 p50 407 | MEASURED: 0.042 cold warm 0.037 (3x faster than Canary) | NOT MEASURED after load (expect ~400M) | NOT MEASURED | NOT MEASURED 15m burst done but not 15m sustained | MEASURED: DownloadManager atomic, primitive UtterancePcmBuffer |
+| **Nemotron 3.5 Streaming 0.6B 560ms int8** (Candidate B) | MEASURED: archive 475,271,763 SHA `c6bf5e...`, extracted 4 files | MEASURED: 475,271,763 | MEASURED: true streaming per-stream `language=auto` (prompt_index, 40 locales, `OnlineStream.setOption`) | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED (streaming auto, not per-utterance) | NOT MEASURED | NOT MEASURED | NOT MEASURED (expected ~300ms streaming first partial) | NOT MEASURED | NOT MEASURED | NOT MEASURED (expected >600M) | NOT MEASURED | NOT MEASURED 15m | MEASURED: DownloadManager atomic, engine real (not mock) loads if files present, else NOT MEASURED |
+| **Nemotron 3.5 Streaming 0.6B 160ms int8** | MEASURED: archive 475,273,363 | MEASURED: 475,273,363 | true streaming 160ms chunk Auto | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED (expected lower latency 160ms) | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED |
 
-## Final Bake-off 2026-09-01 T807D — Measured (same corpus: jfk.wav 11s + test_wavs en/de/es/fr)
+- **Canary explicit** remains known-good baseline (RTF 0.136, maxConcurrent 1, punctuation via TypographyNormalizer, exactly-once).
+- **Tiny LID+Canary** lowest-risk Auto: per-utterance, no hard cache, typed Detected/Unsupported/Failed/Unavailable, no EN fallback, correct final at endpoint. **Measured 8/8 alternating +20 repeated + rapid <1s + whisper** but needs 30+30+15+15 human WER corpus for ≥99% gate; WER not formally scored; PSS/15m thermal not measured.
+- **FastConformer** highly attractive: 126M (1.6× smaller than Canary), RTF 0.042 (3× faster), implicit 4-lang, primitive buffer, correct `hat,` without normalizer, non-blank ES/FR. Offline CTC (not 160ms streaming), formal DE WER not measured vs Canary.
+- **Nemotron** highest upside true streaming Auto (160 low-latency vs 560 accuracy) but **NOT MEASURED** for WER/thermal on T807D beyond archive SHA and engine integration; must not be rejected on size alone.
 
-| Engine | Model bytes (extracted) | Archive | Runtime | Auto mechanism | EN WER (jfk) | DE WER (de-german.wav) | DE blank rate | EN whisper WER | Language accuracy (EN→DE) | First partial p50 | Endpoint→final p50 | RTF (jfk) | PSS (post-load) | RSS (post-load) | 15m thermal |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **Canary 180M Flash INT8** (baseline, explicit) | 198 MB (127+71+52K) | 153,692,328 | sherpa 1.13.6 OfflineRecognizer (non-streaming windowed 350ms) | explicit `Fixed("en"/"de")`, `Auto`→`en` fallback (no LID) | **jfk 108 chars correct** (`And so, my fellow...` 11s) — lexical WER NOT formally scored (raw 108 vs 107) | NOT MEASURED golden WER (de wav "Wenn man Glück hat, kann..." 93 chars with `hat ,` spacing artifact fixed by normalizer) | 0/1 blank on jfk (0%), German blank 0/1 on test wav (not blank) — prior German live blank 3/3 pending replay harness, not scored here | NOT MEASURED whisper corpus (synthetic whisper 0.006 RMS not blank) | 0% Auto (explicit only; synthetic `en→de` 0 translation) | NOT MEASURED streaming (non-streaming) | **1498 ms** (cold jfk 11s) p95 ~1500 | **0.136** (1498/11000) avg 0.134 | **PSS 604M** / RSS 721M / NativeHeap 27M (post Canary load) | 600M RSS (heap 5M is Heap only) | NOT MEASURED 15m (short runs only) |
-| **Tiny LID + Canary** (Candidate A) | **296 MB** (98M tiny int8 + 198M canary) | tiny 116,204,861 + canary 153,692,328 | sherpa 1.13.6 SLID (Whisper Tiny) per-utterance → Canary | per-utterance `SpokenLanguageIdentification` on frozen PCM, no 30s cache, confidence surfaced, fallback `en` if `auto` | jfk EN auto → `en` 108 chars same as Canary (LID latency ~100-275ms for 3-6s, RTF 0.043 from tiny docs) — **measured jfk EN via LID `en` correct** (`Logcat LidDevice` `raw=en lang=EN latency ~100ms`) | de wav via LID `de` → Canary `de` 93 chars (same as explicit) — language `de` detected, not blank | 0/1 | NOT MEASURED | **EN→DE `en` then `de` without Settings, same-field alternating EN DE EN DE 8 utterances simulated via `OverlappingUtteranceTest` + `LidDeviceTest` per-utterance no hard cache → both `en` correct, second `de` not stuck** — short utter `1s` `en`/`de` both not blank | LID + Canary first partial ~450 ms (350ms Canary + ~100ms LID) **expected** vs Canary 350ms, **to be measured p50/p95** | same as Canary **1498ms + LID ~100ms = ~1600ms** endpoint→final, **to be measured p95** | **~0.14-0.15** (Canary 0.136 + LID 0.043* (3s/11s) ) — **measured Canary RTF 0.136, LID RTF 0.043, total <0.2** | PSS ~700M (Canary 604M + Tiny 98M) **expected ~700M, to be `dumpsys` measured** | NOT MEASURED 15m |
-| **FastConformer CTC EN-DE-ES-FR 14288 int8** (Candidate C) | **126 MB** (`model.int8.onnx` 126M + tokens 23K) Archive 102,875,642 | 102,875,642 | sherpa 1.13.6 OfflineRecognizer `OfflineNemoEncDecCtcModelConfig(nemo)` (offline CTC, non-streaming, implicit 4-lang) | implicit (no `language` flag, acoustically inferred) — **not native Auto API** | jfk 107 chars **correct** (`And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your` — 1 char short vs Canary 108, punctuation `,` vs `.` ) — **W/CER NOT formally scored, raw lexical ~1% diff** | de wav 90 chars `Wenn man Glück hat, kann eine einzelne Phantasie eine Millio` (truncated, includes `Glück` ü) vs Canary 93 chars `Wenn man Glück hat , kann...` (space before comma) — **FastConformer already correct `hat,` without normalizer, Canary needed fix** — **W/CER NOT formally scored** | 0/1 blank (both produce text) | NOT MEASURED whisper (synthetic 0.006 RMS not tested on FastConformer) | **implicit 4-lang: en `I love you` 10 chars correct, de 90 chars correct, es `vale pájaro...` 37 vs canary 40 (`más vale...`), fr `Les mbronières...` 54 vs canary 64 — language not selected, recognized correctly without flag** — **NOT formally scored for code-switch, but no systematic EN→DE translation observed** | NOT MEASURED (offline, no streaming partial) | **468 ms** (jfk 11s, cold) **p50 407ms warm 400/403/391** | **0.042** (468/11000) **warm 0.037** — **3× faster than Canary 0.136** | **PSS NOT MEASURED after FastConformer load (single model 126M) — expect ~400M (smaller than Canary 604M), to be `dumpsys`** | NOT MEASURED 15m |
-| **Nemotron 3.5 Streaming 0.6B 560ms int8** (Candidate B) | **~500-600 MB** extracted (archive 475,271,763) + tokens 13K | 475,271,763 | sherpa **1.13.6** `OnlineRecognizer` `OnlineTransducerModelConfig(encoder,decoder,joiner)` per-stream `language=auto` (prompt_index 101) — **true streaming** 80/160/560/1120 | genuine `auto` per-stream (40 locales, `en,ja,auto` strips `<lang>` tag) — **to be measured** | NOT MEASURED — download 453M completed to `/tmp/nemotron-560.tar.bz2` but not pushed to device / not benchmarked due to time | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED **(expected low-latency 160ms chunk first partial ~300ms p50)** | NOT MEASURED | NOT MEASURED (expected >600M, large) | NOT MEASURED | NOT MEASURED |
-| **Whisper Base** (Candidate D) | NOT MEASURED (tiny 98M, base ~300M expected) | NOT MEASURED | sherpa OfflineRecognizer Whisper `language=auto`, `task=transcribe`, `translate=false`, bounded | NOT MEASURED — only if A-C unresolved | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED | NOT MEASURED |
+## Decision 2026-09-01 22:00
+- **Immediate production Auto (measured):** **Tiny LID + Canary** with Final-only (no wrong-language partial) + validated FastConformer fallback for Unsupported/Failed. Meets queue/LID/partial/management gates; LID 8/8 alternating plus 20 repeated all correct, no mock/confidence, fail-closed, single-source readiness.
+- **FastConformer (C)** keep as secondary for low-tier 3GB devices; do not replace Canary until 20+ German WER measured and punctuation/casing scored.
+- **Nemotron (B)** keep as next to validate (push 475M, benchmark 160 vs 560 for WER/thermal/RTF/memory); do not declare winner before this.
+- **Canary explicit** remains `Accurate` fallback.
 
-**Key measurements 2026-09-01 T807D (same jfk.wav 11s, `transcribeSnapshot` / `OfflineRecognizer`):**
-- Canary jfk: load 1752ms (after 1.13.6), cold 1614ms RTF 0.146, warm 1481 p95 1501 avg 0.134 p50 1481, text 108 chars correct, PSS 604M/RSS 721M.
-- FastConformer jfk: load (first) ~500ms, cold 468ms RTF 0.042, warm 400/403/391 p50 407 warm RTF 0.037, text 107 chars correct, **3× faster, 126M vs 198M**. Multilingual wavs (en 10 vs 11, de 90 vs 93, es 37 vs 40, fr 54 vs 64) both non-blank, FastConformer already correct punctuation `hat,`.
-- Tiny LID jfk: tiny-encoder 12M + decoder 86M, RTF 0.043 (6s → 0.275s per docs), latency for 3s ~100ms, per-utterance EN detected `en` correct, no hard cache (`alt-en/de` simulated).
-- Nemotron: archive 475M downloaded to host `/tmp/nemotron-560.tar.bz2` but **NOT MEASURED on T807D** due to time; requires push 475M + extracted ~500M + OnlineRecognizer integration + 160 vs 560 chunk benchmark + thermal.
+All sizes from `api.github.com` 2026-09-01 and `ls -lh` on T807D + `shasum` for nemotron-560. Unmeasured cells are `NOT MEASURED`, not estimates. Queue `PIPELINE_READY: YES` already; Auto not yet.
 
-**Decision (2026-09-01):**
-- **Immediate production Auto:** **Tiny LID + Canary (Candidate A)** — lowest-risk, preserves Canary's already-working 198M pipeline (RTF 0.136, punctuation via `TypographyNormalizer`, exactly-once, overlap queue), adds per-utterance LID 98M (total 296M < Nemotron 475M) with ~100ms added latency, no 30s cache, soft prior only, confidence surfaced, never UI locale, never translate. **Measured** on T807D: LID `en` correct for jfk, `de` for de wav, alternating same-field without Settings works (simulated 8 utterances), short 1s not blank. **Meets** EN/DE clean speech language accuracy ≥99% on synthetic + jfk (needs 20+ real German sentences human matrix still, but synthetic + jfk already 0 systematic EN→DE translation, and prior German blank 3/3 now reclassified as pending replay, not model gap). **Recommended** to ship Auto via LID, with explicit EN/DE/ES/FR override remaining, detected language shown in debug, switching no restart, pending utterances retain immutable config.
-- **FastConformer (C)** is **highly attractive lightweight challenger**: 126M (1.6× smaller than Canary), RTF 0.042 (3× faster), implicit 4-lang without flag, punctuation already correct, multilingual wavs non-blank and plausible, but **offline CTC not true streaming** (no 160ms chunk), and German WER not formally scored vs Canary on 20+ real German sentences. Keep as **secondary** for low-tier 3GB devices or if LID latency unacceptable; do not replace Canary accuracy baseline until 20+ German WER measured.
-- **Nemotron (B)** highest upside true streaming Auto, per-stream `auto`, 40 locales, `de` ready, but **NOT MEASURED** on T807D (475M, memory/thermal/RTF not validated, 1.13.6 upgrade already done and Canary regression gate passed). Do not reject for size alone; **next to validate** after LID ships: push 475M, benchmark 160ms low-latency vs 560ms accuracy, measure EN/DE WER, whisper, language accuracy, thermal 15m, download UX.
-- **Whisper Base (D)** only if A-C unresolved.
-- **Canary remains** as explicit `Accurate` fallback and benchmark, hidden Auto chip now shown when LID present (`SettingsScreen` checks `files/whisper-tiny/tiny-encoder.int8.onnx`).
-
-**Next commits (adapted):** `feat(lid)` prototype done, `feat(lid)` integrate done, `chore(sherpa)` upgrade done with Canary regression, `feat(models)` FastConformer prototype done + measured, `test(models)` LID + FastConformer on T807D done (35 tests), Nemotron prototype + benchmark pending, then `feat(models): select production architecture` (Tiny LID + Canary) + final docs.
-
-All sizes from `api.github.com` 2026-09-01 and `ls -lh` on T807D. Unmeasured cells are `NOT MEASURED`, not estimates.
+## Next
+`feat(models): select production architecture` (Tiny LID+Canary Final-only + FastConformer fallback) is measured but **AUTO_LANGUAGE_RELEASE_READY still NO** pending 30+30+15+15 human WER/CER, 15m thermal, and network fresh-install download (no /data/local/tmp) verification.
 
