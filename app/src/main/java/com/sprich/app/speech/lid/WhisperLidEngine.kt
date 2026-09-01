@@ -10,17 +10,18 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Whisper Tiny per-utterance spoken language ID.
+ * Whisper Tiny per-utterance spoken language ID — production-safe.
  * Uses sherpa-onnx SpokenLanguageIdentification (tiny) — not transcription heuristics.
  *
- * Architecture:
- *  speech onset -> LID on frozen PCM (per utterance, no 30s cache) -> detected lang + confidence -> Canary src==tgt
- *
  * Requirements:
- * - per utterance, no hard cache; prior language only soft prior if justified (not implemented as hard cache)
- * - ambiguous confidence surfaced; if low, caller may keep previous or ask fallback
+ * - per utterance, no hard cache; no 30s cache
  * - never use Android UI locale
- * - uses sherpa's actual SLID API, not token heuristics
+ * - uses sherpa's actual SLID API
+ * - production never fabricates language when lid == null
+ * - streams released in finally, native memory bounded
+ * - readiness via ModelManager single source (both encoder+decoder)
+ * - no fake confidence; upstream only returns language code
+ * - never fallback failed Auto to EN
  */
 class WhisperLidEngine(
     private val context: Context,
@@ -29,15 +30,13 @@ class WhisperLidEngine(
     private val mutex = Mutex()
     private var lid: Any? = null // SpokenLanguageIdentification
     private var loaded = false
-    private var loadTried = false
 
-    data class LidResult(
-        val language: Language,
-        val rawCode: String, // e.g., "en", "de", "auto" if uncertain
-        val confidence: Float?, // if exposed; sherpa may not expose confidence in all versions, nullable
-        val latencyMs: Long,
-        val usedModel: String, // tiny
-    )
+    sealed class LidOutcome {
+        data class Detected(val language: Language, val rawCode: String, val latencyMs: Long) : LidOutcome()
+        data class Unsupported(val rawCode: String, val latencyMs: Long) : LidOutcome() // e.g., "zh" not in EN/DE/ES/FR
+        data class Failed(val reason: String, val latencyMs: Long) : LidOutcome()
+        data class Unavailable(val reason: String) : LidOutcome()
+    }
 
     private fun isSherpaSlidAvailable(): Boolean = try {
         Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentification")
@@ -45,34 +44,45 @@ class WhisperLidEngine(
         true
     } catch (_: Throwable) { false }
 
-    // Model dir for tiny: files/whisper-tiny (encoder.int8.onnx, decoder.int8.onnx, tokens.txt)
-    private fun tinyDir(): java.io.File? {
+    // Single source of truth: ModelManager.isWhisperTinyReady() checks both files + size
+    // Fallback direct check for tests that bypass ModelManager
+    private fun isTinyReady(): Boolean {
+        // Use ModelManager as authoritative source if available
+        try {
+            if (modelManager.isWhisperTinyReady()) return true
+        } catch (_: Exception) {}
+        // Direct filesystem check (same logic as ModelManager)
         val d = java.io.File(context.filesDir, "whisper-tiny")
-        if (d.exists() && java.io.File(d, "tiny-encoder.int8.onnx").exists() && java.io.File(d, "tiny-decoder.int8.onnx").exists()) return d
-        // Fallback to canary dir check for testing? No
-        // Also check /data/local/tmp for test
-        val tmp = java.io.File("/data/local/tmp/whisper-tiny")
-        if (tmp.exists() && java.io.File(tmp, "tiny-encoder.int8.onnx").exists()) return tmp
-        return if (d.exists()) d else null
+        val enc = java.io.File(d, "tiny-encoder.int8.onnx")
+        val dec = java.io.File(d, "tiny-decoder.int8.onnx")
+        return enc.exists() && enc.length() > 5_000_000 && dec.exists() && dec.length() > 50_000_000
     }
 
     suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
         mutex.withLock {
             if (loaded) return@withContext Result.success(Unit)
-            loadTried = true
             if (!isSherpaSlidAvailable()) {
-                Log.w("WhisperLid", "sherpa SpokenLanguageIdentification not available (need 1.12+)")
+                Log.w("WhisperLid", "sherpa SLID not available")
                 return@withContext Result.failure(Exception("sherpa SLID not available"))
             }
-            val dir = tinyDir()
-            if (dir == null || !java.io.File(dir, "tiny-encoder.int8.onnx").exists()) {
-                Log.w("WhisperLid", "tiny model not downloaded: dir=$dir")
-                return@withContext Result.failure(Exception("whisper tiny not downloaded"))
+            if (!isTinyReady()) {
+                Log.w("WhisperLid", "tiny model not ready (both encoder+decoder required)")
+                return@withContext Result.failure(Exception("whisper tiny not ready"))
+            }
+            val dir = java.io.File(context.filesDir, "whisper-tiny")
+            // Also check /data/local/tmp for instrumentation tests
+            val effectiveDir = when {
+                dir.exists() && java.io.File(dir, "tiny-encoder.int8.onnx").exists() -> dir
+                java.io.File("/data/local/tmp/whisper-tiny").exists() -> java.io.File("/data/local/tmp/whisper-tiny")
+                else -> dir
+            }
+            val enc = java.io.File(effectiveDir, "tiny-encoder.int8.onnx").absolutePath
+            val dec = java.io.File(effectiveDir, "tiny-decoder.int8.onnx").absolutePath
+            // Verify both exist
+            if (!java.io.File(enc).exists() || !java.io.File(dec).exists()) {
+                return@withContext Result.failure(Exception("tiny encoder/decoder missing"))
             }
             try {
-                val enc = java.io.File(dir, "tiny-encoder.int8.onnx").absolutePath
-                val dec = java.io.File(dir, "tiny-decoder.int8.onnx").absolutePath
-                // Build config via reflection
                 val whisperConfigClass = Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationWhisperConfig")
                 val whisperConfig = whisperConfigClass.getConstructor().newInstance()
                 whisperConfigClass.getDeclaredField("encoder").apply { isAccessible = true; set(whisperConfig, enc) }
@@ -99,26 +109,22 @@ class WhisperLidEngine(
 
     fun isLoaded(): Boolean = loaded
 
-    suspend fun identify(pcm: ShortArray, sampleRate: Int = 16000): LidResult = withContext(Dispatchers.Default) {
+    suspend fun identify(pcm: ShortArray, sampleRate: Int = 16000): LidOutcome = withContext(Dispatchers.Default) {
         mutex.withLock {
             val t0 = System.nanoTime()
             val rec = lid
-            if (rec == null || pcm.isEmpty()) {
-                // Mock fallback for host without model — simple heuristic for tests (not for production)
-                // Use tiny heuristic: if we have no model, return Auto with 0.5 confidence so caller can fallback
-                // For host synthetic tones, seed-based fake: pcm hashcode determines language for deterministic tests
-                // In production with model, this path not taken
-                val mockLang = if (pcm.size % 2 == 0) Language.EN else Language.DE
-                val latency = (System.nanoTime() - t0) / 1_000_000
-                return@withContext LidResult(mockLang, mockLang.code, 0.5f, latency, "mock-tiny")
+            if (rec == null) {
+                return@withContext LidOutcome.Unavailable("LID not loaded")
             }
+            if (pcm.isEmpty()) {
+                return@withContext LidOutcome.Failed("empty PCM", (System.nanoTime() - t0) / 1_000_000)
+            }
+            var stream: Any? = null
             try {
-                // Create stream via lid.createStream()
-                val stream = rec.javaClass.getMethod("createStream").invoke(rec)
+                stream = rec.javaClass.getMethod("createStream").invoke(rec)
                 val floats = FloatArray(pcm.size) { pcm[it] / 32768f }
                 stream.javaClass.getMethod("acceptWaveform", FloatArray::class.java, Int::class.javaPrimitiveType).invoke(stream, floats, sampleRate)
                 val langObj = rec.javaClass.getMethod("compute", stream.javaClass).invoke(rec, stream)
-                // langObj may be String or object with field `lang`
                 val rawCode: String = try {
                     langObj as String
                 } catch (_: Throwable) {
@@ -130,19 +136,23 @@ class WhisperLidEngine(
                     "de", "de-de" -> Language.DE
                     "es", "es-es" -> Language.ES
                     "fr", "fr-fr" -> Language.FR
-                    else -> Language.AUTO
+                    else -> null // Unsupported or auto
                 }
-                // Try to get confidence if available (not all sherpa versions expose)
-                val conf: Float? = try {
-                    langObj.javaClass.getDeclaredField("confidence").apply { isAccessible = true }.get(langObj) as? Float
-                } catch (_: Throwable) { null }
-                // For per-utterance isolation, we do NOT cache language beyond this call.
-                Log.i("WhisperLid", "identify raw=$rawCode -> $lang conf=$conf latencyMs=$latency pcm=${pcm.size}")
-                LidResult(lang, rawCode, conf, latency, "tiny")
+                if (lang == null) {
+                    Log.i("WhisperLid", "identify unsupported raw=$rawCode latencyMs=$latency pcm=${pcm.size}")
+                    return@withContext LidOutcome.Unsupported(rawCode, latency)
+                }
+                Log.i("WhisperLid", "identify raw=$rawCode -> $lang latencyMs=$latency pcm=${pcm.size}")
+                return@withContext LidOutcome.Detected(lang, rawCode, latency)
             } catch (e: Throwable) {
                 Log.w("WhisperLid", "identify failed", e)
                 val latency = (System.nanoTime() - t0) / 1_000_000
-                LidResult(Language.AUTO, "auto", null, latency, "tiny-error")
+                return@withContext LidOutcome.Failed(e.message ?: "identify failed", latency)
+            } finally {
+                // Release native stream in finally to avoid native memory leak
+                if (stream != null) {
+                    try { stream.javaClass.getMethod("release").invoke(stream) } catch (_: Exception) {}
+                }
             }
         }
     }

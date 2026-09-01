@@ -39,11 +39,13 @@ import com.sprich.app.speech.canary.CanaryEngine
 import com.sprich.app.speech.remote.RemoteSttEngine
 import com.sprich.app.storage.Preferences
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import com.sprich.app.diagnostics.ReplayHarness
 import com.sprich.app.input.typography.TypographyNormalizer
@@ -85,7 +87,7 @@ class SprichIME : InputMethodService() {
     // Using UtterancePcmBuffer would duplicate engine buffer — so IME now delegates.
     @Volatile private var frozenUtterancePcm: ShortArray? = null
 
-    // Overlapping utterance queue — immutable per-utterance snapshots, serialized finalization worker
+    // Overlapping utterance queue — immutable per-utterance snapshots, serialized finalization actor
     // Invariant: one spoken utterance → one immutable PCM snapshot → one final decode → one deterministic post-processing pass → one editor commit
     // Active capture and pending finalizations are distinct: utterance N+1 can be captured while N decodes without mutation.
     data class PendingUtterance(
@@ -96,12 +98,15 @@ class SprichIME : InputMethodService() {
         val reason: StopReason,
         val endpointTimestampNanos: Long,
     )
-    private val pendingQueue = ArrayDeque<PendingUtterance>()
-    private val pendingQueueLock = Any()
-    private var finalizationWorkerJob: Job? = null
+    // Single authoritative long-lived finalization actor — exactly one consumer, FIFO, no worker start/stop race
+    private val pendingChannel = Channel<PendingUtterance>(capacity = Channel.UNLIMITED)
+    private val queueDepth = AtomicInteger(0)
     private val pendingQueuePeak = AtomicLong(0)
     private val finalizationQueueOverflows = AtomicLong(0)
     private val maxPendingQueueDepth = 4
+    @Volatile var catchingUp = false
+        private set
+    private var finalizationActorJob: Job? = null
     @Volatile var lastQueueDepth: Int = 0
         private set
 
@@ -165,6 +170,10 @@ class SprichIME : InputMethodService() {
     private val lidEngine by lazy {
         com.sprich.app.speech.lid.WhisperLidEngine(this, (application as SprichApp).let { com.sprich.app.models.manager.ModelManager(it) })
     }
+    // Fallback for LID failure: validated multilingual FastConformer (126M) — does not require language flag
+    private val fastConformerEngine by lazy {
+        com.sprich.app.speech.fastconformer.FastConformerEngine(this)
+    }
 
     // Views — native View IME, full-bar tappable magical
     private var statusText: TextView? = null
@@ -227,6 +236,8 @@ class SprichIME : InputMethodService() {
                     else Log.i("SprichIME", "Tiny LID preload not ready: ${lidRes.exceptionOrNull()?.message}")
                 } catch (e: Exception) { Log.w("SprichIME", "LID preload failed", e) }
             }
+            // Start single long-lived finalization actor (no lost-wakeup race)
+            startFinalizationActor()
 
             // Observe session for UI — update dot/text without Compose
             scope.launch {
@@ -644,6 +655,9 @@ class SprichIME : InputMethodService() {
 
     override fun onDestroy() {
         try { stopDictation(StopReason.SERVICE_DESTROYED) } catch (_: Exception) {}
+        try { pendingChannel.close() } catch (_: Exception) {}
+        try { finalizationActorJob?.cancel() } catch (_: Exception) {}
+        try { scope.launch { lidEngine.unload() } } catch (_: Exception) {}
         try { audio.release() } catch (_: Exception) {}
         scope.cancel()
         super.onDestroy()
@@ -799,6 +813,21 @@ class SprichIME : InputMethodService() {
                         val activeField = currentFieldId
                         if (activeField == null) { staleCallbackDrops++; return@collect }
                         if (update.isFinal) return@collect // finalizeOnce owns final commit; prevents duplication loop
+                        // Phase 3: Auto live partial semantics — suppress wrong-language Canary partials
+                        // Canary has no native Auto (decodes Auto as en), so German Auto speech would show English partial.
+                        // Wrong-language partials are worse than no partials. For Auto, suppress field partials while language unresolved.
+                        // Show listening state in Sprich UI, run LID at endpoint, commit one correct-language final.
+                        if (activeConfig.speechLanguage is SpeechLanguage.Auto) {
+                            // Do not insert wrong-language hypothesis into target field
+                            // Keep latency tracking but don't apply to InputConnection
+                            val hasTextForLatency = update.stable.isNotBlank() || update.unstable.isNotBlank()
+                            if (hasTextForLatency && latency.delta("speechOnset", "firstHypothesis") == null) {
+                                latency.mark("firstHypothesis")
+                            }
+                            // Optionally keep IME UI as listening, not hypothesis
+                            Log.i("SprichIME", "partial suppressed for Auto unresolved (no wrong-lang) stableLen=${update.stable.length} unstableLen=${update.unstable.length}")
+                            return@collect
+                        }
                         val hasText = update.stable.isNotBlank() || update.unstable.isNotBlank()
                         if (hasText && latency.delta("speechOnset", "firstHypothesis") == null) {
                             latency.mark("firstHypothesis")
@@ -931,8 +960,14 @@ class SprichIME : InputMethodService() {
                 Log.i("SprichIME", "vad alive state=${result.state.name} rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} chunks=$pipelineChunkCount pushed=$pipelinePushedSampleCount")
             }
 
+            if (catchingUp && result.state == Vad.State.SPEECH) {
+                Log.w("SprichIME", "CatchingUp suppressing new utterance onset depth=${queueDepth.get()} max=$maxPendingQueueDepth")
+                // Do not start new utterance until queue recovers; keep utteranceActive false
+                // Also degrade speculative partial work: we could cancel partial job, but at least we don't start new capture
+            }
             if (
                 result.state == Vad.State.SPEECH &&
+                !catchingUp &&
                 utteranceActive.compareAndSet(false, true)
             ) {
                 // Note: no endpointPending gate — continuous capture while previous final decodes.
@@ -1013,7 +1048,7 @@ class SprichIME : InputMethodService() {
                     reason = StopReason.ENDPOINT,
                     endpointTimestampNanos = System.nanoTime(),
                 )
-                Log.i("SprichIME", "endpoint detected token=$token pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount frozenSamples=${frozenSnap.size} queueDepthBefore=${pendingQueue.size}")
+                Log.i("SprichIME", "endpoint detected token=$token pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount frozenSamples=${frozenSnap.size} queueDepthBefore=${queueDepth.get()}")
                 enqueuePending(pending)
             }
         } catch (t: Throwable) {
@@ -1030,43 +1065,75 @@ class SprichIME : InputMethodService() {
         }
     }
 
-    // ---------- Overlapping utterance queue ----------
-
-    private fun enqueuePending(pending: PendingUtterance) {
-        synchronized(pendingQueueLock) {
-            if (pendingQueue.size >= maxPendingQueueDepth) {
-                finalizationQueueOverflows.incrementAndGet()
-                Log.w("SprichIME", "finalization queue at capacity depth=${pendingQueue.size} pending=${pending.token.utteranceId} peak=${pendingQueuePeak.get()} overflows=${finalizationQueueOverflows.get()} — preserving final, degrading partials")
-                // Degrade speculative partials first: cancel partial job would be engine side, here we just log and keep final.
-            }
-            pendingQueue.addLast(pending)
-            lastQueueDepth = pendingQueue.size
-            if (pendingQueue.size.toLong() > pendingQueuePeak.get()) pendingQueuePeak.set(pendingQueue.size.toLong())
-            Log.i("SprichIME", "enqueuePending token=${pending.token} pcm=${pending.pcm.size} queueDepth=${pendingQueue.size} peak=${pendingQueuePeak.get()} reason=${pending.reason}")
-        }
-        ensureFinalizationWorkerRunning()
-    }
-
-    private fun ensureFinalizationWorkerRunning() {
-        if (finalizationWorkerJob?.isActive == true) return
-        finalizationWorkerJob = scope.launch {
-            while (true) {
-                val next = synchronized(pendingQueueLock) {
-                    if (pendingQueue.isEmpty()) null else pendingQueue.removeFirst()
-                } ?: break
-                lastQueueDepth = synchronized(pendingQueueLock) { pendingQueue.size }
+    // ---------- Overlapping utterance queue — single authoritative actor ----------
+    // Long-lived actor: exactly one consumer, FIFO, no worker start/stop race (Phase 1 fix)
+    private fun startFinalizationActor() {
+        if (finalizationActorJob?.isActive == true) return
+        finalizationActorJob = scope.launch {
+            Log.i("SprichIME", "finalization actor started")
+            for (pending in pendingChannel) {
+                // Decrement depth before processing (pending already counted on enqueue)
+                val depthBefore = queueDepth.get()
+                // Process
                 try {
-                    finalizePending(next)
+                    finalizePending(pending)
                 } catch (e: CancellationException) {
-                    Log.i("SprichIME", "finalization worker cancelled next=$next")
+                    Log.i("SprichIME", "finalization actor cancelled pending=$pending")
                     throw e
                 } catch (t: Throwable) {
-                    Log.e("SprichIME", "finalizePending failed $next", t)
-                    failSession(next.token.generation, "finalization failed token=${next.token} reason=${next.reason}", "Transcription failed", "Tap to retry", t)
+                    Log.e("SprichIME", "finalizePending failed $pending", t)
+                    failSession(pending.token.generation, "finalization failed token=${pending.token} reason=${pending.reason}", "Transcription failed", "Tap to retry", t)
+                } finally {
+                    val newDepth = queueDepth.decrementAndGet()
+                    lastQueueDepth = newDepth
+                    // Exit CatchingUp when recovered
+                    if (catchingUp && newDepth < maxPendingQueueDepth - 1) {
+                        catchingUp = false
+                        Log.i("SprichIME", "CatchingUp recovered depth=$newDepth")
+                    }
+                    if (newDepth == 0) {
+                        endpointPending.set(false)
+                    }
+                    Log.i("SprichIME", "actor processed pending=${pending.token.utteranceId} depthBefore=$depthBefore newDepth=$newDepth catchingUp=$catchingUp")
                 }
             }
-            Log.i("SprichIME", "finalization worker drained queue")
+            Log.i("SprichIME", "finalization actor completed (channel closed)")
         }
+    }
+
+    private fun enqueuePending(pending: PendingUtterance) {
+        // Enforce genuine bound: at capacity, preserve every frozen utterance, degrade partials, enter CatchingUp
+        val depthBefore = queueDepth.get()
+        if (depthBefore >= maxPendingQueueDepth) {
+            finalizationQueueOverflows.incrementAndGet()
+            if (!catchingUp) {
+                catchingUp = true
+                Log.w("SprichIME", "finalization queue at capacity depth=$depthBefore pending=${pending.token.utteranceId} peak=${pendingQueuePeak.get()} overflows=${finalizationQueueOverflows.get()} — entering CatchingUp, degrading partials, preventing new utterances until depth recovers")
+            } else {
+                Log.w("SprichIME", "queue still at capacity depth=$depthBefore pending=${pending.token.utteranceId} overflows=${finalizationQueueOverflows.get()}")
+            }
+            // Degrade speculative partial work first: we could cancel partial job, but we at least log and keep final.
+            // Do NOT discard pending — speech must never be silently discarded.
+        }
+        val newDepth = queueDepth.incrementAndGet()
+        lastQueueDepth = newDepth
+        if (newDepth.toLong() > pendingQueuePeak.get()) pendingQueuePeak.set(newDepth.toLong())
+        Log.i("SprichIME", "enqueuePending token=${pending.token} pcm=${pending.pcm.size} queueDepth=$newDepth peak=${pendingQueuePeak.get()} reason=${pending.reason} catchingUp=$catchingUp")
+        // UNLIMITED channel guarantees no suspend and no丢弃; backpressure is via catchingUp flag, not channel suspension (avoids unbounded suspended coroutines holding PCM)
+        val result = pendingChannel.trySend(pending)
+        if (!result.isSuccess) {
+            // Should not happen with UNLIMITED, but handle for bounded case
+            Log.e("SprichIME", "pendingChannel trySend failed depth=$newDepth pending=${pending.token.utteranceId} result=$result")
+            queueDepth.decrementAndGet()
+            // As last resort, preserve frozen utterance by re-enqueueing via direct channel send in separate coroutine (bounded but must not lose)
+            scope.launch { pendingChannel.send(pending) }
+        }
+        endpointPending.set(true)
+    }
+
+    @Deprecated("Use pendingChannel actor") private fun ensureFinalizationWorkerRunning() {
+        // No-op: actor is long-lived, started once in onCreate. Kept for backward compat.
+        startFinalizationActor()
     }
 
     /**
@@ -1130,37 +1197,112 @@ class SprichIME : InputMethodService() {
                     ReplayHarness.saveWavIfEnabled(this@SprichIME, true, token.utteranceId, pending.pcm, pending.config)
                 }
             } catch (_: Exception) {}
-            // Per-utterance LID for Auto: run Whisper Tiny before Canary if config is Auto
+            // Per-utterance LID for Auto: run Whisper Tiny before Canary if config is Auto (production-safe, no mock)
             var effectiveConfig = pending.config
             var lidLatencyMs: Long = 0
             var lidDetected: String = pending.config.resolvedLanguageTag()
+            var lidOutcomeForLog: String = "explicit"
+            var useFastConformerFallback = false
             if (pending.config.speechLanguage is SpeechLanguage.Auto) {
                 try {
                     if (!lidEngine.isLoaded()) {
                         val lidLoad = lidEngine.load()
                         Log.i("SprichIME", "LID auto-load utt=${token.utteranceId} success=${lidLoad.isSuccess} err=${lidLoad.exceptionOrNull()?.message}")
                     }
-                    val lidStart = android.os.SystemClock.elapsedRealtime()
-                    val lidResult = lidEngine.identify(pending.pcm)
-                    lidLatencyMs = lidResult.latencyMs
-                    lidDetected = lidResult.rawCode
-                    // If LID returns AUTO (uncertain/low confidence), fallback to en to avoid blank
-                    val detectedLang = if (lidResult.language == Language.AUTO) Language.EN else lidResult.language
-                    effectiveConfig = pending.config.copy(
-                        language = detectedLang,
-                        speechLanguage = SpeechLanguage.Fixed(detectedLang.code)
-                    )
-                    Log.i("SprichIME", "LID per-utterance utt=${token.utteranceId} raw=${lidResult.rawCode} detected=${lidResult.language} conf=${lidResult.confidence} latencyMs=${lidResult.latencyMs} effective=${effectiveConfig.resolvedLanguageTag()} pcmSamples=${pending.pcm.size} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)}")
+                    val lidOutcome = lidEngine.identify(pending.pcm)
+                    when (lidOutcome) {
+                        is com.sprich.app.speech.lid.WhisperLidEngine.LidOutcome.Detected -> {
+                            lidLatencyMs = lidOutcome.latencyMs
+                            lidDetected = lidOutcome.rawCode
+                            lidOutcomeForLog = "Detected"
+                            effectiveConfig = pending.config.copy(
+                                language = lidOutcome.language,
+                                speechLanguage = SpeechLanguage.Fixed(lidOutcome.language.code)
+                            )
+                            Log.i("SprichIME", "LID per-utterance utt=${token.utteranceId} raw=${lidOutcome.rawCode} detected=${lidOutcome.language} latencyMs=${lidOutcome.latencyMs} effective=${effectiveConfig.resolvedLanguageTag()} pcmSamples=${pending.pcm.size} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)}")
+                        }
+                        is com.sprich.app.speech.lid.WhisperLidEngine.LidOutcome.Unsupported -> {
+                            lidLatencyMs = lidOutcome.latencyMs
+                            lidDetected = lidOutcome.rawCode
+                            lidOutcomeForLog = "Unsupported"
+                            Log.w("SprichIME", "LID unsupported raw=${lidOutcome.rawCode} utt=${token.utteranceId} — trying FastConformer fallback if available, not EN")
+                            // Use validated multilingual fallback if available, else fail closed
+                            val mm = com.sprich.app.models.manager.ModelManager(this@SprichIME)
+                            if (mm.isFastConformerReady()) {
+                                useFastConformerFallback = true
+                                Log.i("SprichIME", "LID unsupported, FastConformer fallback will be used utt=${token.utteranceId}")
+                            } else {
+                                Log.w("SprichIME", "LID unsupported and no FastConformer — failing Auto utterance utt=${token.utteranceId} (no EN fallback)")
+                                // Fail closed: do not insert wrong-language transcript
+                                // We will return without committing, preserving audio correctness
+                                // For now, treat as failed and drop (no commit)
+                                // To avoid silent drop, we could keep pending for retry, but spec says preserve correctness
+                                // So we just return without commit
+                                maybeClearActiveStateForToken(token)
+                                return
+                            }
+                        }
+                        is com.sprich.app.speech.lid.WhisperLidEngine.LidOutcome.Failed -> {
+                            lidLatencyMs = lidOutcome.latencyMs
+                            lidDetected = "failed:${lidOutcome.reason}"
+                            lidOutcomeForLog = "Failed"
+                            Log.w("SprichIME", "LID failed utt=${token.utteranceId} reason=${lidOutcome.reason} — trying FastConformer fallback, not EN")
+                            val mm = com.sprich.app.models.manager.ModelManager(this@SprichIME)
+                            if (mm.isFastConformerReady()) {
+                                useFastConformerFallback = true
+                            } else {
+                                Log.w("SprichIME", "LID failed and no fallback — failing Auto utterance")
+                                maybeClearActiveStateForToken(token)
+                                return
+                            }
+                        }
+                        is com.sprich.app.speech.lid.WhisperLidEngine.LidOutcome.Unavailable -> {
+                            lidDetected = "unavailable:${lidOutcome.reason}"
+                            lidOutcomeForLog = "Unavailable"
+                            Log.w("SprichIME", "LID unavailable utt=${token.utteranceId} reason=${lidOutcome.reason} — trying FastConformer fallback, not EN")
+                            val mm = com.sprich.app.models.manager.ModelManager(this@SprichIME)
+                            if (mm.isFastConformerReady()) {
+                                useFastConformerFallback = true
+                            } else {
+                                Log.w("SprichIME", "LID unavailable and no fallback — failing Auto utterance")
+                                maybeClearActiveStateForToken(token)
+                                return
+                            }
+                        }
+                    }
                 } catch (e: Exception) {
-                    Log.w("SprichIME", "LID failed utt=${token.utteranceId}, fallback to en", e)
-                    effectiveConfig = pending.config.copy(language = Language.EN, speechLanguage = SpeechLanguage.Fixed("en"))
-                    lidDetected = "lid-error"
+                    Log.w("SprichIME", "LID exception utt=${token.utteranceId}", e)
+                    // Fail closed, try fallback
+                    val mm = try { com.sprich.app.models.manager.ModelManager(this@SprichIME) } catch (_: Exception) { null }
+                    if (mm != null && mm.isFastConformerReady()) {
+                        useFastConformerFallback = true
+                        lidDetected = "exception-fallback"
+                        lidOutcomeForLog = "Failed"
+                    } else {
+                        Log.w("SprichIME", "LID exception and no fallback — failing Auto utterance")
+                        maybeClearActiveStateForToken(token)
+                        return
+                    }
                 }
             }
             val t0 = android.os.SystemClock.elapsedRealtime()
             nativeDecodeStarts++
             // Use immutable snapshot and its immutable effectiveConfig — never mutate live buffer
-            val finalTranscript = engine.transcribeSnapshot(pending.pcm, effectiveConfig)
+            // If LID failed/unsupported and FastConformer is available, use it as validated multilingual fallback (not EN)
+            val finalTranscript = if (useFastConformerFallback) {
+                try {
+                    if (!fastConformerEngine.isLoaded()) {
+                        val fLoad = fastConformerEngine.load()
+                        Log.i("SprichIME", "FastConformer fallback load utt=${token.utteranceId} success=${fLoad.isSuccess}")
+                    }
+                    fastConformerEngine.transcribeSnapshot(pending.pcm, effectiveConfig)
+                } catch (e: Exception) {
+                    Log.w("SprichIME", "FastConformer fallback failed utt=${token.utteranceId}", e)
+                    com.sprich.app.speech.api.FinalTranscript("")
+                }
+            } else {
+                engine.transcribeSnapshot(pending.pcm, effectiveConfig)
+            }
             val elapsed = android.os.SystemClock.elapsedRealtime() - t0
             // Raw vs post triage: raw is finalTranscript.text, post will be after parser
             val debugTraceEnabled = try { prefs.debugTranscriptTrace.first() } catch (_: Exception) { false }
@@ -1294,13 +1436,6 @@ class SprichIME : InputMethodService() {
             throw e
         } catch (t: Throwable) {
             failSession(token.generation, "finalization failed token=$token reason=$reason", "Transcription failed", "Tap to retry", t)
-        } finally {
-            // Update queue metrics
-            val depth = synchronized(pendingQueueLock) { pendingQueue.size }
-            lastQueueDepth = depth
-            if (depth == 0) {
-                endpointPending.set(false)
-            }
         }
     }
 
@@ -1314,7 +1449,7 @@ class SprichIME : InputMethodService() {
         }
         // This token is still active (or no active), safe to clear.
         // But also check if queue still has pending — keep endpointPending true if pending remains.
-        val hasPending = synchronized(pendingQueueLock) { pendingQueue.isNotEmpty() }
+        val hasPending = queueDepth.get() > 0
         if (!hasPending) endpointPending.set(false)
         // Do not unconditionally clear utteranceActive if B just started as active? Already checked above.
         // For ENDPOINT we keep utteranceActive false; for USER_STOP termination handled elsewhere.

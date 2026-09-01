@@ -44,6 +44,21 @@ class ModelManager(private val context: Context) {
 
     fun isNemotronReadyForRelease(): Boolean = isNemotronReady()
 
+    fun isWhisperTinyReady(): Boolean {
+        val dir = File(context.filesDir, "whisper-tiny")
+        return File(dir, "tiny-encoder.int8.onnx").let { it.exists() && it.length() > 5_000_000 } &&
+               File(dir, "tiny-decoder.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
+               File(dir, "tiny-tokens.txt").exists()
+    }
+
+    fun isWhisperTinyReadyForRelease(): Boolean = isWhisperTinyReady()
+
+    fun isFastConformerReady(): Boolean {
+        val dir = File(context.filesDir, "fastconformer")
+        return File(dir, "model.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
+               File(dir, "tokens.txt").exists()
+    }
+
     fun isFastReady(): Boolean {
         return try { context.assets.open("models/whisper-base-q5_1.bin").use{ it.available() > 0 } } catch (_:Exception){ false }
     }
