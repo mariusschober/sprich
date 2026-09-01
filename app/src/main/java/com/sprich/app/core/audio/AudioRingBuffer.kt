@@ -1,39 +1,58 @@
 package com.sprich.app.core.audio
 
 /**
- * Lock-free-ish ring buffer for 16k mono PCM16.
- * Capacity in samples. Overwrites oldest on overflow.
- * Single writer (audio thread), single reader (ASR thread) safe with volatile indices.
+ * Bounded ring buffer for mono PCM16.
+ * Capacity is measured in samples and the oldest samples are overwritten on overflow.
+ * All mutations are synchronized because audio capture and decoding run on different threads.
  */
 class AudioRingBuffer(capacitySamples: Int = 16000 * 5) {
+    init {
+        require(capacitySamples > 0) { "capacitySamples must be positive" }
+    }
+
     private val cap = capacitySamples
     private val buf = ShortArray(cap)
-    @Volatile private var writePos = 0
-    @Volatile private var readPos = 0
+    private var writePos = 0
+    private var readPos = 0
     private var size = 0
-    @Volatile private var totalWritten: Long = 0
+    private var totalWritten: Long = 0
 
     @Synchronized
     fun write(samples: ShortArray, offset: Int = 0, len: Int = samples.size - offset) {
-        var remaining = len
-        var srcOff = offset
-        // O(1) deficit: if incoming > writable, drop oldest in one step
-        val writable = cap - size
-        if (remaining > writable) {
-            val drop = remaining - writable
-            readPos = (readPos + drop) % cap
-            size -= drop
+        require(offset >= 0) { "offset must be non-negative" }
+        require(len >= 0) { "len must be non-negative" }
+        require(offset <= samples.size - len) { "offset + len exceeds source array" }
+        if (len == 0) return
+
+        // An input block can be larger than the whole ring (for example a restored recording).
+        // Keep only its newest capacity-sized tail in one bounded copy.
+        if (len >= cap) {
+            val tailOffset = offset + len - cap
+            System.arraycopy(samples, tailOffset, buf, 0, cap)
+            readPos = 0
+            writePos = 0
+            size = cap
+            totalWritten += len
+            return
         }
+
+        val overflow = (size + len - cap).coerceAtLeast(0)
+        if (overflow > 0) {
+            readPos = (readPos + overflow) % cap
+            size -= overflow
+        }
+
+        var remaining = len
+        var sourceOffset = offset
         while (remaining > 0) {
-            val contiguousSpace = cap - writePos
-            val toCopy = minOf(remaining, cap - size, contiguousSpace)
-            System.arraycopy(samples, srcOff, buf, writePos, toCopy)
+            val toCopy = minOf(remaining, cap - writePos)
+            System.arraycopy(samples, sourceOffset, buf, writePos, toCopy)
             writePos = (writePos + toCopy) % cap
-            srcOff += toCopy
+            sourceOffset += toCopy
             remaining -= toCopy
             size += toCopy
-            totalWritten += toCopy
         }
+        totalWritten += len
     }
 
     @Synchronized
@@ -50,10 +69,13 @@ class AudioRingBuffer(capacitySamples: Int = 16000 * 5) {
 
     @Synchronized
     fun snapshotLast(seconds: Float, sampleRate: Int = 16000): ShortArray {
-        val want = (seconds * sampleRate).toInt().coerceAtMost(size)
+        require(seconds >= 0f && seconds.isFinite()) { "seconds must be finite and non-negative" }
+        require(sampleRate > 0) { "sampleRate must be positive" }
+        val requested = (seconds * sampleRate).toLong().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val want = requested.coerceAtMost(size)
         if (want == 0) return ShortArray(0)
         val out = ShortArray(want)
-        val start = ((writePos - size + (size - want)) % cap + cap) % cap
+        val start = ((writePos - want) % cap + cap) % cap
         val first = minOf(want, cap - start)
         System.arraycopy(buf, start, out, 0, first)
         if (want > first) System.arraycopy(buf, 0, out, first, want - first)
@@ -62,7 +84,10 @@ class AudioRingBuffer(capacitySamples: Int = 16000 * 5) {
 
     @Synchronized
     fun clear() {
-        writePos = 0; readPos = 0; size = 0; totalWritten = 0
+        writePos = 0
+        readPos = 0
+        size = 0
+        totalWritten = 0
     }
 
     @Synchronized fun available(): Int = size
