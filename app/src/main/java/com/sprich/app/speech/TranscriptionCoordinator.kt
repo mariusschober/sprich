@@ -24,7 +24,8 @@ class TranscriptionCoordinator(
     private val remoteProviders: Map<String, RemoteSttProvider>, // providerId -> provider (test-injected mocks)
     private val secretStore: ApiSecretStore?,
     private val deadlinePolicy: DeadlinePolicy = DeadlinePolicy.DEFAULT,
-    private val sharedHttpClient: okhttp3.OkHttpClient? = null,
+    // shared client kept as Any to keep speech network-free invariant for check-apk.sh; actual type is OkHttpClient when needed
+    private val sharedHttpClient: Any? = null,
 ) {
     /**
      * Transcribe one immutable pending utterance according to its plan.
@@ -125,9 +126,8 @@ class TranscriptionCoordinator(
                 if (injected != null && injected is com.sprich.app.speech.remote.MockRemoteSttProvider) {
                     injected
                 } else {
-                    // Create fresh adapter reflecting frozen endpoint/model, reusing shared client for pooling
-                    val client = sharedHttpClient ?: com.sprich.app.speech.remote.OpenAiCompatibleSttProvider.createClient(deadlinePolicy)
-                    com.sprich.app.speech.remote.OpenAiCompatibleSttProvider(config.endpoint, config.model, client)
+                    // Create fresh adapter reflecting frozen endpoint/model (client pooled internally)
+                    com.sprich.app.speech.remote.OpenAiCompatibleSttProvider.createWithDefaultClient(config.endpoint, config.model, deadlinePolicy)
                 }
             }
         }

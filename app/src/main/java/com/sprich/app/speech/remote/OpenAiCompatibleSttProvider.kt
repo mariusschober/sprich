@@ -140,6 +140,9 @@ class OpenAiCompatibleSttProvider(
                 .readTimeout(policy.socketReadMs, TimeUnit.MILLISECONDS)
                 .writeTimeout(policy.socketWriteMs, TimeUnit.MILLISECONDS)
                 .build()
+
+        fun createWithDefaultClient(baseUrl: String, model: String, policy: DeadlinePolicy = DeadlinePolicy.DEFAULT): OpenAiCompatibleSttProvider =
+            OpenAiCompatibleSttProvider(baseUrl, model, createClient(policy))
     }
 }
 
