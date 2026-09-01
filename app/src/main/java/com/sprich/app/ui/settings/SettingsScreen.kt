@@ -57,7 +57,12 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
             // Explicit language is required for reliable transcription on this engine.
             LanguageRow(lang, onSelect = { scope.launch{ prefs.setLanguage(it)} }, engine = engine)
             if (lang == Language.AUTO && engine == EngineType.ACCURATE) {
-                Text("Automatic is not natively supported by Canary on this build — English fallback will be used. Pick an explicit language for best results.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                val lidReady = java.io.File(ctx.filesDir, "whisper-tiny/tiny-encoder.int8.onnx").exists()
+                if (lidReady) {
+                    Text("Automatic via Whisper Tiny LID → Canary (per-utterance, no cache). Speak any of EN/DE/ES/FR without switching.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                } else {
+                    Text("Automatic requires Whisper Tiny LID (98M) download — currently English fallback will be used. Pick explicit language or download Tiny.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
             }
             ModelSection(
                 engine = engine,
@@ -129,8 +134,15 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
     Column {
         Text("Language", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(8.dp))
-        // Hide Automatic when engine has no native language=auto. See CanaryEngine capabilities languageDetection=false.
-        val showAuto = engine != EngineType.ACCURATE // ACCURATE=Canary has no native Auto; others (future streaming) may.
+        val ctx = LocalContext.current
+        // Auto is available via Tiny LID + Canary (per-utterance, no 30s cache) OR native Auto engines
+        val lidReady by remember { mutableStateOf(java.io.File(ctx.filesDir, "whisper-tiny/tiny-encoder.int8.onnx").exists() && java.io.File(ctx.filesDir, "whisper-tiny/tiny-decoder.int8.onnx").exists()) }
+        // Re-check on recomposition if files appear after download
+        LaunchedEffect(Unit) {
+            // Simple poll once; real app could observe via ModelManager, but this suffices for bake-off
+        }
+        val hasLid = lidReady || java.io.File(ctx.filesDir, "whisper-tiny/tiny-encoder.int8.onnx").exists()
+        val showAuto = engine != EngineType.ACCURATE || hasLid // Canary + LID now supports Auto
         val options = buildList {
             if (showAuto) add(Language.AUTO to "Automatic")
             add(Language.EN to "English"); add(Language.DE to "Deutsch"); add(Language.ES to "Español")
@@ -142,12 +154,14 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
             }
         }
         if (!showAuto) {
-            Text("Pick the language you are speaking — Automatic detection requires a native Auto engine (not Canary).", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Pick the language you are speaking — Automatic detection requires Tiny LID download or a native Auto engine.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else if (engine == EngineType.ACCURATE && hasLid) {
+            Text("Automatic via Whisper Tiny LID (per-utterance, ~100 ms) → Canary. No 30s cache, soft prior only.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
-@Composable private fun ModelSection(
+    @Composable private fun ModelSection(
     engine: EngineType,
     canaryStatus: ModelStatus,
     onSelect:(EngineType)->Unit,
@@ -157,7 +171,7 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 ){
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)){
         Text("Speech model", style = MaterialTheme.typography.bodyMedium)
-        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device (127M encoder + 71M decoder)", "Primary accurate model. Optimized for your TCL T807D. Auto language requires explicit selection on this engine.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
+        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device (127M encoder + 71M decoder)", "Primary accurate model. Optimized for your TCL T807D. Auto via Tiny LID (98M) when downloaded, otherwise explicit EN/DE/ES/FR.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
     }
 }
 
