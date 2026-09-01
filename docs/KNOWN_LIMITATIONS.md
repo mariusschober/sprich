@@ -1,13 +1,23 @@
 # KNOWN LIMITATIONS — reliability build (2026-09-02)
 
-## Release scope
+## Release scope (post-closure 2026-09-03)
 
-- Primary engine: Canary 180M Flash INT8 (`sherpa-onnx` INT8) via `files/canary` device-side download, not bundled. **198 MB** (127M encoder + 71M decoder + 52K tokens), SHA `7a38ed8b…`, verified.
-- APK is arm64-v8a only, includes `libonnxruntime.so` + `libsherpa-onnx-1.12.11` (16KB aligned).
-- Whisper Q5_1 deleted per user request; `fastEngine` alias points to Canary for benchmark compatibility.
-- Nemotron streaming exists as mock (`NemotronEngine` with 160 ms chunks) but no native `sprich_nemotron` lib; `isMock()` true until sherpa upgraded to support `nemotron-3.5-asr-streaming-0.6b`. Not production.
-- Remote STT (`speech/remote`) and AI polish (`ai/GrammarFixer`) are opt-in OpenAI-compatible endpoints (Grok x.ai, Groq, fal Wizper, etc.) but default to `local` (no network). Per-utterance PCM ensures fallback for B contains no samples from A.
-- Current artifact is a debug build, not yet a signed Play release.
+- **Automatic (selected):** Tiny LID (Whisper Tiny 98M per-utterance SLID) → FastConformer CTC 126M implicit EN-DE-ES-FR (**224 MB total, no Canary**). Single source `isAutomaticReady()`; fail-closed if either missing; no silent fallback to EN or Canary. Architecture diagram: `Mic → PCM collector ─┬─ Tiny LID → FastConformer ─ Automatic / └─ Canary ─ Accurate`.
+- **Accurate explicit:** Canary 180M Flash INT8 (`files/canary` 198 MB 127+71+tokens, SHA 7a38… ) via `OfflineRecognizer`, fixed EN/DE/ES/FR, manual selection, benchmark retained.
+- Canary required for Automatic: **NO** (hidden dependency removed, `CanaryLoadAttempts=0` proven via `AutomaticWithoutCanaryDeviceTest` + unit `AutomaticWithoutCanaryTest`).
+- APK arm64-v8a only, `libonnxruntime.so` + `libsherpa-onnx-1.13.6` (16KB aligned). Whisper Q5_1 legacy alias kept for benchmark compat but not primary.
+- Nemotron 560/160 code complete but NOT MEASURED for WER/thermal on 5-entry corpus, not primary, retained experimental.
+- Remote STT/API mode future shape `UtteranceAudioCollector → PendingUtterance → TranscriptionSource { Local Auto, Local Accurate, API }` — collector independent so API STT can reuse same frozen PCM without engine coupling.
+- Current artifact debug build, not signed Play release.
+
+## What was fixed on 2026-09-03 — ASR Closure (Audio decoupling, hidden Canary removal, Unknown-LID safety)
+
+- **Hidden Canary dependency removed (P0):** `SprichIME` no longer owns PCM via `CanaryEngine.beginUtteranceCapture/pushAudio/snapshot`. New neutral `UtteranceAudioCollector` (primitive ShortArray, bounded 30s, pre-roll exactly once, freeze immutable copyOf) in `core/audio` is single authoritative source. `Microphone → AudioCapture → UtteranceAudioCollector → immutable PendingUtterance.pcm → Transcription route` (Tiny LID→FastConformer for Automatic, Canary for Accurate). Automatic no longer loads Canary (`engine.load()` conditional on route, `canaryLoadAttempts=0` when Auto with Lid+Fast Ready). `SprichApp` no longer unconditional Canary preload; `SprichIME` selective preload based on `speechLanguage` and `isAutomaticReady()`.
+- **Route snapshot & coordinator:** `PendingUtterance` now includes `route: LocalAsrRoute` (AutomaticFastConformer vs AccurateCanary) captured at endpoint; Settings change cannot mis-route queued utterance. Extracted `LocalTranscriptionCoordinator(lid, fast, canary)` isolates selection, easier to test without IME, prepares API `TranscriptionSource` shape.
+- **Auto readiness single source:** `ModelManager.isAutomaticReady() = isWhisperTinyReady() && isFastConformerReady()`; Settings and IME use same derived flag, not just `lidStatus`. UI now shows `Automatic — Requires Language detector + Fast transcription model — Missing: X` and combined `Set up Automatic (download both)` CTA; current transcription display is dynamic (`Automatic · Fast on-device` / `Accurate · DE` / `Unavailable`) not stale `Canary 180M Flash INT8`.
+- **Unknown-LID safety:** Introduced `ResolvedUtteranceLanguage { Known(Language) | Unknown }`. When LID returns Unsupported/Failed/Unavailable, FastConformer still decodes but post-processing uses generic-only path (`TypographyNormalizer.normalizeForUnknown` = fix `hello .`→`hello.`/`word ,`→`word,` only, preserve `? ! : ;`; `SpokenEditingParser` disables language-specific commands/English email ITN). Prevents German/Spanish/French transcript from receiving English `delete that`/`period` map.
+- **Memory:** Automatic target `LID+Fast` (224 MB) not `LID+Fast+Canary`; `maybeUnloadUnused` unloads Canary when Auto active and queue drained, and vice versa. Diagnostics expose `collectorSamples/frozen/canaryLoads/fastLoads`.
+- **Exactly-once preserved:** Bounded `Channel<PendingUtterance>(4)` + `Pending.pcm.copyOf()` isolation ensures endpoint+USER_STOP race at most one commit; field switch zero stale insertion; queue overlap preserves independent PCM (A/B isolation tests still PASS).
 
 ## What was fixed on 2026-09-02
 
@@ -31,15 +41,17 @@
 - Human immediate-speech-after-focus, long pauses (700 ms two sentences), intentional repetitions (`very very`, `no no no`), punctuation/names/numbers, 30-s utterance.
 - Model bake-off: Nemotron 3.5 Streaming 0.6B, Whisper Base/Small, and Tiny LID + Canary have **not** been benchmarked on T807D (see `docs/MODEL_BAKEOFF.md`). Current numbers are Canary-only; other candidates pending sherpa upgrade and model downloads (~650 MB Nemotron). Must not claim WER/battery until measured.
 
-## Product limitations remaining
+## Product limitations remaining (post-closure)
 
-- Energy VAD is simple; thresholds (onset 45ms, hesitation 400ms, endpoint 650ms) tuned for normal/whisper but may need device-specific tuning for very noisy rooms or unusually quiet mics. Calibration ignores speech frames for immediate-speech case.
-- Canary is non-streaming: partials windowed 350 ms + LCP N=2; true streaming only if Nemotron passes gates.
-- Cursor movement/manual typing while composing handled via `finishIfActive` but still needs cross-editor physical testing.
-- Personal vocabulary and “Learn my corrections” remain incomplete UI features.
+- Corpus still 5/75 measured (need 30+30+10+10 EN/DE + 15+15 ES/FR human WER/CER) — `AUTO_LANGUAGE_RELEASE_READY: NO`.
+- Editor manual matrix (Chrome/Gmail input/textarea/contenteditable) still requires human tap validation (pipeline 12 tests + Ime 5 tests PASS, but real apps not yet fully matrixed).
+- Energy VAD thresholds (45/400/650ms) simple, may need noisy-room tuning.
+- Canary non-streaming windowed partials 350 ms + LCP N=2 (only for Accurate explicit; Automatic is final-only, no wrong-language partials by design).
+- Cursor/manual typing while composing handled via `finishIfActive` but needs cross-editor physical testing.
+- Personal vocabulary / Learn my corrections UI incomplete.
 - Model diagnostics backup exclusions need release-policy review.
-- Spoken deletion uses bounded char deletion not semantic sentences.
-- Automatic language detection is not available on Canary; explicit language is required. Genuine Auto requires Nemotron or Whisper Tiny LID + Canary (see `MODEL_BAKEOFF`).
+- Spoken deletion bounded char deletion, not semantic.
+- 15-minute sustained PSS/RSS/NativeHeap via `adb shell dumpsys meminfo` for winner after load + after 20 utterances + after 15m still requires host shell measurement (app dumpsys permission denied, latency stable but exact PSS pending).
 
 ## What is intentionally no longer claimed
 

@@ -17,6 +17,14 @@ Nemotron 560/160 have highest upside true streaming (per-stream `language=auto`,
 
 **Winner:** `Tiny LID + FastConformer` for Automatic. `Canary` stays explicit Accurate. No hybrid forest.
 
+
+### ASR Closure 2026-09-03 — Hidden Canary dependency removed
+
+- **Before:** `SprichIME` `private lateinit var engine: CanaryEngine` + `engine.beginUtteranceCapture/pushAudio/snapshot` + unconditional `engine.load()` in `startDictationIfNeeded` even for Automatic (Tiny LID + FastConformer already Ready). Architecture claimed `Tiny LID+FastConformer` but actually `Tiny LID+FastConformer+hidden Canary`.
+- **After:** `UtteranceAudioCollector` in `core/audio` is authoritative; `Mic → PCM collector ─┬─ Tiny LID → FastConformer ─ Automatic / └─ Canary ─ Accurate` (immutable `PendingUtterance.pcm.copyOf()` per utterance, route snapshot). SprichIME now `determineRoute(speechLanguage)` before loading, loads only required engines, `LocalTranscriptionCoordinator` isolates LID+Fast vs Canary, `ResolvedUtteranceLanguage.Known/Unknown` disables language-specific commands/ITN when LID unresolved (generic typography only). `ModelManager.isAutomaticReady()=lid&&fast` central, Settings/UI show dynamic `Current transcription` and missing-model CTA. `AutomaticWithoutCanaryDeviceTest` proves `CanaryReady=false, CanaryLoadAttempts=0, EN+DE Automatic PASS via Fast`.
+- **Commits:** refactor(audio): decouple utterance capture, fix(asr): remove Canary from Auto, fix(auto): readiness, fix(postprocess): unknown safety, test(asr): auto without canary, fix(settings): UX, docs(asr): freeze.
+- **Result:** `CANARY_REQUIRED_FOR_AUTOMATIC: NO`, `LOCAL_ASR_ARCHITECTURE_FROZEN: YES` if gates PASS, `AUTO_LANGUAGE_RELEASE_READY: NO` (corpus/editor/PSS still pending).
+
 ## Release gate — updated 2026-09-02 22:50 after T807D WiFi validation
 
 **Network fresh-install (winner Tiny LID 98M + FastConformer 126M): MEASURED PASS** — `RealNetworkDownloadTest` on T807D (MOVISTAR_54D0 WiFi) cleared lid+fast, verified NotDownloaded, real OkHttp download Tiny LID 98M (116204861 bytes, SHA c461… verified, atomic extract to whisper-tiny, Ready, 26s-48s) and FastConformer 126M (102875642 bytes, SHA ea74… verified, 132445228 bytes model, Ready, 48s), dictation EN (jfk 2s) LID EN 303ms + Fast 25 chars, DE (de-german 2s) LID DE 295ms + Fast 35 chars, both non-blank, reboot persistence (unload/reload still Ready), delete → NotDownloaded → Unavailable → re-download via network again (lid 62s) and fast re-download (43s) all PASS. No /data/local/tmp copy, no manual adb push. Archive bytes, SHA, extracted bytes verified.
@@ -63,6 +71,10 @@ Settings shows Auto only when `lidStatus Ready` + `fastStatus Ready` (winner, si
 - Editor manual matrix in Chrome/Gmail still NOT MEASURED (pipeline 12 tests PASS, Ime 5 tests PASS, but real Chrome input/textarea/contenteditable/Gmail composer not yet tapped by human).
 - PSS/RSS/NativeHeap via `adb shell dumpsys meminfo` for winner after 15m still NOT MEASURED via host shell (app dumpsys permission denied, needs host shell after thermal). Latency stable, no OOM, but exact PSS not captured.
 - No marketing language; decision is evidence-bound per mission ranking.
+
+```
+CANARY_REQUIRED_FOR_AUTOMATIC: NO
+```
 
 ```
 PRODUCTION_AUTO_ARCHITECTURE: Tiny LID + FastConformer (Whisper Tiny 98M per-utterance SLID → FastConformer CTC 126M implicit EN-DE-ES-FR, Canary 180M remains Accurate explicit)
