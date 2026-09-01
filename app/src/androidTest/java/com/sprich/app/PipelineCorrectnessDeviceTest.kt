@@ -303,6 +303,41 @@ class PipelineCorrectnessDeviceTest {
     }
 
     @Test
+    fun continuousTenSentencesGermanOnDevice() { runBlocking {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SprichApp
+        val engine = app.fastEngine
+        assertTrue(engine.load().isSuccess)
+        val audio = app.assets.open("jfk.wav").use { com.sprich.app.core.audio.Pcm16Wav.read(it) }
+        val committed = mutableListOf<Long>()
+        val finalized = mutableSetOf<Long>()
+        val mutex = Mutex()
+        val slices = (0 until 10).map { idx ->
+            val start = (idx * 16000) % (audio.samples.size - 16000)
+            audio.samples.copyOfRange(start, start + 16000)
+        }
+        val jobs = slices.mapIndexed { idx, pcm ->
+            async {
+                val token = UtteranceToken(1,1, (idx+1).toLong(), "fieldDe", 1, null)
+                val cfg = SpeechSessionConfig(speechLanguage = SpeechLanguage.Fixed("de"))
+                synchronized(finalized) {
+                    if (finalized.contains(token.utteranceId)) return@async
+                    finalized.add(token.utteranceId)
+                }
+                mutex.withLock {
+                    val res = engine.transcribeSnapshot(pcm, cfg)
+                    synchronized(committed) { committed.add(token.utteranceId) }
+                    Log.i("PipelineDevice", "continuous DE $idx chars=${res.text.length}")
+                }
+            }
+        }
+        jobs.awaitAll()
+        assertEquals(10, committed.size)
+        assertEquals((1L..10L).toList(), committed.sorted())
+        Log.i("PipelineDevice", "continuous 10 DE PASS committed=$committed")
+        }
+    }
+
+    @Test
     fun userStopRaceOnDevice() { runBlocking {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SprichApp
         val engine = app.fastEngine
