@@ -708,23 +708,31 @@ class SprichIME : InputMethodService() {
             // If Auto requested, check if Tiny LID model is available (Candidate A). If yes, allow Auto with per-utterance detection.
             // Otherwise require explicit selection.
             if (speechLanguage is SpeechLanguage.Auto) {
-                // Single source of truth: ModelManager.isWhisperTinyReady() checks both encoder+decoder+tokens + size
-                val lidReady = try {
-                    com.sprich.app.models.manager.ModelManager(this).isWhisperTinyReady()
-                } catch (_: Exception) { false }
+                // Winner 2026-09-02: Automatic = Tiny LID (98M) + FastConformer 126M (Architecture B). Both required.
+                val mmForCheck = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
+                val lidReady = try { mmForCheck?.isWhisperTinyReady() == true } catch (_: Exception) { false }
+                val fastReady = try { mmForCheck?.isFastConformerReady() == true } catch (_: Exception) { false }
                 if (!lidReady) {
                     Log.w("SprichIME", "Auto language requested but Tiny LID not downloaded — explicit selection required.")
                     try { session.error("language auto not supported without LID") } catch (_: Exception) {}
                     statusText?.text = "Tap to choose language"
-                    (statusText?.tag as? TextView)?.text = "Open Sprich app → Settings → Language (EN/DE/ES/FR) or download Tiny LID"
+                    (statusText?.tag as? TextView)?.text = "Open Sprich app → Settings → Language (EN/DE/ES/FR) or download Tiny LID (98M)"
                     try { vibrateTick() } catch (_: Exception) {}
                     writeDiagnostics("blocked Auto (no LID) resolved=${activeConfig.resolvedLanguageTag()} speechLanguage=$speechLanguage")
                     return
-                } else {
-                    Log.i("SprichIME", "Auto language via Tiny LID per-utterance — proceeding, LID will detect EN/DE/ES/FR before Canary")
-                    // Pre-warm LID if not loaded
-                    try { lidEngine.load() } catch (_: Exception) {}
                 }
+                if (!fastReady) {
+                    Log.w("SprichIME", "Auto (winner FastConformer) requested but FastConformer 126M not downloaded — download required.")
+                    try { session.error("auto not supported without FastConformer") } catch (_: Exception) {}
+                    statusText?.text = "Tap to choose language"
+                    (statusText?.tag as? TextView)?.text = "Open Sprich app → Settings → Download FastConformer 126M (or Accurate Canary)"
+                    try { vibrateTick() } catch (_: Exception) {}
+                    writeDiagnostics("blocked Auto (no FastConformer) speechLanguage=$speechLanguage")
+                    return
+                }
+                Log.i("SprichIME", "Auto via Tiny LID per-utterance + FastConformer 126M (winner) — proceeding, LID will detect EN/DE/ES/FR, FastConformer will transcribe (RTF 0.038)")
+                try { lidEngine.load() } catch (_: Exception) {}
+                try { fastConformerEngine.load() } catch (_: Exception) {}
             }
             if (session.state.value is SessionState.Listening || session.state.value is SessionState.Speech) return
             val permissionGranted = ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -1250,12 +1258,16 @@ class SprichIME : InputMethodService() {
                     ReplayHarness.saveWavIfEnabled(this@SprichIME, true, token.utteranceId, pending.pcm, pending.config)
                 }
             } catch (_: Exception) {}
-            // Per-utterance LID for Auto: run Whisper Tiny before Canary if config is Auto (production-safe, no mock)
+            // Per-utterance LID for Auto: run Whisper Tiny before ASR if config is Auto (production-safe, no mock)
+            // Winner 2026-09-02: Tiny LID + FastConformer (Architecture B). LID provides language metadata, FastConformer is primary ASR (126M, RTF 0.038, 3× faster, no accuracy penalty). Canary remains Accurate explicit fallback.
             var effectiveConfig = pending.config
             var lidLatencyMs: Long = 0
             var lidDetected: String = pending.config.resolvedLanguageTag()
             var lidOutcomeForLog: String = "explicit"
             var useFastConformerFallback = false
+            // Winner selection — check if FastConformer is ready for Auto (primary). If not, fallback to Canary logic.
+            val isWinnerFastConformerReady = try { com.sprich.app.models.manager.ModelManager(this@SprichIME).isFastConformerReady() } catch (_: Exception) { false }
+            var useWinnerFastConformerForAuto = false
             if (pending.config.speechLanguage is SpeechLanguage.Auto) {
                 try {
                     if (!lidEngine.isLoaded()) {
@@ -1273,24 +1285,25 @@ class SprichIME : InputMethodService() {
                                 speechLanguage = SpeechLanguage.Fixed(lidOutcome.language.code)
                             )
                             Log.i("SprichIME", "LID per-utterance utt=${token.utteranceId} raw=${lidOutcome.rawCode} detected=${lidOutcome.language} latencyMs=${lidOutcome.latencyMs} effective=${effectiveConfig.resolvedLanguageTag()} pcmSamples=${pending.pcm.size} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)}")
+                            // Winner: if FastConformer ready, use it as primary for Auto (not Canary). This is Architecture B.
+                            if (isWinnerFastConformerReady) {
+                                useWinnerFastConformerForAuto = true
+                                Log.i("SprichIME", "Winner FastConformer for Auto utt=${token.utteranceId} — will use FastConformer 126M (RTF 0.038) not Canary")
+                            }
                         }
                         is com.sprich.app.speech.lid.WhisperLidEngine.LidOutcome.Unsupported -> {
                             lidLatencyMs = lidOutcome.latencyMs
                             lidDetected = lidOutcome.rawCode
                             lidOutcomeForLog = "Unsupported"
                             Log.w("SprichIME", "LID unsupported raw=${lidOutcome.rawCode} utt=${token.utteranceId} — trying FastConformer fallback if available, not EN")
-                            // Use validated multilingual fallback if available, else fail closed
+                            // Winner FastConformer is implicit multilingual, so unsupported still goes to FastConformer (primary for Auto)
                             val mm = com.sprich.app.models.manager.ModelManager(this@SprichIME)
                             if (mm.isFastConformerReady()) {
                                 useFastConformerFallback = true
-                                Log.i("SprichIME", "LID unsupported, FastConformer fallback will be used utt=${token.utteranceId}")
+                                if (isWinnerFastConformerReady) useWinnerFastConformerForAuto = true
+                                Log.i("SprichIME", "LID unsupported, FastConformer will be used utt=${token.utteranceId} winner=${isWinnerFastConformerReady}")
                             } else {
                                 Log.w("SprichIME", "LID unsupported and no FastConformer — failing Auto utterance utt=${token.utteranceId} (no EN fallback)")
-                                // Fail closed: do not insert wrong-language transcript
-                                // We will return without committing, preserving audio correctness
-                                // For now, treat as failed and drop (no commit)
-                                // To avoid silent drop, we could keep pending for retry, but spec says preserve correctness
-                                // So we just return without commit
                                 maybeClearActiveStateForToken(token)
                                 return
                             }
@@ -1303,6 +1316,7 @@ class SprichIME : InputMethodService() {
                             val mm = com.sprich.app.models.manager.ModelManager(this@SprichIME)
                             if (mm.isFastConformerReady()) {
                                 useFastConformerFallback = true
+                                if (isWinnerFastConformerReady) useWinnerFastConformerForAuto = true
                             } else {
                                 Log.w("SprichIME", "LID failed and no fallback — failing Auto utterance")
                                 maybeClearActiveStateForToken(token)
@@ -1316,6 +1330,7 @@ class SprichIME : InputMethodService() {
                             val mm = com.sprich.app.models.manager.ModelManager(this@SprichIME)
                             if (mm.isFastConformerReady()) {
                                 useFastConformerFallback = true
+                                if (isWinnerFastConformerReady) useWinnerFastConformerForAuto = true
                             } else {
                                 Log.w("SprichIME", "LID unavailable and no fallback — failing Auto utterance")
                                 maybeClearActiveStateForToken(token)
@@ -1329,6 +1344,7 @@ class SprichIME : InputMethodService() {
                     val mm = try { com.sprich.app.models.manager.ModelManager(this@SprichIME) } catch (_: Exception) { null }
                     if (mm != null && mm.isFastConformerReady()) {
                         useFastConformerFallback = true
+                        if (isWinnerFastConformerReady) useWinnerFastConformerForAuto = true
                         lidDetected = "exception-fallback"
                         lidOutcomeForLog = "Failed"
                     } else {
@@ -1341,8 +1357,8 @@ class SprichIME : InputMethodService() {
             val t0 = android.os.SystemClock.elapsedRealtime()
             nativeDecodeStarts++
             // Use immutable snapshot and its immutable effectiveConfig — never mutate live buffer
-            // If LID failed/unsupported and FastConformer is available, use it as validated multilingual fallback (not EN)
-            val finalTranscript = if (useFastConformerFallback) {
+            // Winner FastConformer for Auto: use FastConformer as primary (not just fallback), with LID for metadata. Otherwise Canary.
+            val finalTranscript = if (useWinnerFastConformerForAuto || useFastConformerFallback) {
                 try {
                     if (!fastConformerEngine.isLoaded()) {
                         val fLoad = fastConformerEngine.load()

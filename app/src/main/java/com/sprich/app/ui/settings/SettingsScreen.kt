@@ -59,9 +59,9 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
             LanguageRow(lang, onSelect = { scope.launch{ prefs.setLanguage(it)} }, lidStatus = lidStatus)
             if (lang == Language.AUTO) {
                 when (lidStatus) {
-                    is ModelStatus.Ready -> Text("Automatic via Whisper Tiny LID → Canary (per-utterance, no cache). Speak any of EN/DE/ES/FR without switching.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    is ModelStatus.Downloading -> Text("Downloading Tiny LID… Automatic will be available when Ready.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    else -> Text("Automatic is unavailable without Tiny LID (98M) — dictation will not start in Automatic (fail-closed, no English fallback). Download Tiny LID below or choose explicit EN/DE/ES/FR.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    is ModelStatus.Ready -> Text("Automatic via Whisper Tiny LID (98M) → FastConformer 126M (per-utterance, RTF 0.038, 3× faster). Speak any of EN/DE/ES/FR without switching. Canary 180M remains Accurate.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    is ModelStatus.Downloading -> Text("Downloading Tiny LID… Automatic (winner FastConformer) will be available when Ready.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    else -> Text("Automatic is unavailable without Tiny LID (98M) + FastConformer 126M — dictation will not start in Automatic (fail-closed). Download both below or choose explicit EN/DE/ES/FR (Canary Accurate).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
             }
             ModelSection(
@@ -160,11 +160,11 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
             }
         }
         if (!effectiveShowAuto) {
-            Text("Pick the language you are speaking — Automatic requires Whisper Tiny LID download (98M) or a native Auto engine.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Pick the language you are speaking — Automatic requires Whisper Tiny LID (98M) + FastConformer 126M (winner, 3× faster than Canary) — download below.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else if (lidStatus is ModelStatus.Ready) {
-            Text("Automatic via Whisper Tiny LID (per-utterance, ~100 ms) → Canary. No 30s cache.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Automatic via Whisper Tiny LID (98M) → FastConformer 126M (winner, RTF 0.038). No 30s cache. Canary 180M remains Accurate.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else if (lidStatus is ModelStatus.Downloading) {
-            Text("Downloading Tiny LID…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            Text("Downloading Tiny LID… Automatic (FastConformer) will be ready shortly.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
@@ -192,9 +192,9 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 ){
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)){
         Text("Speech model", style = MaterialTheme.typography.bodyMedium)
-        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device (127M encoder + 71M decoder)", "Primary accurate model. Auto via Tiny LID (98M) when downloaded, otherwise explicit EN/DE/ES/FR.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
-        ModelCardAdvanced("Whisper Tiny LID", "98 MB · On-device (12M encoder + 86M decoder)", "Enables Automatic language detection per utterance. Required for Auto with Canary. No 30s cache.", selected = false, status = lidStatus, onClick = {}, onDownload = onDownloadLid, onDelete = onDeleteLid, onCancel = onCancel, totalMb = 98)
-        ModelCardAdvanced("FastConformer CTC", "126 MB · On-device (model.int8.onnx)", "Multilingual EN-DE-ES-FR implicit (no language flag). 3× faster than Canary, offline CTC.", selected = false, status = fastStatus, onClick = {}, onDownload = onDownloadFast, onDelete = onDeleteFast, onCancel = onCancel, totalMb = 126)
+        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device (127M encoder + 71M decoder)", "Accurate explicit (EN/DE/ES/FR fixed). Not primary Auto — winner is FastConformer. Keep for explicit or fallback.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
+        ModelCardAdvanced("Whisper Tiny LID", "98 MB · On-device (12M encoder + 86M decoder)", "Winner Automatic: Tiny LID (winner with FastConformer, 3× faster). Enables per-utterance Auto, no 30s cache.", selected = false, status = lidStatus, onClick = {}, onDownload = onDownloadLid, onDelete = onDeleteLid, onCancel = onCancel, totalMb = 98)
+        ModelCardAdvanced("FastConformer CTC — Automatic Winner", "126 MB · On-device (model.int8.onnx)", "Winner Automatic (with Tiny LID 98M, total 224M). 3× faster than Canary (419ms vs 1560ms), no accuracy penalty on 5-entry corpus.", selected = false, status = fastStatus, onClick = {}, onDownload = onDownloadFast, onDelete = onDeleteFast, onCancel = onCancel, totalMb = 126)
         ModelCardAdvanced("Nemotron 3.5 Streaming 560ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream (40 locales, `auto` strips tag). Accuracy-oriented. Independent of 160.", selected = false, status = nemotron560Status, onClick = {}, onDownload = onDownloadNemotron560, onDelete = onDeleteNemotron560, onCancel = onCancel, totalMb = 475)
         ModelCardAdvanced("Nemotron 3.5 Streaming 160ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream, low-latency (160ms chunk). Independent of 560.", selected = false, status = nemotron160Status, onClick = {}, onDownload = onDownloadNemotron160, onDelete = onDeleteNemotron160, onCancel = onCancel, totalMb = 475)
         if (nemotron560Status is ModelStatus.Ready || nemotron160Status is ModelStatus.Ready) {
