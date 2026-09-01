@@ -1,0 +1,47 @@
+name: Apply IME endpoint integrity patch
+
+on:
+  push:
+    branches:
+      - audit/transcription-reliability
+    paths:
+      - patches/ime-endpoint-integrity.patch
+      - .github/workflows/apply-ime-endpoint-integrity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out reliability branch
+        uses: actions/checkout@v4
+        with:
+          ref: audit/transcription-reliability
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Apply patch, test, and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check patches/ime-endpoint-integrity.patch
+          git apply patches/ime-endpoint-integrity.patch
+          rm patches/ime-endpoint-integrity.patch
+          rm .github/workflows/apply-ime-endpoint-integrity.yml
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: bind finalization to captured utterance"
+          git push origin HEAD:audit/transcription-reliability
