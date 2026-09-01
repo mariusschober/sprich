@@ -72,15 +72,9 @@ class FastConformerEngine(
                 val recCfg = recConfigClass.getConstructor().newInstance()
                 recConfigClass.getDeclaredField("featConfig").apply { isAccessible = true; set(recCfg, feat) }
                 recConfigClass.getDeclaredField("modelConfig").apply { isAccessible = true; set(recCfg, modelCfg) }
-                // Try to create recognizer
+                // Absolute path requires null AssetManager (https://github.com/k2-fsa/sherpa-onnx/issues/2562)
                 val recClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer")
-                val rec = try {
-                    recClass.getConstructor(Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizerConfig")).newInstance(recCfg)
-                } catch (e: Throwable) {
-                    // try with AssetManager
-                    val am = context.assets
-                    recClass.getConstructor(android.content.res.AssetManager::class.java, Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizerConfig")).newInstance(am, recCfg)
-                }
+                val rec = recClass.getConstructor(android.content.res.AssetManager::class.java, Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizerConfig")).newInstance(null, recCfg)
                 recognizer = rec
                 loaded = rec != null
                 if (loaded) Result.success(Unit) else Result.failure(Exception("create failed"))
