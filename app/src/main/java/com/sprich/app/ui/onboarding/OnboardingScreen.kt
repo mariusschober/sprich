@@ -98,7 +98,24 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                 Spacer(Modifier.height(8.dp))
                 TextButton(onClick = { step = 3 }) { Text("Skip for now") }
             }
-            3 -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            3 -> LanguagePickerStep(
+                prefs = prefs,
+                onPicked = { tag ->
+                    scope.launch {
+                        // Explicit user pick — never infer from locale silently
+                        val lang = when(tag){
+                            "de" -> com.sprich.app.speech.api.SpeechLanguage.Fixed("de")
+                            "es" -> com.sprich.app.speech.api.SpeechLanguage.Fixed("es")
+                            "fr" -> com.sprich.app.speech.api.SpeechLanguage.Fixed("fr")
+                            else -> com.sprich.app.speech.api.SpeechLanguage.Fixed("en")
+                        }
+                        prefs.setSpeechLanguage(lang)
+                        step = 4
+                    }
+                },
+                onSkipSuggestion = { step = 4 }
+            )
+            4 -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("Try it.", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
                 Text("Tap the field and say:\n“This is much faster than typing.”", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth())
@@ -155,9 +172,9 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                 }, modifier = Modifier.fillMaxWidth()) { Text("Continue without Instant Mode") }
             }
         }
-        // Spring step indicator — pleasure + bouncy
+        // Spring step indicator — pleasure + bouncy (5 steps: intro, mic, keyboard, language, trial)
         Row(Modifier.fillMaxWidth().navigationBarsPadding(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            repeat(4) { i ->
+            repeat(5) { i ->
                 val selected = i == step
                 val width by animateDpAsState(if (selected) 20.dp else 8.dp, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow), label = "dotW")
                 val color by animateColorAsState(if (selected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline, label = "dotC")
@@ -166,6 +183,51 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun LanguagePickerStep(
+    prefs: Preferences,
+    onPicked: (String)->Unit,
+    onSkipSuggestion: ()->Unit,
+) {
+    val localeTag = remember {
+        try { java.util.Locale.getDefault().toLanguageTag() } catch (_: Exception) { "en" }
+    }
+    val suggestion = remember(localeTag) {
+        when {
+            localeTag.lowercase().startsWith("de") -> "de"
+            localeTag.lowercase().startsWith("es") -> "es"
+            localeTag.lowercase().startsWith("fr") -> "fr"
+            localeTag.lowercase().startsWith("en") -> "en"
+            else -> null
+        }
+    }
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+        Text("Choose your language", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        Text("Pick the language you speak most. This is required — Canary has no native Automatic detection. You can change it later in Settings.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (suggestion != null) {
+            Spacer(Modifier.height(8.dp))
+            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.tertiary.copy(alpha=0.12f)) {
+                Text("Suggestion from your phone: ${suggestion.uppercase()} — tap to confirm or pick another.", modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        val options = listOf("en" to "English", "de" to "Deutsch", "es" to "Español", "fr" to "Français")
+        options.forEach { (tag, label) ->
+            val isSuggested = tag == suggestion
+            OutlinedButton(
+                onClick = { onPicked(tag) },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                colors = if (isSuggested) ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.tertiary.copy(alpha=0.12f)) else ButtonDefaults.outlinedButtonColors()
+            ) {
+                Text("$label  ($tag)" + if (isSuggested) " — suggested" else "", style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Automatic detection is not available on-device for Canary. An explicit language ensures accurate transcription.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
