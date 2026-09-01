@@ -35,6 +35,9 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
     val haptics by prefs.haptics.collectAsState(initial = true)
     val commands by prefs.commands.collectAsState(initial = true)
     val canaryStatus by mm.canaryStatus.collectAsState()
+    val lidStatus by mm.lidStatus.collectAsState()
+    val fastStatus by mm.fastConformerStatus.collectAsState()
+    val nemotronStatus by mm.nemotronStatus.collectAsState()
 
     Scaffold(
         topBar = {
@@ -52,24 +55,30 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 
             Text("Dictation", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             SettingsToggle("Instant Dictation", "Start when a text field is focused", instant){ scope.launch{ prefs.setInstantMode(it)} }
-            // Auto is only offered when the active engine has validated native language=auto.
-            // Canary 180M Flash has no native Auto; showing it would be misleading (stopword heuristic removed).
-            // Explicit language is required for reliable transcription on this engine.
-            LanguageRow(lang, onSelect = { scope.launch{ prefs.setLanguage(it)} }, engine = engine)
-            if (lang == Language.AUTO && engine == EngineType.ACCURATE) {
-                val lidReady = java.io.File(ctx.filesDir, "whisper-tiny/tiny-encoder.int8.onnx").exists()
-                if (lidReady) {
-                    Text("Automatic via Whisper Tiny LID → Canary (per-utterance, no cache). Speak any of EN/DE/ES/FR without switching.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                } else {
-                    Text("Automatic requires Whisper Tiny LID (98M) download — currently English fallback will be used. Pick explicit language or download Tiny.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            LanguageRow(lang, onSelect = { scope.launch{ prefs.setLanguage(it)} }, lidStatus = lidStatus)
+            if (lang == Language.AUTO) {
+                when (lidStatus) {
+                    is ModelStatus.Ready -> Text("Automatic via Whisper Tiny LID → Canary (per-utterance, no cache). Speak any of EN/DE/ES/FR without switching.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    is ModelStatus.Downloading -> Text("Downloading Tiny LID… Automatic will be available when Ready.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    else -> Text("Automatic requires Whisper Tiny LID (98M) download — currently English fallback will be used. Download below or pick explicit language.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
             }
             ModelSection(
                 engine = engine,
                 canaryStatus = canaryStatus,
+                lidStatus = lidStatus,
+                fastStatus = fastStatus,
+                nemotronStatus = nemotronStatus,
                 onSelect = { scope.launch{ prefs.setEngine(EngineType.ACCURATE)} },
                 onDownloadCanary = { scope.launch { try{ dm.downloadCanary() } catch (_:Exception){} } },
+                onDownloadLid = { scope.launch { try{ dm.downloadLid() } catch (_:Exception){} } },
+                onDownloadFast = { scope.launch { try{ dm.downloadFastConformer() } catch (_:Exception){} } },
+                onDownloadNemotron560 = { scope.launch { try{ dm.downloadNemotron560() } catch (_:Exception){} } },
+                onDownloadNemotron160 = { scope.launch { try{ dm.downloadNemotron160() } catch (_:Exception){} } },
                 onDeleteCanary = { scope.launch { mm.deleteCanary() } },
+                onDeleteLid = { scope.launch { mm.deleteLid() } },
+                onDeleteFast = { scope.launch { mm.deleteFastConformer() } },
+                onDeleteNemotron = { scope.launch { mm.deleteNemotron() } },
                 onCancel = { dm.cancel() }
             )
 
@@ -93,7 +102,7 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
             Text("Privacy", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             SettingsRow("Audio storage", "Never"){}
             SettingsRow("Network use", "Models only"){}
-            SettingsRow("Clear local data", "", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); mm.deleteCanary() } })
+            SettingsRow("Clear local data", "", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron() } })
 
             HorizontalDivider()
             Text("Advanced", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
@@ -117,7 +126,6 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 }
 
 @Composable private fun SettingsRow(title:String, sub:String, actionLabel:String? = null, onClick:()->Unit = {}){
-    // Whole row is tappable when there's no action button — otherwise onClick lives on the button only.
     val rowModifier = if (actionLabel == null) Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onClick() }
                       else Modifier.fillMaxWidth().padding(vertical = 4.dp)
     Row(rowModifier, horizontalArrangement = Arrangement.SpaceBetween){
@@ -130,21 +138,15 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 }
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun LanguageRow(current: Language, onSelect:(Language)->Unit, engine: EngineType = EngineType.ACCURATE){
+@Composable private fun LanguageRow(current: Language, onSelect:(Language)->Unit, lidStatus: ModelStatus){
     Column {
         Text("Language", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(8.dp))
-        val ctx = LocalContext.current
-        // Auto is available via Tiny LID + Canary (per-utterance, no 30s cache) OR native Auto engines
-        val lidReady by remember { mutableStateOf(java.io.File(ctx.filesDir, "whisper-tiny/tiny-encoder.int8.onnx").exists() && java.io.File(ctx.filesDir, "whisper-tiny/tiny-decoder.int8.onnx").exists()) }
-        // Re-check on recomposition if files appear after download
-        LaunchedEffect(Unit) {
-            // Simple poll once; real app could observe via ModelManager, but this suffices for bake-off
-        }
-        val hasLid = lidReady || java.io.File(ctx.filesDir, "whisper-tiny/tiny-encoder.int8.onnx").exists()
-        val showAuto = engine != EngineType.ACCURATE || hasLid // Canary + LID now supports Auto
+        val showAuto = lidStatus is ModelStatus.Ready || lidStatus is ModelStatus.Downloading
+        // Also allow Auto for future native Auto engines, but for now LID is the Auto mechanism
+        val effectiveShowAuto = showAuto
         val options = buildList {
-            if (showAuto) add(Language.AUTO to "Automatic")
+            if (effectiveShowAuto) add(Language.AUTO to "Automatic")
             add(Language.EN to "English"); add(Language.DE to "Deutsch"); add(Language.ES to "Español")
             add(Language.FR to "Français")
         }
@@ -153,25 +155,41 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
                 FilterChip(selected = current==lang, onClick = { onSelect(lang) }, label = { Text(label, style = MaterialTheme.typography.labelSmall) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer))
             }
         }
-        if (!showAuto) {
-            Text("Pick the language you are speaking — Automatic detection requires Tiny LID download or a native Auto engine.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else if (engine == EngineType.ACCURATE && hasLid) {
-            Text("Automatic via Whisper Tiny LID (per-utterance, ~100 ms) → Canary. No 30s cache, soft prior only.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (!effectiveShowAuto) {
+            Text("Pick the language you are speaking — Automatic requires Whisper Tiny LID download (98M) or a native Auto engine.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else if (lidStatus is ModelStatus.Ready) {
+            Text("Automatic via Whisper Tiny LID (per-utterance, ~100 ms) → Canary. No 30s cache.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else if (lidStatus is ModelStatus.Downloading) {
+            Text("Downloading Tiny LID…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
 
-    @Composable private fun ModelSection(
+@Composable private fun ModelSection(
     engine: EngineType,
     canaryStatus: ModelStatus,
+    lidStatus: ModelStatus,
+    fastStatus: ModelStatus,
+    nemotronStatus: ModelStatus,
     onSelect:(EngineType)->Unit,
     onDownloadCanary:()->Unit,
+    onDownloadLid:()->Unit,
+    onDownloadFast:()->Unit,
+    onDownloadNemotron560:()->Unit,
+    onDownloadNemotron160:()->Unit,
     onDeleteCanary:()->Unit,
+    onDeleteLid:()->Unit,
+    onDeleteFast:()->Unit,
+    onDeleteNemotron:()->Unit,
     onCancel:()->Unit,
 ){
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)){
         Text("Speech model", style = MaterialTheme.typography.bodyMedium)
-        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device (127M encoder + 71M decoder)", "Primary accurate model. Optimized for your TCL T807D. Auto via Tiny LID (98M) when downloaded, otherwise explicit EN/DE/ES/FR.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
+        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device (127M encoder + 71M decoder)", "Primary accurate model. Auto via Tiny LID (98M) when downloaded, otherwise explicit EN/DE/ES/FR.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
+        ModelCardAdvanced("Whisper Tiny LID", "98 MB · On-device (12M encoder + 86M decoder)", "Enables Automatic language detection per utterance. Required for Auto with Canary. No 30s cache.", selected = false, status = lidStatus, onClick = {}, onDownload = onDownloadLid, onDelete = onDeleteLid, onCancel = onCancel, totalMb = 98)
+        ModelCardAdvanced("FastConformer CTC", "126 MB · On-device (model.int8.onnx)", "Multilingual EN-DE-ES-FR implicit (no language flag). 3× faster than Canary, offline CTC.", selected = false, status = fastStatus, onClick = {}, onDownload = onDownloadFast, onDelete = onDeleteFast, onCancel = onCancel, totalMb = 126)
+        ModelCardAdvanced("Nemotron 3.5 Streaming 560ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream (40 locales, `auto` strips tag). Accuracy-oriented.", selected = false, status = nemotronStatus, onClick = {}, onDownload = onDownloadNemotron560, onDelete = onDeleteNemotron, onCancel = onCancel, totalMb = 475)
+        ModelCardAdvanced("Nemotron 3.5 Streaming 160ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream, low-latency (160ms chunk).", selected = false, status = nemotronStatus, onClick = {}, onDownload = onDownloadNemotron160, onDelete = onDeleteNemotron, onCancel = onCancel, totalMb = 475)
     }
 }
 
