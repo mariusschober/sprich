@@ -51,7 +51,7 @@ object BuiltinManifest {
                 engine = "canary",
                 version = "1.0.0",
                 sourceUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8.tar.bz2",
-                sizeBytes = 147L * 1024 * 1024,
+                sizeBytes = 198L * 1024 * 1024, // 127M encoder + 71M decoder + tokens, actual on-device
                 sha256 = "7a38ed8b13f014ad632b09ff8d22e0c6f1359dd046af9235d281dfae841b9ab9",
                 files = listOf("encoder.int8.onnx","decoder.int8.onnx","tokens.txt"),
                 requiredFreeBytes = 450L * 1024 * 1024,

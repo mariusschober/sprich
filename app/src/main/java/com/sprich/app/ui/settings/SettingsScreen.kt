@@ -52,7 +52,13 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 
             Text("Dictation", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             SettingsToggle("Instant Dictation", "Start when a text field is focused", instant){ scope.launch{ prefs.setInstantMode(it)} }
-            LanguageRow(lang){ scope.launch{ prefs.setLanguage(it)} }
+            // Auto is only offered when the active engine has validated native language=auto.
+            // Canary 180M Flash has no native Auto; showing it would be misleading (stopword heuristic removed).
+            // Explicit language is required for reliable transcription on this engine.
+            LanguageRow(lang, onSelect = { scope.launch{ prefs.setLanguage(it)} }, engine = engine)
+            if (lang == Language.AUTO && engine == EngineType.ACCURATE) {
+                Text("Automatic is not natively supported by Canary on this build — English fallback will be used. Pick an explicit language for best results.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             ModelSection(
                 engine = engine,
                 canaryStatus = canaryStatus,
@@ -119,14 +125,24 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 }
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun LanguageRow(current: Language, onSelect:(Language)->Unit){
+@Composable private fun LanguageRow(current: Language, onSelect:(Language)->Unit, engine: EngineType = EngineType.ACCURATE){
     Column {
         Text("Language", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(8.dp))
+        // Hide Automatic when engine has no native language=auto. See CanaryEngine capabilities languageDetection=false.
+        val showAuto = engine != EngineType.ACCURATE // ACCURATE=Canary has no native Auto; others (future streaming) may.
+        val options = buildList {
+            if (showAuto) add(Language.AUTO to "Automatic")
+            add(Language.EN to "English"); add(Language.DE to "Deutsch"); add(Language.ES to "Español")
+            add(Language.FR to "Français")
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(Language.AUTO to "Automatic", Language.EN to "English", Language.DE to "Deutsch", Language.ES to "Español").forEach { (lang, label) ->
+            options.forEach { (lang, label) ->
                 FilterChip(selected = current==lang, onClick = { onSelect(lang) }, label = { Text(label, style = MaterialTheme.typography.labelSmall) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer))
             }
+        }
+        if (!showAuto) {
+            Text("Pick the language you are speaking — Automatic detection requires a native Auto engine (not Canary).", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -141,7 +157,7 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 ){
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)){
         Text("Speech model", style = MaterialTheme.typography.bodyMedium)
-        ModelCardAdvanced("Canary 180M Flash", "147 MB · On-device", "Primary accurate model. Optimized for your TCL T807D.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 147)
+        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device (127M encoder + 71M decoder)", "Primary accurate model. Optimized for your TCL T807D. Auto language requires explicit selection on this engine.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
     }
 }
 
