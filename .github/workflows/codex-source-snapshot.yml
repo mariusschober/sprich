@@ -1,0 +1,31 @@
+name: Codex source snapshot
+
+on:
+  push:
+    branches:
+      - codex/senior-production-review
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact branch state
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create repository archive
+        run: |
+          git status --short --branch
+          git rev-parse HEAD
+          tar --exclude=.git -czf "$RUNNER_TEMP/sprich-source.tgz" .
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: sprich-source
+          path: ${{ runner.temp }}/sprich-source.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
