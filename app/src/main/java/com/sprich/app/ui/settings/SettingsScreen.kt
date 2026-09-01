@@ -39,6 +39,8 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
     val fastStatus by mm.fastConformerStatus.collectAsState()
     val nemotron560Status by mm.nemotron560Status.collectAsState()
     val nemotron160Status by mm.nemotron160Status.collectAsState()
+    // Single derived readiness — Automatic requires BOTH Tiny LID and FastConformer (no Canary)
+    val autoReady = lidStatus is ModelStatus.Ready && fastStatus is ModelStatus.Ready
 
     Scaffold(
         topBar = {
@@ -56,12 +58,35 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 
             Text("Dictation", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             SettingsToggle("Instant Dictation", "Start when a text field is focused", instant){ scope.launch{ prefs.setInstantMode(it)} }
-            LanguageRow(lang, onSelect = { scope.launch{ prefs.setLanguage(it)} }, lidStatus = lidStatus)
+            LanguageRow(lang, onSelect = { scope.launch{ prefs.setLanguage(it)} }, lidStatus = lidStatus, fastStatus = fastStatus)
             if (lang == Language.AUTO) {
-                when (lidStatus) {
-                    is ModelStatus.Ready -> Text("Automatic via Whisper Tiny LID (98M) → FastConformer 126M (per-utterance, RTF 0.038, 3× faster). Speak any of EN/DE/ES/FR without switching. Canary 180M remains Accurate.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    is ModelStatus.Downloading -> Text("Downloading Tiny LID… Automatic (winner FastConformer) will be available when Ready.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    else -> Text("Automatic is unavailable without Tiny LID (98M) + FastConformer 126M — dictation will not start in Automatic (fail-closed). Download both below or choose explicit EN/DE/ES/FR (Canary Accurate).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                when {
+                    autoReady -> Text("Automatic language — Detects English, German, Spanish and French automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    lidStatus is ModelStatus.Downloading || fastStatus is ModelStatus.Downloading -> Text("Downloading Automatic models… Will be ready when both complete.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    else -> {
+                        val missing = buildList {
+                            if (lidStatus !is ModelStatus.Ready) add("Language detector")
+                            if (fastStatus !is ModelStatus.Ready) add("Fast transcription model")
+                        }.joinToString(" + ")
+                        Text("Automatic — Requires two on-device models: Language detector + Fast transcription model. Missing: $missing", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                if (!autoReady) {
+                    // Setup CTA — download missing
+                    if (lidStatus !is ModelStatus.Ready && lidStatus !is ModelStatus.Downloading) {
+                        TextButton(onClick = { scope.launch { try{ dm.downloadLid() } catch(_:Exception){} } }) { Text("Download language detector") }
+                    }
+                    if (fastStatus !is ModelStatus.Ready && fastStatus !is ModelStatus.Downloading) {
+                        TextButton(onClick = { scope.launch { try{ dm.downloadFastConformer() } catch(_:Exception){} } }) { Text("Download Fast transcription model") }
+                    }
+                    if (lidStatus !is ModelStatus.Ready && fastStatus !is ModelStatus.Ready && lidStatus !is ModelStatus.Downloading && fastStatus !is ModelStatus.Downloading) {
+                        TextButton(onClick = {
+                            scope.launch {
+                                try { dm.downloadLid() } catch(_:Exception){}
+                                try { dm.downloadFastConformer() } catch(_:Exception){}
+                            }
+                        }) { Text("Set up Automatic (download both)") }
+                    }
                 }
             }
             ModelSection(
@@ -110,7 +135,18 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 
             HorizontalDivider()
             Text("Advanced", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            SettingsRow("Current engine", "Canary 180M Flash INT8") {}
+            val transcriptionLabel = when {
+                lang == Language.AUTO && autoReady -> "Current transcription — Automatic · Fast on-device"
+                lang == Language.AUTO && !autoReady -> "Current transcription — Automatic unavailable (missing models)"
+                canaryStatus is ModelStatus.Ready -> "Current transcription — Accurate · ${lang.code.uppercase()}"
+                else -> "Current transcription — Accurate · ${lang.code.uppercase()} (model not Ready)"
+            }
+            val transcriptionDetail = when {
+                lang == Language.AUTO && autoReady -> "Language ID: Whisper Tiny · ASR: FastConformer CTC · 224 MB total"
+                lang == Language.AUTO -> "Requires Tiny LID + FastConformer"
+                else -> "ASR: Canary 180M Flash INT8 · ${if (canaryStatus is ModelStatus.Ready) "Ready" else "Not downloaded"}"
+            }
+            SettingsRow(transcriptionLabel, transcriptionDetail) {}
             SettingsRow("Benchmark", "", actionLabel = "Open", onClick = onBenchmark)
             SettingsRow("Diagnostics", ""){}
             SettingsRow("Open-source licenses", ""){}
@@ -142,13 +178,14 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 }
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun LanguageRow(current: Language, onSelect:(Language)->Unit, lidStatus: ModelStatus){
+@Composable private fun LanguageRow(current: Language, onSelect:(Language)->Unit, lidStatus: ModelStatus, fastStatus: ModelStatus){
     Column {
         Text("Language", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(8.dp))
-        val showAuto = lidStatus is ModelStatus.Ready || lidStatus is ModelStatus.Downloading
-        // Also allow Auto for future native Auto engines, but for now LID is the Auto mechanism
-        val effectiveShowAuto = showAuto
+        val autoReadyRow = lidStatus is ModelStatus.Ready && fastStatus is ModelStatus.Ready
+        val showDownloading = lidStatus is ModelStatus.Downloading || fastStatus is ModelStatus.Downloading
+        // Show Automatic always to allow setup — but indicate readiness; hide only if never downloadable? Keep visible.
+        val effectiveShowAuto = true
         val options = buildList {
             if (effectiveShowAuto) add(Language.AUTO to "Automatic")
             add(Language.EN to "English"); add(Language.DE to "Deutsch"); add(Language.ES to "Español")
@@ -159,12 +196,10 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
                 FilterChip(selected = current==lang, onClick = { onSelect(lang) }, label = { Text(label, style = MaterialTheme.typography.labelSmall) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer))
             }
         }
-        if (!effectiveShowAuto) {
-            Text("Pick the language you are speaking — Automatic requires Whisper Tiny LID (98M) + FastConformer 126M (winner, 3× faster than Canary) — download below.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else if (lidStatus is ModelStatus.Ready) {
-            Text("Automatic via Whisper Tiny LID (98M) → FastConformer 126M (winner, RTF 0.038). No 30s cache. Canary 180M remains Accurate.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else if (lidStatus is ModelStatus.Downloading) {
-            Text("Downloading Tiny LID… Automatic (FastConformer) will be ready shortly.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        when {
+            autoReadyRow -> Text("Automatic language — Detects English, German, Spanish and French automatically. Fast on-device.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            showDownloading -> Text("Downloading Automatic models…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            else -> Text("Automatic requires two models: Language detector + Fast transcription model — download below.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
         }
     }
 }
@@ -192,9 +227,10 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 ){
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)){
         Text("Speech model", style = MaterialTheme.typography.bodyMedium)
-        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device (127M encoder + 71M decoder)", "Accurate explicit (EN/DE/ES/FR fixed). Not primary Auto — winner is FastConformer. Keep for explicit or fallback.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
-        ModelCardAdvanced("Whisper Tiny LID", "98 MB · On-device (12M encoder + 86M decoder)", "Winner Automatic: Tiny LID (winner with FastConformer, 3× faster). Enables per-utterance Auto, no 30s cache.", selected = false, status = lidStatus, onClick = {}, onDownload = onDownloadLid, onDelete = onDeleteLid, onCancel = onCancel, totalMb = 98)
-        ModelCardAdvanced("FastConformer CTC — Automatic Winner", "126 MB · On-device (model.int8.onnx)", "Winner Automatic (with Tiny LID 98M, total 224M). 3× faster than Canary (419ms vs 1560ms), no accuracy penalty on 5-entry corpus.", selected = false, status = fastStatus, onClick = {}, onDownload = onDownloadFast, onDelete = onDeleteFast, onCancel = onCancel, totalMb = 126)
+        Text("Automatic language — Detects English, German, Spanish and French automatically. 224 MB total (98 + 126).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device", "Accurate — Choose language manually for the accurate model.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
+        ModelCardAdvanced("Whisper Tiny — Language detector", "98 MB · On-device", "Automatic language detection.", selected = false, status = lidStatus, onClick = {}, onDownload = onDownloadLid, onDelete = onDeleteLid, onCancel = onCancel, totalMb = 98)
+        ModelCardAdvanced("FastConformer CTC", "126 MB · On-device", "Automatic — Fast on-device transcription.", selected = false, status = fastStatus, onClick = {}, onDownload = onDownloadFast, onDelete = onDeleteFast, onCancel = onCancel, totalMb = 126)
         ModelCardAdvanced("Nemotron 3.5 Streaming 560ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream (40 locales, `auto` strips tag). Accuracy-oriented. Independent of 160.", selected = false, status = nemotron560Status, onClick = {}, onDownload = onDownloadNemotron560, onDelete = onDeleteNemotron560, onCancel = onCancel, totalMb = 475)
         ModelCardAdvanced("Nemotron 3.5 Streaming 160ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream, low-latency (160ms chunk). Independent of 560.", selected = false, status = nemotron160Status, onClick = {}, onDownload = onDownloadNemotron160, onDelete = onDeleteNemotron160, onCancel = onCancel, totalMb = 475)
         if (nemotron560Status is ModelStatus.Ready || nemotron160Status is ModelStatus.Ready) {
