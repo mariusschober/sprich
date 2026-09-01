@@ -28,16 +28,29 @@ class Preferences(context: Context) {
         val KEY_SILENCE_MODE = stringPreferencesKey("silence_mode") // auto, manual
         val KEY_VOCAB = stringPreferencesKey("vocab_json")
         val KEY_LEARN_CORRECTIONS = booleanPreferencesKey("learn_corrections")
-        // Backup remote STT (OpenAI-compatible /audio/transcriptions: Grok x.ai, Groq, fal Wizper, custom)
-        val KEY_STT_MODE = stringPreferencesKey("stt_mode") // local | fallback | remote
+        // Legacy backup remote STT (OpenAI-compatible /audio/transcriptions: Grok x.ai, Groq, fal Wizper, custom)
+        val KEY_STT_MODE = stringPreferencesKey("stt_mode") // local | fallback | remote (legacy raw)
         val KEY_STT_BASE_URL = stringPreferencesKey("stt_base_url")
-        val KEY_STT_API_KEY = stringPreferencesKey("stt_api_key")
+        val KEY_STT_API_KEY = stringPreferencesKey("stt_api_key") // legacy plaintext — migrated to ApiSecretStore, do NOT use for new code
         val KEY_STT_MODEL = stringPreferencesKey("stt_model")
-        // AI polish (OpenAI-compatible /chat/completions)
+        // Legacy AI polish (OpenAI-compatible /chat/completions)
         val KEY_AI_ENABLED = booleanPreferencesKey("ai_polish_enabled")
         val KEY_AI_BASE_URL = stringPreferencesKey("ai_base_url")
         val KEY_AI_API_KEY = stringPreferencesKey("ai_api_key")
         val KEY_AI_MODEL = stringPreferencesKey("ai_model")
+        // Typed product semantics (new)
+        val KEY_TRANSCRIPTION_MODE = stringPreferencesKey("transcription_mode") // on_device | api_primary | local_api_fallback
+        val KEY_STT_PROVIDER_ID = stringPreferencesKey("stt_provider_id") // openai-compatible | meta-muse | mock
+        val KEY_STT_CREDENTIAL_REF = stringPreferencesKey("stt_credential_ref")
+        val KEY_STT_DEADLINE_MS = longPreferencesKey("stt_deadline_ms")
+        val KEY_STT_LANGUAGE_POLICY = stringPreferencesKey("stt_language_policy") // auto | fixed tag
+        val KEY_REFINEMENT_MODE = stringPreferencesKey("refinement_mode") // off | correct | clean_dictation
+        val KEY_REFINEMENT_PROVIDER_ID = stringPreferencesKey("refinement_provider_id")
+        val KEY_REFINEMENT_CREDENTIAL_REF = stringPreferencesKey("refinement_credential_ref")
+        val KEY_REFINEMENT_BASE_URL = stringPreferencesKey("refinement_base_url")
+        val KEY_REFINEMENT_MODEL = stringPreferencesKey("refinement_model")
+        val KEY_REFINEMENT_DEADLINE_MS = longPreferencesKey("refinement_deadline_ms")
+        val KEY_PERSONAL_VOCAB_HINT = booleanPreferencesKey("personal_vocab_hint_enabled")
         // Debug harness (opt-in only, default false, never logs transcript by default)
         val KEY_DEBUG_WAV_CAPTURE = booleanPreferencesKey("debug_wav_capture")
         val KEY_DEBUG_TRANSCRIPT_TRACE = booleanPreferencesKey("debug_transcript_trace")
@@ -83,6 +96,29 @@ class Preferences(context: Context) {
     val aiApiKey: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_AI_API_KEY] ?: "" }
     val aiModel: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_AI_MODEL] ?: "" }
 
+    // Typed flows — new product semantics, with legacy fallback
+    val transcriptionMode: Flow<com.sprich.app.speech.TranscriptionMode> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map { prefs ->
+        prefs[KEY_TRANSCRIPTION_MODE]?.let {
+            try { com.sprich.app.speech.TranscriptionMode.valueOf(it) } catch (_: Exception) { null }
+        } ?: com.sprich.app.speech.TranscriptionMode.fromRaw(prefs[KEY_STT_MODE] ?: "local")
+    }
+    val sttProviderId: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_PROVIDER_ID] ?: "openai-compatible" }
+    val sttCredentialRef: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_CREDENTIAL_REF] ?: "stt_default" }
+    val sttDeadlineMs: Flow<Long> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_DEADLINE_MS] ?: 3500L }
+    val sttLanguagePolicyRaw: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_LANGUAGE_POLICY] ?: "auto" }
+
+    val refinementMode: Flow<com.sprich.app.speech.refinement.RefinementMode> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map { prefs ->
+        prefs[KEY_REFINEMENT_MODE]?.let {
+            try { com.sprich.app.speech.refinement.RefinementMode.valueOf(it) } catch (_: Exception) { com.sprich.app.speech.refinement.RefinementMode.fromRaw(it) }
+        } ?: if (prefs[KEY_AI_ENABLED] == true) com.sprich.app.speech.refinement.RefinementMode.CORRECT else com.sprich.app.speech.refinement.RefinementMode.OFF
+    }
+    val refinementProviderId: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_REFINEMENT_PROVIDER_ID] ?: "openai-compatible" }
+    val refinementCredentialRef: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_REFINEMENT_CREDENTIAL_REF] ?: "refine_default" }
+    val refinementBaseUrl: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_REFINEMENT_BASE_URL] ?: it[KEY_AI_BASE_URL] ?: "" }
+    val refinementModel: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_REFINEMENT_MODEL] ?: it[KEY_AI_MODEL] ?: "" }
+    val refinementDeadlineMs: Flow<Long> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_REFINEMENT_DEADLINE_MS] ?: 1000L }
+    val personalVocabHintEnabled: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_PERSONAL_VOCAB_HINT] ?: false }
+
     val debugWavCapture: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_DEBUG_WAV_CAPTURE] ?: false }
     val debugTranscriptTrace: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_DEBUG_TRANSCRIPT_TRACE] ?: false }
 
@@ -90,10 +126,21 @@ class Preferences(context: Context) {
     suspend fun setSttBaseUrl(v: String){ context.ds.edit{it[KEY_STT_BASE_URL]=v.trim().trimEnd('/')} }
     suspend fun setSttApiKey(v: String){ context.ds.edit{it[KEY_STT_API_KEY]=v.trim()} }
     suspend fun setSttModel(v: String){ context.ds.edit{it[KEY_STT_MODEL]=v.trim()} }
+    suspend fun setTranscriptionMode(v: com.sprich.app.speech.TranscriptionMode){ context.ds.edit{it[KEY_TRANSCRIPTION_MODE]= v.name; it[KEY_STT_MODE]= com.sprich.app.speech.TranscriptionMode.toRaw(v)} }
+    suspend fun setSttProviderId(v: String){ context.ds.edit{it[KEY_STT_PROVIDER_ID]= v} }
+    suspend fun setSttCredentialRef(v: String){ context.ds.edit{it[KEY_STT_CREDENTIAL_REF]= v} }
+    suspend fun setSttDeadlineMs(v: Long){ context.ds.edit{it[KEY_STT_DEADLINE_MS]= v} }
     suspend fun setAiEnabled(v: Boolean){ context.ds.edit{it[KEY_AI_ENABLED]=v} }
     suspend fun setAiBaseUrl(v: String){ context.ds.edit{it[KEY_AI_BASE_URL]=v.trim().trimEnd('/')} }
     suspend fun setAiApiKey(v: String){ context.ds.edit{it[KEY_AI_API_KEY]=v.trim()} }
     suspend fun setAiModel(v: String){ context.ds.edit{it[KEY_AI_MODEL]=v.trim()} }
+    suspend fun setRefinementMode(v: com.sprich.app.speech.refinement.RefinementMode){ context.ds.edit{it[KEY_REFINEMENT_MODE]= v.name; it[KEY_AI_ENABLED]= (v != com.sprich.app.speech.refinement.RefinementMode.OFF)} }
+    suspend fun setRefinementProviderId(v: String){ context.ds.edit{it[KEY_REFINEMENT_PROVIDER_ID]= v} }
+    suspend fun setRefinementCredentialRef(v: String){ context.ds.edit{it[KEY_REFINEMENT_CREDENTIAL_REF]= v} }
+    suspend fun setRefinementBaseUrl(v: String){ context.ds.edit{it[KEY_REFINEMENT_BASE_URL]= v.trim().trimEnd('/')} }
+    suspend fun setRefinementModel(v: String){ context.ds.edit{it[KEY_REFINEMENT_MODEL]= v.trim()} }
+    suspend fun setRefinementDeadlineMs(v: Long){ context.ds.edit{it[KEY_REFINEMENT_DEADLINE_MS]= v} }
+    suspend fun setPersonalVocabHintEnabled(v: Boolean){ context.ds.edit{it[KEY_PERSONAL_VOCAB_HINT]= v} }
     suspend fun setDebugWavCapture(v: Boolean){ context.ds.edit{it[KEY_DEBUG_WAV_CAPTURE]=v} }
     suspend fun setDebugTranscriptTrace(v: Boolean){ context.ds.edit{it[KEY_DEBUG_TRANSCRIPT_TRACE]=v} }
 

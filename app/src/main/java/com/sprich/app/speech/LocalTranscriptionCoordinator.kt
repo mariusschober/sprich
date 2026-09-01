@@ -26,7 +26,7 @@ data class LocalTranscriptionResult(
     val lidRaw: String = "",
 )
 
-class LocalTranscriptionCoordinator(
+open class LocalTranscriptionCoordinator(
     private val lid: WhisperLidEngine,
     private val fast: FastConformerEngine,
     private val canary: CanaryEngine,
@@ -35,7 +35,7 @@ class LocalTranscriptionCoordinator(
      * Transcribe one immutable pending utterance according to its captured route.
      * Does NOT mutate live capture buffers; uses pcm snapshot only.
      */
-    suspend fun transcribe(
+    open suspend fun transcribe(
         pcm: ShortArray,
         route: LocalAsrRoute,
         baseConfig: SpeechSessionConfig,

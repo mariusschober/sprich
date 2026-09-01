@@ -15,8 +15,11 @@ import androidx.compose.ui.unit.dp
 import com.sprich.app.models.download.DownloadManager
 import com.sprich.app.models.manager.ModelManager
 import com.sprich.app.models.manager.ModelStatus
+import com.sprich.app.speech.TranscriptionMode
 import com.sprich.app.speech.api.EngineType
 import com.sprich.app.speech.api.Language
+import com.sprich.app.speech.refinement.RefinementMode
+import com.sprich.app.storage.ApiSecretStore
 import com.sprich.app.storage.Preferences
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -123,15 +126,13 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
             SettingsRow("Stop after silence", "Automatic"){ }
 
             HorizontalDivider()
-            BackupSttSection(prefs)
+            TranscriptionSection(prefs)
             HorizontalDivider()
-            AiPolishSection(prefs)
+            RefinementSection(prefs)
 
             HorizontalDivider()
-            Text("Privacy", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            SettingsRow("Audio storage", "Never"){}
-            SettingsRow("Network use", "Models only"){}
-            SettingsRow("Clear local data", "", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron() } })
+            DynamicPrivacySection(prefs)
+            SettingsRow("Clear local data", "", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); try { com.sprich.app.storage.ApiSecretStore(ctx).clearAll() } catch (_:Exception){}; mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron() } })
 
             HorizontalDivider()
             Text("Advanced", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
@@ -305,74 +306,214 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 }
 
 @Composable
-private fun BackupSttSection(prefs: Preferences) {
+private fun TranscriptionSection(prefs: Preferences) {
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val modeRaw by prefs.sttModeRaw.collectAsState(initial = "local")
-    var baseUrl by remember { mutableStateOf("") }
-    var apiKey by remember { mutableStateOf("") }
-    var model by remember { mutableStateOf("whisper-large-v3") }
-    LaunchedEffect(Unit) {
-        baseUrl = prefs.sttBaseUrl.first()
-        apiKey = prefs.sttApiKey.first()
-        model = prefs.sttModel.first().ifBlank { "whisper-large-v3" }
-    }
+    val mode by prefs.transcriptionMode.collectAsState(initial = TranscriptionMode.ON_DEVICE)
+    val providerId by prefs.sttProviderId.collectAsState(initial = "openai-compatible")
+    val baseUrl by prefs.sttBaseUrl.collectAsState(initial = "")
+    val model by prefs.sttModel.collectAsState(initial = "whisper-large-v3")
+    val secretStore = remember { ApiSecretStore(ctx) }
+    var hasKey by remember { mutableStateOf(false) }
+    var keyInput by remember { mutableStateOf("") }
+    var showKeyEntry by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { hasKey = secretStore.hasSecret("stt_default") || prefs.sttApiKey.first().isNotBlank() }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Backup speech-to-text", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-        Text("OpenAI-compatible endpoint. Works with Grok (x.ai), Groq, Wizper via fal proxies, or any custom gateway.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Transcription", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = modeRaw == "local", onClick = { scope.launch { prefs.setSttMode(Preferences.SttMode.LOCAL) } }, label = { Text("Local only", style = MaterialTheme.typography.labelSmall) })
-            FilterChip(selected = modeRaw == "fallback", onClick = { scope.launch { prefs.setSttMode(Preferences.SttMode.FALLBACK) } }, label = { Text("Local→Cloud fallback", style = MaterialTheme.typography.labelSmall) })
-            FilterChip(selected = modeRaw == "remote", onClick = { scope.launch { prefs.setSttMode(Preferences.SttMode.REMOTE) } }, label = { Text("Cloud primary", style = MaterialTheme.typography.labelSmall) })
+            FilterChip(selected = mode == TranscriptionMode.ON_DEVICE, onClick = { scope.launch { prefs.setTranscriptionMode(TranscriptionMode.ON_DEVICE) } }, label = { Text("On-device", style = MaterialTheme.typography.labelSmall) })
+            FilterChip(selected = mode == TranscriptionMode.API_PRIMARY, onClick = { scope.launch { prefs.setTranscriptionMode(TranscriptionMode.API_PRIMARY) } }, label = { Text("API", style = MaterialTheme.typography.labelSmall) })
+            FilterChip(selected = mode == TranscriptionMode.LOCAL_API_FALLBACK, onClick = { scope.launch { prefs.setTranscriptionMode(TranscriptionMode.LOCAL_API_FALLBACK) } }, label = { Text("On-device → API fallback", style = MaterialTheme.typography.labelSmall) })
         }
-        if (modeRaw != "local") {
+        if (mode != TranscriptionMode.ON_DEVICE) {
+            Text("Audio is sent directly from your device to your selected transcription provider using your API key. Sprich does not provide, proxy or receive your API key. Usage is billed directly by your provider.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                AssistChip(onClick = { baseUrl = "https://api.x.ai/v1"; scope.launch { prefs.setSttBaseUrl(baseUrl); prefs.setSttModel(model) } }, label = { Text("Grok x.ai", style = MaterialTheme.typography.labelSmall) })
-                AssistChip(onClick = { baseUrl = "https://api.groq.com/openai/v1"; model = "whisper-large-v3"; scope.launch { prefs.setSttBaseUrl(baseUrl); prefs.setSttModel(model) } }, label = { Text("Groq Whisper", style = MaterialTheme.typography.labelSmall) })
-                AssistChip(onClick = { scope.launch { prefs.setSttBaseUrl(baseUrl); prefs.setSttModel(model) } }, label = { Text("Custom / fal", style = MaterialTheme.typography.labelSmall) })
+                FilterChip(selected = providerId == "openai-compatible", onClick = { scope.launch { prefs.setSttProviderId("openai-compatible") } }, label = { Text("OpenAI-compatible", style = MaterialTheme.typography.labelSmall) })
+                FilterChip(selected = providerId == "meta-muse", onClick = { scope.launch { prefs.setSttProviderId("meta-muse") } }, label = { Text("Meta Muse (blocked)", style = MaterialTheme.typography.labelSmall) })
+                FilterChip(selected = providerId == "custom", onClick = { scope.launch { prefs.setSttProviderId("custom") } }, label = { Text("Custom", style = MaterialTheme.typography.labelSmall) })
             }
-            OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttBaseUrl(baseUrl) } }) { Text("Save") } })
-            OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, label = { Text("API key") }, singleLine = true,
-                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttApiKey(apiKey) } }) { Text("Save") } })
-            OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("Model") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttModel(model) } }) { Text("Save") } })
+            // API key: Saved / Replace, never reload plaintext
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("API key", style = MaterialTheme.typography.bodyMedium)
+                if (hasKey) {
+                    AssistChip(onClick = { showKeyEntry = true; keyInput = "" }, label = { Text("Saved — Replace") })
+                    TextButton(onClick = { scope.launch { secretStore.removeSecret("stt_default"); prefs.setSttApiKey(""); hasKey = false; testResult = "Key removed" } }) { Text("Remove") }
+                } else {
+                    AssistChip(onClick = { showKeyEntry = true }, label = { Text("Add") })
+                    Text("Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+            if (showKeyEntry) {
+                var reveal by remember { mutableStateOf(false) }
+                OutlinedTextField(value = keyInput, onValueChange = { keyInput = it }, label = { Text("API key") }, singleLine = true,
+                    visualTransformation = if (reveal) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    trailingIcon = {
+                        Row {
+                            TextButton(onClick = { reveal = !reveal }) { Text(if (reveal) "Hide" else "Show") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    secretStore.saveSecret("stt_default", keyInput.trim())
+                                    // Do NOT store plaintext in DataStore; keep ref only
+                                    prefs.setSttCredentialRef("stt_default")
+                                    keyInput = ""
+                                    showKeyEntry = false
+                                    hasKey = true
+                                    testResult = "Saved"
+                                }
+                            }) { Text("Save") }
+                        }
+                    }, modifier = Modifier.fillMaxWidth())
+            }
+            var editBaseUrl by remember { mutableStateOf(baseUrl) }
+            var editModel by remember { mutableStateOf(model) }
+            LaunchedEffect(baseUrl) { editBaseUrl = baseUrl }
+            LaunchedEffect(model) { editModel = model }
+            OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it }, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttBaseUrl(editBaseUrl) } }) { Text("Save") } })
+            OutlinedTextField(value = editModel, onValueChange = { editModel = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttModel(editModel) } }) { Text("Save") } })
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(onClick = { editBaseUrl = "https://api.x.ai/v1"; scope.launch { prefs.setSttBaseUrl(editBaseUrl) } }, label = { Text("Grok x.ai") })
+                AssistChip(onClick = { editBaseUrl = "https://api.groq.com/openai/v1"; editModel = "whisper-large-v3"; scope.launch { prefs.setSttBaseUrl(editBaseUrl); prefs.setSttModel(editModel) } }, label = { Text("Groq Whisper") })
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    scope.launch {
+                        testResult = "Testing…"
+                        try {
+                            val t0 = System.currentTimeMillis()
+                            val cfg = com.sprich.app.speech.remote.RemoteSttConfig(providerId, editBaseUrl, editModel, com.sprich.app.speech.LanguagePolicy.Automatic, 3500L, "stt_default")
+                            val prov = com.sprich.app.speech.remote.OpenAiCompatibleSttProvider(editBaseUrl, editModel, okhttp3.OkHttpClient())
+                            val fakePcm = ShortArray(16000) { 0 }
+                            val cred = secretStore.loadSecret("stt_default") ?: prefs.sttApiKey.first()
+                            if (cred.isBlank()) { testResult = "Missing API key"; return@launch }
+                            val res = prov.transcribe(com.sprich.app.speech.remote.RemoteSttRequest(fakePcm, 16000, com.sprich.app.speech.LanguagePolicy.Automatic, utteranceId = 1, credential = cred))
+                            testResult = "Connected · ${System.currentTimeMillis() - t0} ms · ${res.text.take(24)}"
+                        } catch (e: Exception) {
+                            val failure = com.sprich.app.speech.remote.ApiFailure.fromException(e)
+                            testResult = failure.toDisplay() + " · " + (e.message?.take(60) ?: "")
+                        }
+                    }
+                }) { Text("Test") }
+                if (testResult != null) Text(testResult!!, style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
 
 @Composable
-private fun AiPolishSection(prefs: Preferences) {
+private fun RefinementSection(prefs: Preferences) {
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val enabled by prefs.aiEnabled.collectAsState(initial = false)
-    var baseUrl by remember { mutableStateOf("") }
-    var apiKey by remember { mutableStateOf("") }
-    var model by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) {
-        baseUrl = prefs.aiBaseUrl.first()
-        apiKey = prefs.aiApiKey.first()
-        model = prefs.aiModel.first()
-    }
+    val mode by prefs.refinementMode.collectAsState(initial = RefinementMode.OFF)
+    val baseUrl by prefs.refinementBaseUrl.collectAsState(initial = "")
+    val model by prefs.refinementModel.collectAsState(initial = "")
+    val providerId by prefs.refinementProviderId.collectAsState(initial = "openai-compatible")
+    val secretStore = remember { ApiSecretStore(ctx) }
+    var hasKey by remember { mutableStateOf(false) }
+    var keyInput by remember { mutableStateOf("") }
+    var showKeyEntry by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { hasKey = secretStore.hasSecret("refine_default") || prefs.aiApiKey.first().isNotBlank() }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("AI polish", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-        SettingsToggle(
-            "Fix grammar & punctuation with AI",
-            "Sends transcript to a fast LLM after dictation. Off = fully on-device.",
-            enabled,
-        ) { scope.launch { prefs.setAiEnabled(it) } }
-        if (enabled) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                AssistChip(onClick = { baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; model = "gemini-2.0-flash-lite"; scope.launch { prefs.setAiBaseUrl(baseUrl); prefs.setAiModel(model) } }, label = { Text("Gemini fast", style = MaterialTheme.typography.labelSmall) })
-                AssistChip(onClick = { baseUrl = "https://api.openai.com/v1"; model = "gpt-4o-mini"; scope.launch { prefs.setAiBaseUrl(baseUrl); prefs.setAiModel(model) } }, label = { Text("GPT mini", style = MaterialTheme.typography.labelSmall) })
-                AssistChip(onClick = { baseUrl = "https://api.x.ai/v1"; model = "grok-3-mini"; scope.launch { prefs.setAiBaseUrl(baseUrl); prefs.setAiModel(model) } }, label = { Text("Grok mini", style = MaterialTheme.typography.labelSmall) })
+        Text("Improve transcript", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = mode == RefinementMode.OFF, onClick = { scope.launch { prefs.setRefinementMode(RefinementMode.OFF) } }, label = { Text("Off", style = MaterialTheme.typography.labelSmall) })
+            FilterChip(selected = mode == RefinementMode.CORRECT, onClick = { scope.launch { prefs.setRefinementMode(RefinementMode.CORRECT) } }, label = { Text("Correct", style = MaterialTheme.typography.labelSmall) })
+            FilterChip(selected = mode == RefinementMode.CLEAN_DICTATION, onClick = { scope.launch { prefs.setRefinementMode(RefinementMode.CLEAN_DICTATION) } }, label = { Text("Clean dictation", style = MaterialTheme.typography.labelSmall) })
+        }
+        Text(when (mode) {
+            RefinementMode.CORRECT -> "Fixes grammar, punctuation and obvious transcription errors while preserving your wording."
+            RefinementMode.CLEAN_DICTATION -> "Also removes obvious fillers and false starts so natural speech reads like written text."
+            else -> "Off = fully on-device."
+        }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (mode != RefinementMode.OFF) {
+            Text("Transcript text is sent directly from your device to your selected refinement provider using your API key. Sprich does not provide, proxy or receive your API key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("API key", style = MaterialTheme.typography.bodyMedium)
+                if (hasKey) {
+                    AssistChip(onClick = { showKeyEntry = true; keyInput = "" }, label = { Text("Saved — Replace") })
+                    TextButton(onClick = { scope.launch { secretStore.removeSecret("refine_default"); prefs.setAiApiKey(""); hasKey = false; testResult = "Key removed" } }) { Text("Remove") }
+                } else {
+                    AssistChip(onClick = { showKeyEntry = true }, label = { Text("Add") })
+                    Text("Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
             }
-            OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text("Base URL (OpenAI-compatible)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setAiBaseUrl(baseUrl) } }) { Text("Save") } })
-            OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, label = { Text("API key") }, singleLine = true,
-                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setAiApiKey(apiKey) } }) { Text("Save") } })
-            OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("Model") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setAiModel(model) } }) { Text("Save") } })
+            if (showKeyEntry) {
+                var reveal by remember { mutableStateOf(false) }
+                OutlinedTextField(value = keyInput, onValueChange = { keyInput = it }, label = { Text("API key") }, singleLine = true,
+                    visualTransformation = if (reveal) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    trailingIcon = {
+                        Row {
+                            TextButton(onClick = { reveal = !reveal }) { Text(if (reveal) "Hide" else "Show") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    secretStore.saveSecret("refine_default", keyInput.trim())
+                                    prefs.setRefinementCredentialRef("refine_default")
+                                    keyInput = ""; showKeyEntry = false; hasKey = true; testResult = "Saved"
+                                }
+                            }) { Text("Save") }
+                        }
+                    }, modifier = Modifier.fillMaxWidth())
+            }
+            var editBaseUrl by remember { mutableStateOf(baseUrl) }
+            var editModel by remember { mutableStateOf(model) }
+            LaunchedEffect(baseUrl) { editBaseUrl = baseUrl }
+            LaunchedEffect(model) { editModel = model }
+            OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it }, label = { Text("Base URL (OpenAI-compatible)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setRefinementBaseUrl(editBaseUrl) } }) { Text("Save") } })
+            OutlinedTextField(value = editModel, onValueChange = { editModel = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setRefinementModel(editModel) } }) { Text("Save") } })
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(onClick = { editBaseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; editModel = "gemini-2.0-flash-lite"; scope.launch { prefs.setRefinementBaseUrl(editBaseUrl); prefs.setRefinementModel(editModel) } }, label = { Text("Gemini fast") })
+                AssistChip(onClick = { editBaseUrl = "https://api.openai.com/v1"; editModel = "gpt-4o-mini"; scope.launch { prefs.setRefinementBaseUrl(editBaseUrl); prefs.setRefinementModel(editModel) } }, label = { Text("GPT mini") })
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    scope.launch {
+                        testResult = "Testing…"
+                        val cannedInput = "tomorrow i think we should meet at nine"
+                        try {
+                            val t0 = System.currentTimeMillis()
+                            val prov = com.sprich.app.speech.refinement.OpenAiCompatibleRefinementProvider(editBaseUrl, editModel, secretStore.loadSecret("refine_default") ?: prefs.aiApiKey.first(), okhttp3.OkHttpClient())
+                            val res = prov.refine(com.sprich.app.speech.refinement.RefinementRequest(cannedInput, "en", mode))
+                            val ms = System.currentTimeMillis() - t0
+                            testResult = "Input: $cannedInput → $res · ${ms}ms"
+                        } catch (e: Exception) {
+                            testResult = "Failed: ${e.message?.take(80)}"
+                        }
+                    }
+                }) { Text("Test") }
+                if (testResult != null) Text(testResult!!, style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
+
+@Composable
+private fun DynamicPrivacySection(prefs: Preferences) {
+    val mode by prefs.transcriptionMode.collectAsState(initial = TranscriptionMode.ON_DEVICE)
+    val refine by prefs.refinementMode.collectAsState(initial = RefinementMode.OFF)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Privacy", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        when {
+            mode == TranscriptionMode.ON_DEVICE && refine == RefinementMode.OFF ->
+                Text("Speech and transcript stay on this device. Network is used only for model downloads.", style = MaterialTheme.typography.bodySmall)
+            mode != TranscriptionMode.ON_DEVICE && refine != RefinementMode.OFF ->
+                Text("Audio is sent directly from your device to your selected transcription provider using your API key. Transcript text is sent directly to your refinement provider. Sprich does not provide, proxy or receive your API key. API usage is billed directly by your selected provider.", style = MaterialTheme.typography.bodySmall)
+            mode != TranscriptionMode.ON_DEVICE ->
+                Text("Audio is sent directly from your device to your selected transcription provider using your API key. Sprich does not provide, proxy or receive your API key. API usage is billed directly by your provider.", style = MaterialTheme.typography.bodySmall)
+            refine != RefinementMode.OFF ->
+                Text("Transcript text is sent directly from your device to your selected refinement provider using your API key. Sprich does not provide, proxy or receive your API key.", style = MaterialTheme.typography.bodySmall)
+        }
+        Text("Audio storage: Never", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Network use: ${when { mode == TranscriptionMode.ON_DEVICE && refine == RefinementMode.OFF -> "Models only"; mode != TranscriptionMode.ON_DEVICE && refine != RefinementMode.OFF -> "Models + STT + refinement"; mode != TranscriptionMode.ON_DEVICE -> "Models + STT"; else -> "Models + refinement" }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+// Deprecated wrappers for backward compatibility — delegate to new sections
+@Composable
+private fun BackupSttSection(prefs: Preferences) { TranscriptionSection(prefs) }
+@Composable
+private fun AiPolishSection(prefs: Preferences) { RefinementSection(prefs) }

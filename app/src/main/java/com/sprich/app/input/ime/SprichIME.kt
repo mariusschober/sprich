@@ -41,6 +41,26 @@ import com.sprich.app.speech.LocalTranscriptionCoordinator
 import com.sprich.app.speech.ResolvedUtteranceLanguage
 import com.sprich.app.speech.canary.CanaryEngine
 import com.sprich.app.speech.remote.RemoteSttEngine
+import com.sprich.app.speech.TranscriptionMode
+import com.sprich.app.speech.UtterancePlan
+import com.sprich.app.speech.TranscriptionPlan
+import com.sprich.app.speech.RefinementPlan
+import com.sprich.app.speech.LanguagePolicy
+import com.sprich.app.speech.TranscriptionResult
+import com.sprich.app.speech.TranscriptionSourceId
+import com.sprich.app.speech.TranscriptionCoordinator
+import com.sprich.app.speech.remote.RemoteSttConfig
+import com.sprich.app.speech.remote.RemoteSttProvider
+import com.sprich.app.speech.remote.OpenAiCompatibleSttProvider
+import com.sprich.app.speech.remote.MockRemoteSttProvider
+import com.sprich.app.speech.remote.DeadlinePolicy
+import com.sprich.app.speech.refinement.RefinementMode
+import com.sprich.app.speech.refinement.RefinementConfig
+import com.sprich.app.speech.refinement.TranscriptRefinementProvider
+import com.sprich.app.speech.refinement.OpenAiCompatibleRefinementProvider
+import com.sprich.app.speech.refinement.RefinementValidator
+import com.sprich.app.speech.refinement.MockRefinementProvider
+import com.sprich.app.storage.ApiSecretStore
 import com.sprich.app.storage.Preferences
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -98,12 +118,13 @@ class SprichIME : InputMethodService() {
     // Kept for legacy fallback isolation checks; primary source is utteranceAudio.
     @Volatile private var frozenUtterancePcm: ShortArray? = null
 
-    // --- Phase 0A: immutable active utterance descriptor — frozen at onset, Settings changes apply to NEXT utterance only.
+    // --- Phase 0A+2: immutable active utterance descriptor — frozen at onset, Settings changes apply to NEXT utterance only.
     // Once speech onset occurs, route / language configuration / transcription mode / provider config revision / refinement mode must not change for that utterance.
     data class ActiveUtterance(
         val token: UtteranceToken,
         val localRoute: LocalAsrRoute,
         val speechConfig: SpeechSessionConfig,
+        val plan: UtterancePlan,
     )
     @Volatile private var activeUtterance: ActiveUtterance? = null
 
@@ -115,10 +136,22 @@ class SprichIME : InputMethodService() {
         val pcm: ShortArray,
         val config: SpeechSessionConfig,
         val route: LocalAsrRoute,
+        val plan: UtterancePlan,
         val pushedSamples: Long,
         val reason: StopReason,
         val endpointTimestampNanos: Long,
-    )
+    ) {
+        // Legacy constructor for tests that still use 5-arg shape (route/config only)
+        constructor(
+            token: UtteranceToken,
+            pcm: ShortArray,
+            config: SpeechSessionConfig,
+            route: LocalAsrRoute,
+            pushedSamples: Long,
+            reason: StopReason,
+            endpointTimestampNanos: Long,
+        ) : this(token, pcm, config, route, UtterancePlan(TranscriptionPlan.Local(route), RefinementPlan.Off, config), pushedSamples, reason, endpointTimestampNanos)
+    }
     // Single authoritative long-lived finalization actor — exactly one consumer, FIFO, no worker start/stop race, genuinely bounded.
     // Bounded capacity 4 ensures PCM retention bounded (max ~4 utterances). Overload is explicit via rejected/suppressed counters, not silent loss.
     private val maxPendingQueueDepth = 4
@@ -158,6 +191,27 @@ class SprichIME : InputMethodService() {
     private lateinit var vocabRepo: com.sprich.app.vocab.VocabRepository
     private val vocabStore get() = if (::vocabRepo.isInitialized) vocabRepo.store() else com.sprich.app.vocab.PersonalVocabStore()
     private var hapticsEnabled: Boolean = true
+    // New product modes
+    private var transcriptionMode: TranscriptionMode = TranscriptionMode.ON_DEVICE
+    private var refinementMode: RefinementMode = RefinementMode.OFF
+    private var sttProviderId: String = "openai-compatible"
+    private var sttBaseUrlState: String = ""
+    private var sttModelState: String = "whisper-large-v3"
+    private var sttDeadlineMsState: Long = 3500L
+    private var refinementBaseUrlState: String = ""
+    private var refinementModelState: String = ""
+    private var refinementDeadlineMsState: Long = 1000L
+    private var personalVocabHintEnabled: Boolean = false
+    private val apiSecretStore by lazy { ApiSecretStore(this) }
+    private val sharedHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+    private var transcriptionCoordinator: TranscriptionCoordinator? = null
+    private var refinementProvider: TranscriptRefinementProvider? = null
     private val thermalMonitor = ThermalMonitor { temp -> Log.w("SprichIME", "thermal throttle $temp°C") }
     // Swipe-to-delete state (right-to-left deletes words, hold repeats accelerating; left-to-right undoes)
     private var downX = 0f
@@ -246,6 +300,17 @@ class SprichIME : InputMethodService() {
                     }
                 } catch (e: Exception) { Log.w("SprichIME", "engineType collect fail", e) }
             }
+            // Observe new typed product modes
+            scope.launch { try { prefs.transcriptionMode.collect { transcriptionMode = it; Log.i("SprichIME", "transcriptionMode=$it") } } catch (e: Exception) { Log.w("SprichIME", "transcriptionMode collect fail", e) } }
+            scope.launch { try { prefs.refinementMode.collect { refinementMode = it } } catch (e: Exception) { Log.w("SprichIME", "refinementMode collect fail", e) } }
+            scope.launch { try { prefs.sttProviderId.collect { sttProviderId = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.sttBaseUrl.collect { sttBaseUrlState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.sttModel.collect { sttModelState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.sttDeadlineMs.collect { sttDeadlineMsState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.refinementBaseUrl.collect { refinementBaseUrlState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.refinementModel.collect { refinementModelState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.refinementDeadlineMs.collect { refinementDeadlineMsState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.personalVocabHintEnabled.collect { personalVocabHintEnabled = it } } catch (e: Exception) {} }
             // Selectively preload only the currently selected route — do NOT load Canary when Automatic uses FastConformer
             scope.launch {
                 try {
@@ -773,8 +838,10 @@ class SprichIME : InputMethodService() {
                 return
             }
             // Language handling: Automatic = Tiny LID + FastConformer (no Canary), Accurate = Canary explicit
-            // Automatic requires BOTH Tiny LID and FastConformer (isAutomaticReady), fail-closed otherwise.
-            if (speechLanguage is SpeechLanguage.Auto) {
+            // Automatic requires BOTH Tiny LID and FastConformer (isAutomaticReady) when ON_DEVICE or LOCAL_API_FALLBACK.
+            // API_PRIMARY must NOT require local models when provider supports Automatic (phase 4).
+            val requiresLocalForAuto = transcriptionMode == TranscriptionMode.ON_DEVICE || transcriptionMode == TranscriptionMode.LOCAL_API_FALLBACK
+            if (speechLanguage is SpeechLanguage.Auto && requiresLocalForAuto) {
                 // Winner 2026-09-02: Automatic = Tiny LID (98M) + FastConformer 126M (Architecture B). Both required.
                 val mmForCheck = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
                 val lidReady = try { mmForCheck?.isWhisperTinyReady() == true } catch (_: Exception) { false }
@@ -800,6 +867,9 @@ class SprichIME : InputMethodService() {
                 Log.i("SprichIME", "Auto via Tiny LID per-utterance + FastConformer 126M (winner) — proceeding, LID will detect EN/DE/ES/FR, FastConformer will transcribe (RTF 0.038)")
                 try { lidEngine.load() } catch (_: Exception) {}
                 try { fastConformerEngine.load() } catch (_: Exception) {}
+            } else if (speechLanguage is SpeechLanguage.Auto && transcriptionMode == TranscriptionMode.API_PRIMARY) {
+                Log.i("SprichIME", "API_PRIMARY with Auto — skipping local LID/FastConformer gate, provider handles language (Phase 4 independence)")
+                // Local fallback will be loaded lazily on remote failure if available
             }
             if (session.state.value is SessionState.Listening || session.state.value is SessionState.Speech) return
             val permissionGranted = ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -832,10 +902,24 @@ class SprichIME : InputMethodService() {
             statusText?.text = "Loading speech model…"
             (statusText?.tag as? TextView)?.text = "First start can take a moment"
 
-            // Route-aware loading — only load required engines, do NOT load Canary for Automatic
+            // Route-aware loading — only load required engines, do NOT load Canary for Automatic. For API_PRIMARY, local not required.
             val routeForSession = determineRoute(speechLanguage)
+            val requiresLocalLoad = transcriptionMode == TranscriptionMode.ON_DEVICE || transcriptionMode == TranscriptionMode.LOCAL_API_FALLBACK
             val mmForLoad = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
-            val loadResult: Result<Unit> = when (routeForSession) {
+            val loadResult: Result<Unit> = if (!requiresLocalLoad && transcriptionMode == TranscriptionMode.API_PRIMARY) {
+                // API primary: no local model required for successful remote path; fallback loaded lazily on failure
+                val remoteCfg = buildRemoteSttConfig()
+                if (remoteCfg == null) {
+                    Result.failure(Exception("Remote STT not configured — set base URL/model/API key in Settings"))
+                } else {
+                    // Verify credential exists (secret store or legacy)
+                    val cred = try { apiSecretStore.loadSecret(remoteCfg.credentialRef) ?: "" } catch (_: Exception) { "" }
+                    val legacyCred = try { runBlocking { prefs.sttApiKey.first() } } catch (_: Exception) { "" }
+                    if (cred.isBlank() && legacyCred.isBlank()) {
+                        Result.failure(Exception("Missing API key for ${remoteCfg.providerId} — add in Settings"))
+                    } else Result.success(Unit)
+                }
+            } else when (routeForSession) {
                 is LocalAsrRoute.AutomaticFastConformer -> {
                     // Automatic already validated LID+Fast ready above; now load them, never Canary
                     val lidR = try { lidEngine.load().also { lidLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
@@ -850,7 +934,7 @@ class SprichIME : InputMethodService() {
             if (loadResult.isFailure) {
                 failSession(
                     generation,
-                    "engine load failed route=$routeForSession",
+                    "engine load failed route=$routeForSession mode=$transcriptionMode",
                     "Speech model unavailable",
                     "Restart Sprich or reinstall the APK",
                     loadResult.exceptionOrNull(),
@@ -888,36 +972,41 @@ class SprichIME : InputMethodService() {
             )
             Log.i("SprichIME", "session language resolved=${activeConfig.resolvedLanguageTag()} task=${activeConfig.resolvedTask()}")
 
-            // Start session on required engine(s) only; Accurate uses Canary, Automatic does not need Canary session
-            try { engine.cancelSession() } catch (_: Exception) {}
-            try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
-            try {
-                when (routeForSession) {
-                    is LocalAsrRoute.AccurateCanary -> engine.beginSession(activeConfig)
-                    is LocalAsrRoute.AutomaticFastConformer -> {
-                        // Automatic is final-only offline — FastConformer session holds pcmBuffer but collector is authoritative
-                        fastConformerEngine.beginSession(activeConfig)
-                        // Do NOT start Canary session for Automatic — no Canary decode, no wrong-language partials
+            // Start session on required engine(s) only; for API_PRIMARY, no local session needed (remote handles everything)
+            val needsLocalSession = transcriptionMode != TranscriptionMode.API_PRIMARY
+            if (needsLocalSession) {
+                try { engine.cancelSession() } catch (_: Exception) {}
+                try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
+                try {
+                    when (routeForSession) {
+                        is LocalAsrRoute.AccurateCanary -> engine.beginSession(activeConfig)
+                        is LocalAsrRoute.AutomaticFastConformer -> {
+                            fastConformerEngine.beginSession(activeConfig)
+                        }
                     }
+                } catch (t: Throwable) {
+                    failSession(
+                        generation,
+                        "begin session failed route=$routeForSession mode=$transcriptionMode",
+                        "Speech engine failed",
+                        "Tap to retry",
+                        t,
+                    )
+                    return
                 }
-            } catch (t: Throwable) {
-                failSession(
-                    generation,
-                    "begin session failed route=$routeForSession",
-                    "Speech engine failed",
-                    "Tap to retry",
-                    t,
-                )
-                return
+            } else {
+                Log.i("SprichIME", "API_PRIMARY — skipping local ASR session start, remote will handle transcription")
+                try { engine.cancelSession() } catch (_: Exception) {}
+                try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
             }
 
             engineJob?.cancelAndJoin()
             engineJob = scope.launch {
                 try {
-                    // Only collect Canary partials when explicitly in Accurate mode — Automatic is final-only, no Canary decode
-                    val shouldCollectPartials = routeForSession is LocalAsrRoute.AccurateCanary
+                    // Only collect Canary partials when local route is Accurate AND local session is needed
+                    val shouldCollectPartials = needsLocalSession && routeForSession is LocalAsrRoute.AccurateCanary
                     if (!shouldCollectPartials) {
-                        Log.i("SprichIME", "partial collection skipped for Automatic (final-only FastConformer, no wrong-lang partials)")
+                        Log.i("SprichIME", "partial collection skipped — mode=$transcriptionMode route=$routeForSession (final-only or remote primary)")
                         return@launch
                     }
                     engine.partialTranscript().collect { update ->
@@ -1083,14 +1172,21 @@ class SprichIME : InputMethodService() {
                 // AUTHORITATIVE: UtteranceAudioCollector owns seeding preRoll exactly once — engine-independent.
                 frozenUtterancePcm = null
                 try { utteranceAudio.begin(preRoll) } catch (_: Exception) {}
-                // Freeze route & config at onset — Settings changes after this apply to NEXT utterance only (Phase 0A).
-                val routeAtOnset = determineRoute(speechLanguage)
-                // Explicit Accurate mode: Canary is live consumer for partials, but NOT authoritative.
-                // Automatic is final-only FastConformer via collector — no second full PCM duplication (Phase 0B).
-                if (routeAtOnset is LocalAsrRoute.AccurateCanary) {
+                // Freeze full utterance plan at onset — including transcription/refinement mode, provider config revision, language (Phase 2). Settings changes apply to NEXT utterance only.
+                val planAtOnset = buildUtterancePlan()
+                val routeAtOnset = when (val tp = planAtOnset.transcription) {
+                    is TranscriptionPlan.Local -> tp.route
+                    is TranscriptionPlan.ApiPrimary -> tp.localFallback ?: tp.remote.let { determineRoute(speechLanguage) }
+                    is TranscriptionPlan.LocalApiFallback -> tp.local
+                }
+                // For streaming API we would start session here via planAtOnset.transcription; for now non-streaming uses frozen PCM at endpoint.
+                // Only Canary as consumer for live partials when local route is Accurate; otherwise collector is sole owner (no duplicate Fast buffer).
+                val isAccurateLocal = routeAtOnset is LocalAsrRoute.AccurateCanary && planAtOnset.transcription is TranscriptionPlan.Local
+                val isFallbackAccurate = (planAtOnset.transcription as? TranscriptionPlan.LocalApiFallback)?.local is LocalAsrRoute.AccurateCanary
+                if (isAccurateLocal || isFallbackAccurate) {
                     try { engine.beginUtteranceCapture(preRoll) } catch (_: Exception) {}
                 }
-                // For Automatic: do NOT maintain duplicate FastConformer live buffer; collector is sole owner.
+                // For Automatic or API-primary: do NOT maintain duplicate FastConformer live buffer; collector is sole owner.
                 // Create immutable token for this utterance — monotonically increasing utteranceId
                 val utteranceId = utteranceIdCounter.incrementAndGet()
                 val token = UtteranceToken(
@@ -1102,9 +1198,9 @@ class SprichIME : InputMethodService() {
                     capturedIc = try { currentInputConnection } catch (_: Exception) { null },
                 )
                 currentUtteranceToken = token
-                // Single immutable descriptor for the entire utterance lifetime — later chunks/endpoint must not re-read mutable speechLanguage.
-                activeUtterance = ActiveUtterance(token, routeAtOnset, activeConfig.copy())
-                Log.i("SprichIME", "utterance onset token=$token routeAtOnset=$routeAtOnset preRollSamples=${preRoll.size} pushedTotal=$pipelinePushedSampleCount")
+                // Single immutable descriptor for the entire utterance lifetime — later chunks/endpoint must not re-read mutable prefs.
+                activeUtterance = ActiveUtterance(token, routeAtOnset, planAtOnset.speechConfig, planAtOnset)
+                Log.i("SprichIME", "utterance onset token=$token plan=$planAtOnset routeAtOnset=$routeAtOnset preRollSamples=${preRoll.size} pushedTotal=$pipelinePushedSampleCount")
                 scope.launch {
                     if (generation == sessionGeneration.get() && session.state.value is SessionState.Listening) {
                         session.onSpeechOnset()
@@ -1156,17 +1252,19 @@ class SprichIME : InputMethodService() {
                     Log.w("SprichIME", "endpoint without token — creating synthetic token")
                     UtteranceToken(session.sessionId, generation, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
                 }
-                // Use frozen route/config from activeUtterance — never re-read mutable speechLanguage (Phase 0A).
+                // Use frozen plan/route/config from activeUtterance — never re-read mutable prefs (Phase 0A+2).
                 val captured = activeUtterance
+                val pendingPlan = captured?.takeIf { it.token.utteranceId == token.utteranceId }?.plan ?: buildUtterancePlan()
                 val pendingRoute = (captured?.takeIf { it.token.utteranceId == token.utteranceId }?.localRoute ?: determineRoute(speechLanguage)).also { currentRouteSnapshot ->
-                    Log.i("SprichIME", "endpoint route frozen token=$token route=$currentRouteSnapshot capturedWas=${captured?.localRoute} configLang=${(captured?.speechConfig ?: activeConfig).resolvedLanguageTag()}")
+                    Log.i("SprichIME", "endpoint route frozen token=$token route=$currentRouteSnapshot plan=$pendingPlan capturedWas=${captured?.localRoute} configLang=${pendingPlan.speechConfig.resolvedLanguageTag()}")
                 }
-                val pendingConfig = captured?.takeIf { it.token.utteranceId == token.utteranceId }?.speechConfig ?: activeConfig.copy()
+                val pendingConfig = captured?.takeIf { it.token.utteranceId == token.utteranceId }?.speechConfig ?: pendingPlan.speechConfig
                 val pending = PendingUtterance(
                     token = token,
                     pcm = frozenSnap.copyOf(), // immutable isolated copy — B cannot clear/replace it
                     config = pendingConfig,
                     route = pendingRoute,
+                    plan = pendingPlan,
                     pushedSamples = pipelinePushedSampleCount,
                     reason = StopReason.ENDPOINT,
                     endpointTimestampNanos = System.nanoTime(),
@@ -1365,49 +1463,38 @@ class SprichIME : InputMethodService() {
                     ReplayHarness.saveWavIfEnabled(this@SprichIME, true, token.utteranceId, pending.pcm, pending.config)
                 }
             } catch (_: Exception) {}
-            // Per-utterance LID for Auto: run Whisper Tiny before ASR if config is Auto (production-safe, no mock)
-            // Winner 2026-09-02: Tiny LID + FastConformer (Architecture B). LID provides language metadata, FastConformer is primary ASR (126M, RTF 0.038, 3× faster, no accuracy penalty). Canary remains Accurate explicit fallback.
-            var effectiveConfig = pending.config
-            var lidLatencyMs: Long = 0
-            var lidDetected: String = pending.config.resolvedLanguageTag()
-            var lidOutcomeForLog: String = "explicit"
-            // Use immutable pending route — never look at mutable global Settings after endpoint.
-            // Route + LID handled by LocalTranscriptionCoordinator (Automatic = Tiny LID + FastConformer, Accurate = Canary)
+            // NEW: Unified transcription via UtterancePlan (Phase 2-5). One immutable plan per utterance, remote-first with safe fallback.
             if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+            // Ensure coordinator exists with shared HttpClient (connection pooling, keep-alive, HTTP/2)
+            val plan = pending.plan
             val t0 = android.os.SystemClock.elapsedRealtime()
             nativeDecodeStarts++
-            val coordResult = try {
-                localCoordinator!!.transcribe(pending.pcm, pending.route, pending.config)
+            val transcriptionResult: TranscriptionResult = try {
+                ensureTranscriptionCoordinator().transcribe(pending.pcm, plan)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.w("SprichIME", "coordinator transcribe failed utt=${token.utteranceId}", e)
-                com.sprich.app.speech.LocalTranscriptionResult(
-                    text = "",
-                    resolvedLanguage = ResolvedUtteranceLanguage.Unknown,
-                    effectiveConfig = pending.config,
-                    engineId = when (pending.route) {
-                        is LocalAsrRoute.AutomaticFastConformer -> fastConformerEngine.engineId
-                        is LocalAsrRoute.AccurateCanary -> engine.engineId
-                    }
-                )
+                Log.w("SprichIME", "transcriptionCoordinator failed utt=${token.utteranceId}", e)
+                TranscriptionResult("", ResolvedUtteranceLanguage.Unknown, plan.speechConfig, TranscriptionSourceId.LOCAL_FAST)
             }
-            val finalTranscript = com.sprich.app.speech.api.FinalTranscript(coordResult.text)
-            effectiveConfig = coordResult.effectiveConfig
-            // Map coordinator's resolved language to diagnostics
-            lidOutcomeForLog = when (coordResult.resolvedLanguage) {
-                is ResolvedUtteranceLanguage.Known -> "Detected"
-                is ResolvedUtteranceLanguage.Unknown -> if (pending.route is LocalAsrRoute.AutomaticFastConformer) "Unknown" else "Explicit"
-            }
-            lidDetected = coordResult.lidRaw.ifEmpty { pending.config.resolvedLanguageTag() }
-            lidLatencyMs = coordResult.lidLatencyMs
-            // Keep resolved for safe post-processing
-            val resolvedUtteranceLang: ResolvedUtteranceLanguage = coordResult.resolvedLanguage
             val elapsed = android.os.SystemClock.elapsedRealtime() - t0
-            // Raw vs post triage: raw is finalTranscript.text, post will be after parser
+            val effectiveConfig = transcriptionResult.effectiveConfig
+            val postProcessResolved: ResolvedUtteranceLanguage = transcriptionResult.resolvedLanguage
+            val lidDetected = when (postProcessResolved) {
+                is ResolvedUtteranceLanguage.Known -> postProcessResolved.language.code
+                else -> "unknown"
+            }
+            val lidLatencyMs: Long = 0 // coordinator already includes LID latency internally for local path
+            // Keep for diagnostics parity
+            val lidOutcomeForLog = when (postProcessResolved) {
+                is ResolvedUtteranceLanguage.Known -> "Known"
+                else -> "Unknown"
+            }
             val debugTraceEnabled = try { prefs.debugTranscriptTrace.first() } catch (_: Exception) { false }
             if (debugTraceEnabled) {
-                Log.i("SprichIME", "RAW_ASR token=${token.utteranceId} text=\"${finalTranscript.text.take(80)}\"")
+                Log.i("SprichIME", "RAW_ASR token=${token.utteranceId} source=${transcriptionResult.source} text=\"${transcriptionResult.text.take(80)}\"")
             } else {
-                Log.i("SprichIME", "finalizePending decoded token=$token elapsedMs=$elapsed textLen=${finalTranscript.text.length} queueDepth=${lastQueueDepth} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)} durationMs=$pcmDurationMs")
+                Log.i("SprichIME", "finalizePending decoded token=$token source=${transcriptionResult.source} elapsedMs=$elapsed textLen=${transcriptionResult.text.length} queueDepth=${lastQueueDepth} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)} durationMs=$pcmDurationMs")
             }
 
             // Re-validate all conditions immediately before insertion — still without corrupting B if A is stale
@@ -1443,35 +1530,87 @@ class SprichIME : InputMethodService() {
                 return
             }
 
-            var text = finalTranscript.text.trim()
-            // Resolved language for safe post-processing (Unknown => generic only)
-            val postProcessResolved: ResolvedUtteranceLanguage = coordResult.resolvedLanguage
-            // Punctuation triage: capture three stages for debug
-            val raw = finalTranscript.text
-            // POST_PROCESS stage: after spoken command parsing and typography normalization, before editor
-            // For debug tracing: log RAW_ASR vs POST_PROCESS vs EDITOR_FINAL lengths only (no content by default)
-            Log.i("SprichIME", "punctuationTriage token=${token.utteranceId} RAW_ASR_len=${raw.length} POST_len=${text.length} lang=${effectiveConfig.resolvedLanguageTag()} lidDetected=$lidDetected lidMs=$lidLatencyMs")
-            // Typography normalization already applied via SpokenEditingParser (POST_PROCESS)
-            // Remote fallback uses pending.pcm isolated, not global — use effective language
-            val sttModeRaw = try { prefs.sttModeRaw.first() } catch (_: Exception) { "local" }
-            if (sttModeRaw == "remote" || (sttModeRaw == "fallback" && text.isBlank() && pending.pushedSamples > 8000)) {
-                statusText?.text = "Transcribing (cloud)…"
-                val fallbackSnap = pending.pcm // immutable isolated, never B's audio
-                Log.i("SprichIME", "remoteStt fallback token=$token snapshotSamples=${fallbackSnap.size} pendingPushed=${pending.pushedSamples} effectiveLang=${effectiveConfig.resolvedLanguageTag()}")
-                val result = remoteStt.transcribe(fallbackSnap, SAMPLE_RATE.toInt(), effectiveConfig.language)
-                val remoteText = result.getOrNull()?.trim().orEmpty()
-                Log.i("SprichIME", "remoteStt mode=$sttModeRaw ok=${result.isSuccess} chars=${remoteText.length}")
-                if (remoteText.isNotBlank()) text = remoteText
+            // Phase 33: deterministic spoken-command / ITN processing BEFORE refinement — destructive commands never hit LLM
+            var baseText = transcriptionResult.text.trim()
+            val raw = baseText
+            Log.i("SprichIME", "punctuationTriage token=${token.utteranceId} RAW_ASR_len=${raw.length} lang=${effectiveConfig.resolvedLanguageTag()} source=${transcriptionResult.source} plan=$plan")
+            // Check if entire utterance is a deterministic editor command (delete that, new paragraph, etc.)
+            val preRefineParsed = try {
+                SpokenEditingParser.parse(baseText, postProcessResolved, commandsEnabled)
+            } catch (_: Exception) {
+                SpokenEditingParser.EditResult(baseText, false)
             }
-
-            val aiEnabled = try { prefs.aiEnabled.first() } catch (_: Exception) { false }
-            if (aiEnabled && text.isNotBlank()) {
-                statusText?.text = "Polishing…"
-                val polished = grammarFixer.fix(text, effectiveConfig.language)
-                val fixed = polished.getOrNull()?.trim().orEmpty()
-                Log.i("SprichIME", "aiPolish ok=${polished.isSuccess} inChars=${text.length} outChars=${fixed.length}")
-                if (fixed.isNotBlank()) text = fixed
+            val isEditorCommand = SpokenEditingParser.isDeleteCommand(preRefineParsed.text)
+            var text: String
+            var skipRefinementForCommand = false
+            if (isEditorCommand) {
+                // Editor action: execute locally, no refinement request, commit command handling downstream will handle delete
+                Log.i("SprichIME", "detected spoken editor command, skipping refinement token=$token cmd=${preRefineParsed.text}")
+                text = preRefineParsed.text // will be handled as delete in applyFinalText
+                skipRefinementForCommand = true
+            } else {
+                // Non-command: deterministic text without exposing sentinels to LLM
+                // Apply ITN/typography now; refinement will operate on this deterministic text
+                // Vocab store already applied inside parser; include it.
+                val deterministic = preRefineParsed.text
+                // Optional refinement with hard deadline and validator — never second LLM call on reject
+                text = when (val rp = plan.refinement) {
+                    is RefinementPlan.Off -> deterministic
+                    is RefinementPlan.Enabled -> {
+                        if (deterministic.isBlank()) deterministic else {
+                            statusText?.text = "Polishing…"
+                            val protectedTerms = try {
+                                vocabStore.apply(deterministic) // ensure vocab loaded; then get vocab list bounded
+                                // Bounded relevant list: take up to 20 personal terms that appear as substrings?
+                                // For now, take first 20 terms from vocab store
+                                val all = try { com.sprich.app.vocab.VocabRepository(this@SprichIME, prefs).store().let { emptyList<String>() } } catch (_: Exception) { emptyList<String>() }
+                                all.take(20)
+                            } catch (_: Exception) { emptyList<String>() }
+                            val provider = ensureRefinementProvider()
+                            if (provider == null) {
+                                Log.w("SprichIME", "refinement provider unavailable, using original")
+                                deterministic
+                            } else {
+                                val req = com.sprich.app.speech.refinement.RefinementRequest(
+                                    text = deterministic,
+                                    language = effectiveConfig.resolvedLanguageTag(),
+                                    mode = rp.mode,
+                                    protectedTerms = protectedTerms,
+                                )
+                                val deadlineMs = rp.config.deadlineMs
+                                val refinedResult = try {
+                                    withTimeoutOrNull(deadlineMs) {
+                                        provider.refine(req)
+                                    }
+                                } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                                    Log.w("SprichIME", "refinement exception", e)
+                                    null
+                                }
+                                if (refinedResult == null) {
+                                    Log.w("SprichIME", "refinement timeout/discard after ${deadlineMs}ms, using original")
+                                    deterministic
+                                } else {
+                                    val candidate = refinedResult.text.trim()
+                                    val validation = RefinementValidator.validate(deterministic, candidate, rp.mode, protectedTerms)
+                                    when (validation) {
+                                        is RefinementValidator.Result.Accept -> {
+                                            Log.i("SprichIME", "refinement accepted mode=${rp.mode} inLen=${deterministic.length} outLen=${candidate.length} latency=${refinedResult.latencyMs}")
+                                            candidate
+                                        }
+                                        is RefinementValidator.Result.Reject -> {
+                                            Log.w("SprichIME", "refinement rejected reason=${validation.reason}, using original")
+                                            deterministic
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Final typography safety pass (already in parser, but ensure unknown safety)
+                // If postProcessResolved is Unknown, parser used generic normalization; else language-aware.
             }
+            // For command, text already is sentinel; for normal, text is final after refinement+validator
 
             val applied = if (text.isBlank()) {
                 Log.w("SprichIME", "final transcript empty token=$token elapsedMs=$elapsed pushedSamples=${pending.pushedSamples} effectiveLang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected")
@@ -1585,15 +1724,21 @@ class SprichIME : InputMethodService() {
             val collectorSnap = utteranceAudio.snapshot().copyOf()
             if (collectorSnap.isNotEmpty()) collectorSnap else frozenUtterancePcm?.copyOf() ?: engine.snapshotUtterancePcm().copyOf()
         } catch (_: Exception) { ShortArray(0) }
-        // Use frozen utterance descriptor if it matches this token (covers USER_STOP path); otherwise fallback to current speechLanguage.
+        // Use frozen utterance descriptor if it matches this token (covers USER_STOP path); otherwise fallback to current plan.
         val captured = activeUtterance?.takeIf { it.token.utteranceId == token.utteranceId }
-        val pendingRoute = captured?.localRoute ?: determineRoute(speechLanguage)
-        val pendingConfig = captured?.speechConfig ?: activeConfig.copy()
+        val pendingPlan = captured?.plan ?: buildUtterancePlan()
+        val pendingRoute = captured?.localRoute ?: when (val tp = pendingPlan.transcription) {
+            is TranscriptionPlan.Local -> tp.route
+            is TranscriptionPlan.ApiPrimary -> tp.localFallback ?: determineRoute(speechLanguage)
+            is TranscriptionPlan.LocalApiFallback -> tp.local
+        }
+        val pendingConfig = captured?.speechConfig ?: pendingPlan.speechConfig
         val pending = PendingUtterance(
             token = token,
             pcm = snap,
             config = pendingConfig,
             route = pendingRoute,
+            plan = pendingPlan,
             pushedSamples = pipelinePushedSampleCount,
             reason = reason,
             endpointTimestampNanos = System.nanoTime(),
@@ -2069,6 +2214,101 @@ class SprichIME : InputMethodService() {
                 else LocalAsrRoute.AccurateCanary(legacy)
             }
         }
+    }
+
+    private fun buildRemoteSttConfig(): RemoteSttConfig? {
+        // Build immutable provider config snapshot from current prefs state
+        if (sttBaseUrlState.isBlank() || !sttBaseUrlState.startsWith("http")) return null
+        if (sttModelState.isBlank()) return null
+        // credentialRef is stored in prefs; actual secret loaded at call time via ApiSecretStore
+        // For legacy migration, if secret store empty but old DataStore contains plaintext apiKey, treat that as fallback credential (for tests)
+        val credRef = try { runBlocking { prefs.sttCredentialRef.first() } } catch (_: Exception) { "stt_default" }
+        val langPolicy = LanguagePolicy.fromSpeechLanguage(speechLanguage)
+        return RemoteSttConfig(
+            providerId = sttProviderId,
+            endpoint = sttBaseUrlState,
+            model = sttModelState,
+            languagePolicy = langPolicy,
+            deadlineMs = sttDeadlineMsState,
+            credentialRef = credRef,
+            supportsStreaming = sttProviderId == "meta-muse",
+        )
+    }
+
+    private fun buildRefinementConfig(mode: RefinementMode): RefinementConfig? {
+        if (mode == RefinementMode.OFF) return null
+        if (refinementBaseUrlState.isBlank() || refinementModelState.isBlank()) return null
+        val credRef = try { runBlocking { prefs.refinementCredentialRef.first() } } catch (_: Exception) { "refine_default" }
+        return RefinementConfig(
+            providerId = sttProviderId, // reuse for simplicity or separate
+            endpoint = refinementBaseUrlState,
+            model = refinementModelState,
+            mode = mode,
+            deadlineMs = refinementDeadlineMsState,
+            credentialRef = credRef,
+        )
+    }
+
+    private fun buildUtterancePlan(): UtterancePlan {
+        val localRoute = determineRoute(speechLanguage)
+        val transcription: TranscriptionPlan = when (transcriptionMode) {
+            TranscriptionMode.ON_DEVICE -> TranscriptionPlan.Local(localRoute)
+            TranscriptionMode.API_PRIMARY -> {
+                val remote = buildRemoteSttConfig()
+                if (remote != null) TranscriptionPlan.ApiPrimary(remote, localRoute) else TranscriptionPlan.Local(localRoute)
+            }
+            TranscriptionMode.LOCAL_API_FALLBACK -> {
+                val remote = buildRemoteSttConfig() ?: return UtterancePlan(TranscriptionPlan.Local(localRoute), buildRefinementPlan(), activeConfig.copy())
+                TranscriptionPlan.LocalApiFallback(localRoute, remote)
+            }
+        }
+        val refinement = buildRefinementPlan()
+        return UtterancePlan(transcription, refinement, activeConfig.copy())
+    }
+
+    private fun buildRefinementPlan(): RefinementPlan {
+        return when (refinementMode) {
+            RefinementMode.OFF -> RefinementPlan.Off
+            else -> {
+                val cfg = buildRefinementConfig(refinementMode) ?: return RefinementPlan.Off
+                RefinementPlan.Enabled(cfg, refinementMode)
+            }
+        }
+    }
+
+    private fun ensureTranscriptionCoordinator(): TranscriptionCoordinator {
+        transcriptionCoordinator?.let { return it }
+        if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+        // Build provider map — shared HttpClient reused (Phase 37: reuse connections, connection pooling keep-alive)
+        val providers = mutableMapOf<String, RemoteSttProvider>()
+        // OpenAI-compatible provider if configured
+        try {
+            if (sttBaseUrlState.startsWith("http") && sttModelState.isNotBlank()) {
+                val client = sharedHttpClient
+                providers["openai-compatible"] = OpenAiCompatibleSttProvider(sttBaseUrlState, sttModelState, client)
+                providers[sttProviderId] = providers["openai-compatible"]!!
+            }
+        } catch (_: Exception) {}
+        // Mock for tests
+        if (providers.isEmpty()) {
+            providers["mock"] = MockRemoteSttProvider()
+        }
+        val coord = TranscriptionCoordinator(localCoordinator!!, providers, apiSecretStore, DeadlinePolicy.DEFAULT, sharedHttpClient)
+        transcriptionCoordinator = coord
+        return coord
+    }
+
+    private fun ensureRefinementProvider(): TranscriptRefinementProvider? {
+        refinementProvider?.let { return it }
+        if (refinementMode == RefinementMode.OFF) return null
+        val cfg = buildRefinementConfig(refinementMode) ?: return null
+        val secret = try { apiSecretStore.loadSecret(cfg.credentialRef) ?: "" } catch (_: Exception) { "" }
+        // Legacy fallback: if secret empty, try old DataStore aiApiKey (for migration tests)
+        val effectiveSecret = if (secret.isNotBlank()) secret else try { runBlocking { prefs.aiApiKey.first() } } catch (_: Exception) { "" }
+        if (cfg.endpoint.isBlank() || cfg.model.isBlank() || effectiveSecret.isBlank()) return null
+        val provider = OpenAiCompatibleRefinementProvider(cfg.endpoint, cfg.model, effectiveSecret, sharedHttpClient)
+        refinementProvider = provider
+        return provider
     }
 
     private fun isAutomaticReadyForTest(): Boolean {
