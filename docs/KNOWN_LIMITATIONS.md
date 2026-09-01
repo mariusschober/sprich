@@ -11,12 +11,15 @@
 
 ## What was fixed on 2026-09-02
 
-- **Canary Auto architectural fix**: Removed stopword multi-decode (EN/DE/ES 4s window + 30s hard cache) and French omission. Canary has no native `language=auto`; `capabilities.languageDetection=false`, `supportedLanguages` no longer contains `AUTO`, explicit EN/DE/ES/FR only. Auto now falls back single-decode to `en` with diagnostic, Settings hides Automatic chip for Canary.
-- **Exactly-once**: `UtteranceToken` + `finalizeOnce` with synchronized claim set, `Mutex` + `inferenceDispatcher` serializes all recognizer access (max concurrent 1 proven), `SharedFlow(replay=0)` + generation/field guards, per-utterance PCM frozen at endpoint, distinct `StopReason` semantics.
-- **Field/session ownership**: `FieldSessionController` is now single authoritative owner used by `SprichIME` production path; `ImeWriter` dead abstraction deleted.
-- **Composition**: Silent-commit WebView detection → fallback to IME-local preview + single final commit; empty final discards composing instead of committing; duplication loop `HelloHello` no longer produced.
-- **Model size UX**: Manifest and Settings now show 198 MB (127+71) not 147 MB.
-- Host suite 79 → 120 tests, 0 failures, including 10k exactly-once, concurrency, adversarial, per-utterance, and Auto regression inspecting actual `FinalTranscript.text`.
+- **Canary Auto architectural fix**: Removed stopword multi-decode (EN/DE/ES 4s window + 30s hard cache) and French omission. Canary has no native `language=auto`; `capabilities.languageDetection=false`, `supportedLanguages` no longer contains `AUTO`, explicit EN/DE/ES/FR only. Auto now requires explicit picker (onboarding EN/DE/ES/FR with locale suggestion, IME blocks Auto with clear prompt, Settings hides Auto for Canary and warns).
+- **Pre-roll PCM**: `beginUtteranceCapture(preRoll)` now owns seeding exactly once; `pushAudio(preRoll)` duplication removed. Primitive `UtterancePcmBuffer` (no boxing, O(1), bounded 30s, frozen immutable) is single authoritative PCM owner; exact identity `[1,2,3,4,5,6,7]` proven.
+- **Field/utterance lifecycle**: FieldSession can contain 10+ utterances; `commitUtterance` (Inserting→Listening keeps field alive) vs `commitFinal` (Ending→Idle only on field loss). `utteranceId` monotonic per field, finalized set ensures exactly-once; 5-utterance test `FieldSessionUtteranceLifecycleTest` proves same sessionId, listening continues, no new field session needed.
+- **Stop generation safety**: Cancellation reasons (FIELD_LOST etc.) advance generation immediately and never insert; USER_STOP/ENDPOINT freeze PCM, claim utterance, finalize, then advance generation — no self-invalidation. Endpoint vs USER_STOP race exactly one `endUtterance` via finalized set.
+- **Composition**: `discardPartial` (setComposingText("",1)+finish) vs `commitFinal` distinct; cancellation never commits speculative partial; silent-commit detection no longer deletes user text destructively, falls back to final-only preview; intentional repetitions (`very very`) preserved.
+- **Native inference**: Every recognizer op inside `inferenceMutex` (partial loop, switch, decode, unload) + `limitedParallelism(1)` single owner; `sessionEpoch` drops late partials after session cancel/new session; max concurrency 1 measured via real `nativeDecodeMaxConcurrency`.
+- **Spoken corrections**: Substring backtracking removed entirely (no "no" in "not"); ITN language-aware (EN email only, no unconditional "zero"/"one" → "0"/"1").
+- **Silence & continuous**: Canary `isSilence` 0.004→0.0005 trusts VAD for whisper; VAD onset not blocked by previous final, frozen snapshot queued via `endUtteranceWithSnapshot` so next sentence first words not lost while previous decodes.
+- Host suite 79→133 tests, 0 failures, including exact PCM identity, 5-utterance lifecycle, correction safety corpus, plus earlier 10k exactly-once, concurrency, adversarial, per-utterance.
 
 ## Validation still required on a physical phone (T807D)
 

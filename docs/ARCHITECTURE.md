@@ -3,8 +3,15 @@
 Input → Audio → VAD → Engine → Stabilizer → Composition → InputConnection
 
 ```
-onStartInput / focus → DictationSession.start() [sessionId++] → audio.start [40ms] → VAD onset 45ms → engine.pushAudio + pre-roll snapshot → speculative decode (350ms interval) → TranscriptStabilizer(LCP N=2) → FieldSessionController.applyPartial → setComposingText (replaces previous partial) → VAD UTTERANCE_END → endUtterance() [final flush] → commitText (exactly once) → session.end() → Idle
-                         ↘ late callbacks with old sessionId are discarded
+FieldSession (field focus → window hidden/loss/password): sessionId X, can contain N utterances
+  Utterance 1: onset (preRoll owned exactly once by engine) → Capturing → VAD UTTERANCE_END → freeze PCM → endUtteranceWithSnapshot(frozen) → commitUtterance(utteranceId=1) → Inserting → Listening (same field session X)
+  Utterance 2: onset (new preRoll, live buffer reused, frozen snapshot already queued) → ... → commitUtterance(utteranceId=2) → Listening
+  ...
+  FieldLost → Ending → Idle (only actual field loss/password/error ends field session, not successful utterance)
+
+onStartInput / focus → FieldSessionController.onFieldFocused [sessionId++] → audio.start [40ms] → VAD onset 45ms → engine.beginUtteranceCapture(preRoll) owns preRoll exactly once → speculative decode (350ms, inferenceMutex, epoch-checked) → TranscriptStabilizer(LCP N=2) → FieldSessionController.applyPartial (replay=0, epoch guard) → composition (IME-preview fallback, no destructive delete) → VAD UTTERANCE_END → freeze snapshot before live reuse → endUtteranceWithSnapshot(frozen) [exactly once per utteranceId via finalized set] → commitUtterance (Inserting→Listening, keeps field session) → re-arm engine.beginSession for next utterance
+                         ↘ late callbacks with old generation/fieldGeneration/sessionId/utteranceId discarded; stale partials dropped via sessionEpoch
+                         ↘ continuous capture: next onset not blocked by previous final (decode serialized via mutex, live capture via separate PCM buffer/shnapshot)
 ```
 
 ## Modules
@@ -24,12 +31,13 @@ app/src/main/java/com/sprich/app/
   speech/nemotron/NemotronEngine  dormant prototype, runtime not packaged
   speech/remote/RemoteSttEngine  OpenAI-compatible backup (/audio/transcriptions) — opt-in only, isolated in speech/remote
   speech/stabilization/TranscriptStabilizer  LCP of last N=2, word-level
-  input/ime/SprichIME         InputMethodService, Instant/Tap, password guard, haptics EFFECT_TICK, sessionGeneration ownership
-  input/composition/CompositionManager  setComposingText/commitText delta, no duplication, finishOnCursorMove
-  input/composition/ImeWriter  abstraction over composing/final commit, spacing rules, reject fallback
-  input/lifecycle/DictationSession FSM  Idle→Preparing→Listening→Speech→Finalizing→Inserting→Ending→Idle, also Suspended/Paused/Error, sessionId per cycle
-  input/lifecycle/FieldSessionController session ownership + composing span control, cross-field guard
-  input/commands/SpokenEditingParser  deterministic map EN/DE/ES, ITN email, backtracking "actually"
+   input/ime/SprichIME         InputMethodService, Instant/Tap, password guard, haptics, utteranceId monotonic, sessionGeneration/fieldGeneration, frozen snapshot before decode, continuous capture while previous final decodes
+   input/composition/CompositionManager  setComposingText/commitText delta, no duplication, discardPartial vs commitFinal distinct, no destructive silent-commit delete, final-only fallback for unknown editors
+   input/lifecycle/DictationSession FSM  Idle→Preparing→Listening→Speech→Finalizing→Inserting→Listening (per utterance) →Ending→Idle (field loss only), sessionId per field focus
+   input/lifecycle/FieldSessionController single authoritative field session owner, commitUtterance (Inserting→Listening keeps field alive) vs commitFinal (Ending→Idle), utteranceId exactly-once set, cross-field guard
+   input/lifecycle/UtteranceToken immutable (sessionId, generation, utteranceId, fieldId/fieldGeneration, capturedIc) — exactly-once claim
+   core/audio/UtterancePcmBuffer primitive bounded (no boxing, O(1), max 30s, frozen immutable) — single authoritative PCM owner (engine), not duplicated in IME
+   input/commands/SpokenEditingParser  deterministic EN/DE/ES, word-boundary punctuation, language-aware ITN (EN email only), no substring backtracking
   input/accessibility/SprichAccessibilityService  TYPE_VIEW_FOCUSED editable node, ACTION_SET_TEXT
   models/manager/ModelManager+Manifest  BuiltinManifest, SHA, atomic rename, integrity check
   vocab/PersonalVocabStore+Repository  word-boundary replace, DataStore persistence (local only)
@@ -41,7 +49,7 @@ app/src/main/java/com/sprich/app/
 ## Threading
 
 - Audio thread: `THREAD_PRIORITY_AUDIO`, 1024-sample reads (64ms), ringBuffer.write, pushAudio, VAD, clipping/RMS telemetry, dropped-frame accounting via ring overwrite.
-- ASR lane: one `Dispatchers.Default.limitedParallelism(1)` lane plus one native mutex (sherpa serialized); speculative decodes cancellable before finalization; threads = 2 (Canary) / min(4,cores) if whisper; no UI-thread inference.
+ - ASR lane: one `Dispatchers.Default.limitedParallelism(1)` + `inferenceMutex` single owner — every recognizer op (create/setConfig/createStream/accept/decode/getResult/unload/language) inside `withLock`; speculative partial loop also holds mutex and epoch-checked; cancellation does not interrupt blocking ONNX call, unload waits for mutex; true concurrency ==1 measured via `nativeDecodeMaxConcurrency`.
 - Insertion: Main for InputConnection, computed off-main (stable/unstable diff).
 - No UI-thread inference/model/disk work, no allocations per audio callback beyond 1KB chunk copy; all AudioRecord/model/coroutine jobs released on pause/focus-loss/service-destruction.
 - Structured concurrency: CoroutineScope(SupervisorJob) + limitedParallelism; cancellation via job.cancel() and native abort callback; microphone released <1s after stop.

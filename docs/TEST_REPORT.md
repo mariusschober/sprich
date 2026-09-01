@@ -26,8 +26,9 @@ Results:
   - **+ CompositionAdversarialTest (3)**: silent-commit WebView fake reproduces duplication loop `Hello→Hello world→HelloHello world`, verifies fallback to IME-local preview + single final, rejecting and compliant editor paths
   - **+ PerUtteranceAudioOwnershipTest (5)**: per-utterance buffer isolated from global 30s ring, cloud fallback for B contains no samples from A, onset pre-roll through endpoint frozen, short/normal/whisper
   - **+ LanguageAutoRegressionTest (10)**: versioned fixtures EN/DE/ES/FR Auto/Fixed, EN→DE rapid, DE→EN rapid, short/normal, whisper, alternating EN/DE, inspects actual `FinalTranscript.text` and `TRANSCRIBE` task, zero unintended translations, src==tgt invariant, Auto fallback single-decode
-- Lint: 0 Error/Fatal.
+ - Lint: 0 Error/Fatal.
 - APK: 47M, `libonnxruntime.so 15.9M` + `libsherpa-onnx-1.12.11` (arm64-v8a, 16KB), `assets/jfk.wav 352078`, no bundled `whisper-base-q5_1.bin` or `*.onnx`/`*.gguf`, 16KB page size. Model is device-side `files/canary` 198 MB (127M+71M).
+- **Evidence boundary:** Host LanguageAutoRegressionTest uses **generated sine-wave tones** and Robolectric mock Canary output, not real human language audio. It proves `src==tgt` task enforcement and no mock multi-decode, but **does not prove zero translations on real human speech**. Real speech requires human acoustic matrix per MANUAL_TEST_SCRIPT. Concurrency tests that used an independent fake mutex are now supplemented by `CanaryEngine.nativeDecodeMaxConcurrency` measured via real `inferenceMutex` in mock mode + device `canaryConcurrencyOnDeviceMaxOne`.
 
 ## Device gates (T807D MT6878 Android 16, mid-high tier, 7.6GB) — re-validated 2026-09-02 after reliability refactor
 
@@ -55,18 +56,19 @@ Results (2026-09-02, fresh install, same 198 MB model, same T807D):
   - Run 3 (2026-09-02, post-refactor, same 198 MB): load 2387ms, cold 1853ms RTF 0.168, warm [1675,1630,1583,1690,1628] p50 1630 p95 1690 avgRtf 0.149, textLen 108 (logcat `BenchmarkOnDevice` 2026-09-01 17:34, warm engine resident, RTF still <0.25 excellent)
   - Engine canary-180m-flash-int8 INT8 threads 2 cpu backend, src==tgt transcribe, languages en,de,es,fr (explicit, Auto fallback to en), peakRss 5–8 MB (heap).
   - RTF 0.135–0.168 <0.5 target, <0.25 excellent; load 2.4–3.4 s cold (first run slower, subsequent warm faster), warm p50 ~1.5–1.6 s for 11s audio.
-- Model: `files/canary/encoder.int8.onnx 127M` + `decoder.int8.onnx 71M` + `tokens.txt 52K` verified SHA `7a38ed8b…`, `isCanaryReady()` true via `run-as` (re-copied 2026-09-02 after reinstall).
-- New device tests `DevicePerUtteranceIsolationTest` (3): `perUtterancePcmIsolatedOnDevice`, `audioRingDoesNotLeakAcrossUtterancesOnDevice`, `canaryConcurrencyOnDeviceMaxOne` (maxConc ≤1) — all pass on T807D with real model.
+ - Model: `files/canary/encoder.int8.onnx 127M` + `decoder.int8.onnx 71M` + `tokens.txt 52K` verified SHA `7a38ed8b…`, `isCanaryReady()` true via `run-as` (re-copied 2026-09-02 after reinstall).
+- New device tests `DevicePerUtteranceIsolationTest` (3): `perUtterancePcmIsolatedOnDevice`, `audioRingDoesNotLeakAcrossUtterancesOnDevice`, `canaryConcurrencyOnDeviceMaxOne` (maxConc ≤1 via real `inferenceMutex`, not fake) — all pass on T807D with real model.
+- **Memory reporting:** `peakRss 5–8 MB` in benchmark report is **Java heap only**, not process RSS. Real `adb dumpsys meminfo` shows TOTAL PSS 491 MB / RSS 600 MB, Native Heap 308 MB (includes model). Distinguish heap vs RSS clearly in future reports.
 - APK contains Canary runtime but no model data (device-side); `speech/*` except `speech/remote` network-free verified.
 - IME: `ime list -a` shows Sprich 3 subtypes en/de/es, `ime enable/set` succeeded, `settings get secure default_input_method` = Sprich, `pm grant RECORD_AUDIO` verified.
 
-New reliability guarantees validated on host **and re-validated on device (17/17)**:
+New reliability guarantees validated on host **and re-validated on device (17/17)** — **evidence-bound**:
 
-- Exactly-once: 10k randomized session/field/utterance transitions 0 duplicate commits, max one endUtterance per utterance via UtteranceToken + finalized set, max one final insertion, zero stale after field switch, zero replay with SharedFlow replay=0 + generation guard.
-- Concurrency: `inferenceDispatcher + Mutex` proves max concurrent native decode ==1 even with slow fake decoder (20 concurrent callers).
-- Composition: silent-commit WebView fake no longer produces `HelloHello` loop; fallback to IME preview + single final.
-- Per-utterance PCM: frozen utterance buffer for B contains no samples from A.
-- Language: Auto no longer does 3× multi-decode stopword heuristic; explicit EN/DE/ES/FR via `src==tgt`, Auto fallback single decode, 0 unintended translations in host fixtures inspecting actual transcript.
+- Exactly-once: 10k randomized session/field/utterance transitions 0 duplicate commits via production `FieldSessionController` + `DictationSession` (same coordinator as IME), max one `endUtterance` per utterance via `UtteranceToken` + finalized set, max one final insertion, zero stale after field switch, zero replay with `SharedFlow(replay=0)` + generation/epoch guard. Note: randomized harness now drives **production coordinator**, not a duplicated fake algorithm.
+- Concurrency: real `inferenceMutex` (not independent fake) enforces max concurrent native decode ==1; `CanaryEngine.nativeDecodeMaxConcurrency` measured via real mutex even in mock, plus device `canaryConcurrencyOnDeviceMaxOne` with real model.
+- Composition: silent-commit WebView fake no longer produces `HelloHello` loop; fallback to IME-local preview + single final, **no destructive deleteSurroundingText** for legitimate repetitions (`very very good` etc. remain).
+- Per-utterance PCM: primitive `UtterancePcmBuffer` (no boxing, O(1) bounded) frozen at endpoint; B contains zero samples from A (exact PCM identity `[1,2,3,4,5,6,7]` test).
+- Language: Auto no longer does 3× multi-decode stopword heuristic; explicit EN/DE/ES/FR via `src==tgt`, Auto fallback single decode, **0 unintended translations in synthetic host fixtures (mock) — not real human speech**; real speech translation claim pending human matrix.
 
 ## Physical-device gate (remaining manual, requires human speech)
 

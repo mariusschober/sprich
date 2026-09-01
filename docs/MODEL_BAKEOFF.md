@@ -18,8 +18,8 @@ This document compares candidate ASR architectures for Sprich's **Automatic lang
 | Cold load | 3.3–3.4 s (3421 ms, 3355 ms in 2 runs) |
 | Cold inference (11s jfk) | 1565 ms RTF 0.142, 1550 ms RTF 0.140 |
 | Warm (5 runs) | `[1510,1468,1459,1494,1500]` p50 1494 p95 1510 avgRtf 0.135; second run `[1516,1515,1657,1518,1492]` p50 1516 p95 1657 avgRtf 0.139 |
-| Peak RSS (heap) | 5 MB |
-| Task | `TRANSCRIBE` only, `srcLang==tgtLang` enforced on every decode, 0/100 unintended translations in host fixtures (LanguageTaskInvariantTest) and 0 in LanguageAutoRegressionTest (explicit EN/DE/ES/FR) |
+| Peak RSS (heap) | 5 MB **(heap only; real RSS 600 MB via dumpsys, native heap 308 MB — distinguish)** |
+| Task | `TRANSCRIBE` only, `srcLang==tgtLang` enforced on every decode, 0/100 unintended translations in **synthetic** host fixtures (mock, not real human speech) — real speech pending human matrix |
 | Languages | EN, DE, ES, FR via explicit `SpeechLanguage.Fixed` (BCP-47). **AUTO has no native support**: `capabilities.languageDetection=false`, `supportedLanguages` does not contain `AUTO`. When `Auto` is requested, engine logs and decodes as `en` fallback (single decode, no multi-decode guessing). Previous stopword multi-decode (EN/DE/ES 4s window + 30s hard cache) has been removed as architecturally invalid. Settings hides Automatic chip for Canary and shows fallback warning. |
 | Streaming | Non-streaming windowed: speculative partial every 350 ms, LCP stabilizer N=2, deduped composing. True streaming false. |
 | Concurrency | Single `inferenceDispatcher` (limitedParallelism(1)) + `Mutex` serializes setConfig/language switching, create/decode/getResult, final decode, release/unload. No concurrent partial+final on same recognizer. Stress test `CanaryConcurrencySerializationTest` proves `maxConcurrent==1`. |
@@ -62,6 +62,20 @@ This document compares candidate ASR architectures for Sprich's **Automatic lang
 | Measured | **Not yet implemented** — no Tiny LID inference on T807D, no per-utterance LID accuracy measured. Host test `LanguageAutoRegressionTest` stubs per-utterance language switching but not real LID. |
 | Decision | Evaluate added latency and memory vs Auto accuracy. If Nemotron fails device gate, compare Whisper primary vs Tiny LID + Canary on measured end-to-end product behavior, not isolated WER. |
 
+## Optional — Low-cost FastConformer CTC (Sherpa NeMo, EN/DE/ES/FR combined)
+
+**Context:** Per reliability pass, model work is out of scope until pipeline is correct. This is a lightweight bake-off identification only — no implementation.
+
+| Property | Research note 2026-09-02 (sherpa-onnx docs, no device run) |
+|---|---|
+| Exact artifact | `sherpa-onnx-nemo-fast-conformer-transducer-en-de-es-fr` family (also en-de-es, de-es-en etc.) — NeMo FastConformer CTC/Transducer exported to ONNX via `nemo2onnx`. Check sherpa `model` listings for `nemo_fast_conformer_ctc_be-de-en-es-fr` / `nemo_transducer_en_de_es` variants. Hugging Face: `csukuangfj/sherpa-onnx-nemo-ctc-giga-am-en` style plus multilingual FastConformer checkpoints. Must verify exact current ONNX on sherpa 1.12 docs `https://k2-fsa.github.io/sherpa/onnx/pretrained_models/offline-transducer/nemo/index.html` |
+| Size | CTC ~30–70 MB encoder + small decoder (FastConformer small); Transducer ~120–180 MB total. **10× smaller than Canary 198 MB**, ~5–20× smaller than Nemotron 650 MB. Fits low-tier 3GB devices and reduces download UX. |
+| Punctuation/capitalization | FastConformer CTC models are typically **case-insensitive and punctuation-free** (lowercase, no punctuation) — requires external inverse text normalization (ITN) or LLM polish. Transducer variants may emit cased/punctuated but less reliably than Canary/Nemotron which have built-in punctuation. Must measure punctuation accuracy on T807D. |
+| Language selection vs native Auto | **Not native Auto in the sherpa sense** — models are trained multilingually and infer language from acoustics without explicit `srcLang` switch, but accuracy depends on training mix. For EN/DE/ES/FR combined, they claim multilingual recognition without per-utterance language flag. This is *de facto* Auto for those 4 languages, but WER on code-switching and whisper, and unintended translation rate, must be measured vs Canary explicit and Nemotron true Auto. No hard 30-s cache; language is inferred per utterance from acoustics. |
+| Why it may be useful lightweight candidate | Very small, fast CTC beam search, suitable for **streaming or fast WER baseline** before heavy Nemotron. Could be used as **tiny LID front-end** alternative to Whisper Tiny (≈75 MB) — CTC encoder much smaller and faster for LID, but LID accuracy unknown. |
+| Why it may not be | CTC punctuation/casing gaps require ITN that may introduce false corrections (see SpokenEditingParser audit). Accuracy on German/Spanish/French conversational speech may lag Canary 180M/360M and Nemotron 0.6B. Must validate WER, RTF, and real human whisper on T807D before production. |
+| Decision | Do **not** integrate this pass. Note for bake-off after pipeline is `PIPELINE_READY: YES`: Benchmark one NeMo FastConformer CTC EN-DE-ES-FR (≈60 MB) on T807D for WER/RTF/punctuation vs Canary explicit and Nemotron Auto. Only choose if WER competitive and punctuation handling via safe ITN is validated — otherwise keep Canary accuracy baseline. |
+
 ## Optional — Omnilingual ASR 300M INT8 (sherpa ~348 MB)
 
 | Property | Status |
@@ -77,4 +91,4 @@ This document compares candidate ASR architectures for Sprich's **Automatic lang
 - **If Nemotron fails:** Compare **Whisper Base (and Small if viable)** vs **Whisper Tiny LID + Canary** on measured end-to-end behavior (Auto accuracy, latency, memory) and choose based on numbers, not isolated WER.
 - Canary remains available as explicit-language “Accurate” engine even if another model becomes Automatic default.
 
-All numbers above for Canary are from real `BenchmarkOnDeviceTest` and host unit/property tests (120 tests, 0 failures, 2026-09-02). Other candidates’ numbers are pending physical-device runs and are not claimed.
+All numbers above for Canary are from real `BenchmarkOnDeviceTest` (jfk.wav 11s, RTF 0.135–0.149, 198 MB) and host unit/property tests (133 tests, 0 failures, 2026-09-02; synthetic fixtures, not human goldens). Other candidates’ numbers are pending physical-device runs and are not claimed.

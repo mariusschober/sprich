@@ -41,6 +41,8 @@ Host: 120 unit tests 0 failures (10k exactly-once, max concurrency 1, silent-com
 
 RTF delta 0.135→0.149 is within run-to-run variance and still excellent; exactly-once, per-utterance PCM, and Mutex add negligible overhead (single dispatcher + frozen slice).
 
+**Memory note:** `peakRss 5–8 MB` is **Java heap only** (`Heap Alloc`), not process RSS. `adb dumpsys meminfo com.sprich.app.debug` shows **TOTAL PSS 491 MB / RSS 600 MB, Native Heap 308 MB** (2026-09-01) with model resident. Future reports must distinguish heap vs RSS and include `dumpsys meminfo` PSS/RSS and 5/15-min thermal trends.
+
 ## Interpretation after 2026-09-02
 
 These values are for this hardware tier (mid-high MT6878) and 11s fixture; low-tier (3GB) and sustained thermal/battery still require manual 5/15-min runs per `docs/LATENCY.md`.
