@@ -16,16 +16,29 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Create repository archive
+      - name: Fetch repository refs
         run: |
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
           git status --short --branch
           git rev-parse HEAD
+      - name: Create repository artifacts
+        run: |
           tar --exclude=.git -czf "$RUNNER_TEMP/sprich-source.tgz" .
-      - name: Upload archive
+          git bundle create "$RUNNER_TEMP/sprich.bundle" --all
+          git bundle verify "$RUNNER_TEMP/sprich.bundle"
+      - name: Upload source archive
         uses: actions/upload-artifact@v4
         with:
           name: sprich-source
           path: ${{ runner.temp }}/sprich-source.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload git bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: sprich-git-bundle
+          path: ${{ runner.temp }}/sprich.bundle
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
