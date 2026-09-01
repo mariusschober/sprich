@@ -1,6 +1,27 @@
 # ARCHITECTURE — Sprich
 
-Input → Audio → VAD → Engine → Stabilizer → Composition → InputConnection
+## Pipeline (2026-09-03: API + refinement)
+```
+Microphone
+  ↓
+UtteranceAudioCollector (neutral, primitive, bounded 30s, strict size<=maxSamples, oversized keeps tail)
+  ↓
+immutable UtterancePlan + PCM (frozen at VAD onset)
+  ↓
+TranscriptionCoordinator
+├── Local Automatic — Tiny LID (98M) → FastConformer CTC 126M
+├── Local Accurate — Canary 180M Flash INT8
+├── API Primary — RemoteSttProvider (openai-compatible) → optional local fallback
+└── Local → API fallback — local first, remote only on blank/exception
+  ↓
+Base TranscriptionResult (ResolvedUtteranceLanguage Known/Unknown, source, timing)
+  ↓
+Deterministic SpokenEditingParser / ITN (before refinement, no sentinels to LLM)
+├── editor action → execute locally
+└── text → optional Refinement (Off/Correct/Clean, deadline, validator) → typography → exactly-once commit
+```
+
+## Legacy Input → Audio → VAD → Engine → Stabilizer → Composition → InputConnection
 
 ```
 FieldSession (field focus → window hidden/loss/password): sessionId X, can contain N utterances

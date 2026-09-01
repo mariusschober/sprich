@@ -1,14 +1,16 @@
-# PRIVACY — local means local
+# PRIVACY — local by default, cloud is BYOK optional
 
-**Thesis**: Normal use is completely offline. Speech never leaves the phone unless you explicitly enable a backup remote STT endpoint in Advanced settings.
+**Thesis**: Normal use is completely offline. Cloud is optional enhancement using your own provider + API key directly from your device. Sprich provides no cloud account, proxy, or billing. Speech never leaves the phone unless you select On-device → API fallback or API primary and provide a key.
 
 ## Guarantees
 
 - No cloud ASR by default, no remote inference by default, no telemetry, no analytics SDK, no crash SDK, no AD_ID, no account, no sync, no remote config for dictation.
 - Transcription runs on-device through the Canary 180M Flash INT8 sherpa-onnx runtime by default.
 - Raw audio is not retained or transmitted by default. Microphone state is always visibly discoverable (Listening… + waveform + glow) and immediately pausable (tap to stop, mic released <1s).
-- The remote STT path (`speech/remote` OpenAI-compatible `/audio/transcriptions`, e.g., Grok x.ai, Groq, fal Wizper) is `stt_mode=local` by default; it is only invoked when the user has filled baseUrl/apiKey/model and selected `fallback` or `remote` in Settings → Advanced. All speech/remote calls are observable in diagnostics (resolvedLanguage, task, sessionId) and require user opt-in.
-- AI polish (`ai/GrammarFixer` via `/chat/completions`) is `aiEnabled=false` by default; when enabled, only the final transcript text (not raw audio) is sent, per user configuration.
+- **Transcription choices**: `On-device` (local only, 0 STT API calls), `API` (remote primary, local fallback on failure, remote success has 0 local decode), `On-device → API fallback` (local first, remote only on blank/exception). Default `ON_DEVICE`. All `RemoteSttConfig` snapshots are immutable per utterance (providerId/endpoint/model/languagePolicy/deadline/credentialRef).
+- **Refinement choices**: `Off` (0 LLM calls), `Correct`, `Clean dictation`. Default `OFF`. When enabled, transcript text only (never audio) is sent to your refinement provider via `ai/OpenAiCompatibleRefinementProvider` (`POST /chat/completions`, tiny request, `temperature 0`).
+- **BYOK**: Secrets via `ApiSecretStore` Keystore AES-GCM in `noBackupFilesDir/api_secrets/<id>.enc`; DataStore keeps refs only, Settings shows `Saved` without reloading plaintext, `Clear local data` deletes all. No secret in logs/diagnostics/backups.
+- **Dynamic disclosure**: Settings → Privacy reflects actual mode: local-only → `Models only`; API STT → `Audio is sent directly... using your API key`; refinement → `Transcript sent directly...`; both → combined; always `Sprich does not provide, proxy or receive your API key` + `billed directly by your provider`.
 
 ## Data flows
 

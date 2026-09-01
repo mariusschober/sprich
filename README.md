@@ -1,8 +1,8 @@
-# Sprich — Local-Only Android Dictation
+# Sprich — Private Dictation (On-device + Optional BYOK Cloud)
 
 > Tap a text field. Speak. The words are there.
 
-Sprich is a private, offline speech-to-text input method for Android. No cloud, no account, no telemetry. Tap → speak → text appears at the cursor like a native OS capability.
+Sprich is a private dictation IME for Android. **Cloud is optional enhancement, never a requirement.** Normal use is fully on-device (Tiny LID + FastConformer / Canary). When you choose it, Sprich can use your own API keys to call your selected transcription or refinement provider directly from your device — no Sprich cloud, no proxy, no shared billing.
 
 **Primary integration**: `InputMethodService` with `InputConnection` composing semantics. Experimental accessibility companion available for users who keep Gboard.
 
@@ -32,24 +32,19 @@ See [PLAN.md](PLAN.md) for full product thesis and latency targets.
 
 ## Architecture
 
-- `core/audio` — 16k mono PCM, ring buffer 30s, circular pre-roll 250ms (zero first-phoneme loss), linear resampler (48k→16k), RMS/clipping telemetry, timestamps monotonic.
-- `core/vad` — tiny energy VAD, calibrated noise floor, configurable onset/hesitation/endpoint.
-- `speech/api` — `SpeechEngine` contract and language/session configuration.
-- `speech/whisper` — one process-wide whisper.cpp context, verified Q5_1 model, serialized JNI, cancellable inference.
-- `speech/canary` — Canary 180M Flash INT8 via sherpa-onnx INT8 (primary, device-side `files/canary`, src==tgt transcribe only)
-- `speech/remote` — OpenAI-compatible backup STT (`/audio/transcriptions`, Grok/Groq/Wizper) — opt-in only, isolated, `stt_mode=local` by default
-- `speech/nemotron` — dormant prototype; not packaged, selectable, or supported in this build.
-- `input/ime` — SprichIME, Instant/Tap modes, password guard, explicit preparing/error states, `sessionGeneration` + `DictationSession.sessionId` ownership (late callbacks discarded)
-- `input/composition` — `setComposingText`/`commitText` delta with single-final fallback for editors that reject composing spans
-- `input/lifecycle` — `DictationSession` reducer (Idle→Preparing→Listening→Speech→Finalizing→Inserting→Ending→Idle, Suspended/Paused/Error) + `FieldSessionController` cross-field guard
-- `input/commands` — deterministic EN/DE/ES punctuation & delete, no LLM
-- `core/audio/Resampler` + `AudioDiagnostics` — tested resampler + developer-only WAV capture
-- `speech/api` — `TranscriptionTask.TRANSCRIBE` typed, `SpeechLanguage.Auto|Fixed(BCP-47)` typed, persisted, observable in diagnostics
-- `input/commands` — deterministic EN/DE/ES punctuation & delete, no LLM.
-- Fast model install — exact byte count + SHA-256, staged copy, atomic replacement.
-- `vocab` — local trie for names, deterministic post-recognition.
+- `core/audio` — 16k mono PCM, `UtteranceAudioCollector` (neutral, primitive, bounded 30s, `size()<=maxSamples` strict including oversized chunk), ring buffer 30s, circular pre-roll 250ms, RMS telemetry.
+- `core/vad` — energy VAD, onset 45ms, hesitation 400ms, endpoint 650ms, adaptive.
+- `speech/api` — `SpeechEngine` contract, `SpeechLanguage.Auto|Fixed`, `TranscriptionTask.TRANSCRIBE`.
+- `speech/canary` — Canary 180M Flash INT8 via sherpa-onnx INT8 (Accurate, `files/canary`)
+- `speech/fastconformer` — FastConformer CTC 126M (Automatic primary, `files/fastconformer`) + Tiny LID 98M (`files/whisper-tiny`)
+- `speech` — `TranscriptionMode` ON_DEVICE / API_PRIMARY / LOCAL_API_FALLBACK, `UtterancePlan` frozen at onset, `TranscriptionResult` + `TranscriptionCoordinator` (remote-first, no wasted local decode)
+- `speech/remote` — `RemoteSttProvider` abstraction, `OpenAiCompatibleSttProvider` (`POST /audio/transcriptions`, Bearer, bounded 8KB), `MetaMuseSttProvider` (BLOCKED), `DeadlinePolicy`, typed `ApiFailure`, `Call.cancel()` structured cancellation
+- `speech/refinement` + `ai` — `RefinementMode` OFF / CORRECT / CLEAN_DICTATION, `OpenAiCompatibleRefinementProvider` (`POST /chat/completions`, temp 0, tiny, DATA block), `RefinementValidator` (numbers/URLs/emails/IDs, drift heuristics, injection), deterministic before refinement
+- `storage` — `Preferences` typed DataStore, `ApiSecretStore` (Keystore AES-GCM in `noBackupFilesDir/api_secrets`, DataStore keeps refs only)
+- `input/ime` — `SprichIME` owns `ActiveUtterance(plan)` frozen at onset, `UtteranceAudioCollector` authoritative PCM, exactly-once via `FieldSessionController`, password guard, streaming partial policy (IME preview)
+- `input/composition` — `CompositionManager` delta, `SpokenEditingParser` deterministic EN/DE/ES, `TypographyNormalizer` language-aware
 
-Full: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+Full: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Cloud: [docs/API_ARCHITECTURE.md](docs/API_ARCHITECTURE.md)
 
 ## Models
 
@@ -63,12 +58,13 @@ The reliability build now exposes Accurate (Canary) as primary; Fast (Whisper) w
 
 ## Privacy
 
-- No cloud ASR by default, no telemetry, no analytics SDK, no crash SDK, no AD_ID.
-- Audio in RAM ring buffer (30s, circular pre-roll), never written to storage by default, discarded on session end; diagnostic WAV capture is developer-only and disabled by default.
-- `speech:*` except `speech/remote` never imports `okhttp`/`java.net` (lint-enforced via `check-apk.sh`).
-- The remote STT/AI polish path (`stt_mode=local` by default) is opt-in only and isolated in `speech/remote` / `ai`; normal dictation is offline and airplane mode works identically.
+- On-device by default. Cloud is optional enhancement — you provide your own provider + API key, Sprich calls provider directly from your device, no Sprich proxy/account.
+- No cloud ASR by default, no telemetry, no AD_ID, raw audio in RAM 30s then discarded, diagnostic WAV opt-in only.
+- BYOK secrets: Keystore AES-GCM in `noBackupFilesDir/api_secrets`, never in DataStore/logs/backups. Settings shows `Saved` without reloading plaintext.
+- `speech:*` except `speech/remote` never imports `okhttp`/`java.net` (lint `check-apk.sh`), `ai` handles refinement network.
+- Dynamic privacy disclosure reflects actual mode: local-only → `Models only`, API STT → `Audio sent directly...`, refinement → `Transcript sent directly...`.
 
-See [docs/PRIVACY.md](docs/PRIVACY.md).
+See [docs/PRIVACY.md](docs/PRIVACY.md) · [docs/API_ARCHITECTURE.md](docs/API_ARCHITECTURE.md).
 
 ## Benchmark
 
