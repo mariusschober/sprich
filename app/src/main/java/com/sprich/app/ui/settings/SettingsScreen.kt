@@ -37,7 +37,8 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
     val canaryStatus by mm.canaryStatus.collectAsState()
     val lidStatus by mm.lidStatus.collectAsState()
     val fastStatus by mm.fastConformerStatus.collectAsState()
-    val nemotronStatus by mm.nemotronStatus.collectAsState()
+    val nemotron560Status by mm.nemotron560Status.collectAsState()
+    val nemotron160Status by mm.nemotron160Status.collectAsState()
 
     Scaffold(
         topBar = {
@@ -60,7 +61,7 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
                 when (lidStatus) {
                     is ModelStatus.Ready -> Text("Automatic via Whisper Tiny LID → Canary (per-utterance, no cache). Speak any of EN/DE/ES/FR without switching.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     is ModelStatus.Downloading -> Text("Downloading Tiny LID… Automatic will be available when Ready.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    else -> Text("Automatic requires Whisper Tiny LID (98M) download — currently English fallback will be used. Download below or pick explicit language.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    else -> Text("Automatic is unavailable without Tiny LID (98M) — dictation will not start in Automatic (fail-closed, no English fallback). Download Tiny LID below or choose explicit EN/DE/ES/FR.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
             }
             ModelSection(
@@ -68,7 +69,8 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
                 canaryStatus = canaryStatus,
                 lidStatus = lidStatus,
                 fastStatus = fastStatus,
-                nemotronStatus = nemotronStatus,
+                nemotron560Status = nemotron560Status,
+                nemotron160Status = nemotron160Status,
                 onSelect = { scope.launch{ prefs.setEngine(EngineType.ACCURATE)} },
                 onDownloadCanary = { scope.launch { try{ dm.downloadCanary() } catch (_:Exception){} } },
                 onDownloadLid = { scope.launch { try{ dm.downloadLid() } catch (_:Exception){} } },
@@ -78,7 +80,9 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
                 onDeleteCanary = { scope.launch { mm.deleteCanary() } },
                 onDeleteLid = { scope.launch { mm.deleteLid() } },
                 onDeleteFast = { scope.launch { mm.deleteFastConformer() } },
-                onDeleteNemotron = { scope.launch { mm.deleteNemotron() } },
+                onDeleteNemotron560 = { scope.launch { mm.deleteNemotron560() } },
+                onDeleteNemotron160 = { scope.launch { mm.deleteNemotron160() } },
+                onDeleteAllNemotron = { scope.launch { mm.deleteNemotron() } },
                 onCancel = { dm.cancel() }
             )
 
@@ -170,7 +174,8 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
     canaryStatus: ModelStatus,
     lidStatus: ModelStatus,
     fastStatus: ModelStatus,
-    nemotronStatus: ModelStatus,
+    nemotron560Status: ModelStatus,
+    nemotron160Status: ModelStatus,
     onSelect:(EngineType)->Unit,
     onDownloadCanary:()->Unit,
     onDownloadLid:()->Unit,
@@ -180,7 +185,9 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
     onDeleteCanary:()->Unit,
     onDeleteLid:()->Unit,
     onDeleteFast:()->Unit,
-    onDeleteNemotron:()->Unit,
+    onDeleteNemotron560:()->Unit,
+    onDeleteNemotron160:()->Unit,
+    onDeleteAllNemotron:()->Unit,
     onCancel:()->Unit,
 ){
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)){
@@ -188,8 +195,11 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
         ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device (127M encoder + 71M decoder)", "Primary accurate model. Auto via Tiny LID (98M) when downloaded, otherwise explicit EN/DE/ES/FR.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
         ModelCardAdvanced("Whisper Tiny LID", "98 MB · On-device (12M encoder + 86M decoder)", "Enables Automatic language detection per utterance. Required for Auto with Canary. No 30s cache.", selected = false, status = lidStatus, onClick = {}, onDownload = onDownloadLid, onDelete = onDeleteLid, onCancel = onCancel, totalMb = 98)
         ModelCardAdvanced("FastConformer CTC", "126 MB · On-device (model.int8.onnx)", "Multilingual EN-DE-ES-FR implicit (no language flag). 3× faster than Canary, offline CTC.", selected = false, status = fastStatus, onClick = {}, onDownload = onDownloadFast, onDelete = onDeleteFast, onCancel = onCancel, totalMb = 126)
-        ModelCardAdvanced("Nemotron 3.5 Streaming 560ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream (40 locales, `auto` strips tag). Accuracy-oriented.", selected = false, status = nemotronStatus, onClick = {}, onDownload = onDownloadNemotron560, onDelete = onDeleteNemotron, onCancel = onCancel, totalMb = 475)
-        ModelCardAdvanced("Nemotron 3.5 Streaming 160ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream, low-latency (160ms chunk).", selected = false, status = nemotronStatus, onClick = {}, onDownload = onDownloadNemotron160, onDelete = onDeleteNemotron, onCancel = onCancel, totalMb = 475)
+        ModelCardAdvanced("Nemotron 3.5 Streaming 560ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream (40 locales, `auto` strips tag). Accuracy-oriented. Independent of 160.", selected = false, status = nemotron560Status, onClick = {}, onDownload = onDownloadNemotron560, onDelete = onDeleteNemotron560, onCancel = onCancel, totalMb = 475)
+        ModelCardAdvanced("Nemotron 3.5 Streaming 160ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream, low-latency (160ms chunk). Independent of 560.", selected = false, status = nemotron160Status, onClick = {}, onDownload = onDownloadNemotron160, onDelete = onDeleteNemotron160, onCancel = onCancel, totalMb = 475)
+        if (nemotron560Status is ModelStatus.Ready || nemotron160Status is ModelStatus.Ready) {
+            TextButton(onClick = onDeleteAllNemotron) { Text("Delete all Nemotron variants", style = MaterialTheme.typography.labelSmall) }
+        }
     }
 }
 

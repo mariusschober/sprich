@@ -24,8 +24,15 @@ class ModelManager(private val context: Context) {
     private val _canaryStatus = MutableStateFlow<ModelStatus>(if (isCanaryReady()) ModelStatus.Ready else ModelStatus.NotDownloaded)
     val canaryStatus: StateFlow<ModelStatus> = _canaryStatus
 
+    // Legacy aggregate (kept for backward compat, reflects any variant ready) — DO NOT use for variant-specific UI
     private val _nemotronStatus = MutableStateFlow<ModelStatus>(if (isNemotronReady()) ModelStatus.Ready else ModelStatus.NotDownloaded)
     val nemotronStatus: StateFlow<ModelStatus> = _nemotronStatus
+
+    // Required independent variant states — downloading 560 must not mark 160 Ready, deleting one must not delete the other
+    private val _nemotron560Status = MutableStateFlow<ModelStatus>(if (isNemotron560Ready()) ModelStatus.Ready else ModelStatus.NotDownloaded)
+    val nemotron560Status: StateFlow<ModelStatus> = _nemotron560Status
+    private val _nemotron160Status = MutableStateFlow<ModelStatus>(if (isNemotron160Ready()) ModelStatus.Ready else ModelStatus.NotDownloaded)
+    val nemotron160Status: StateFlow<ModelStatus> = _nemotron160Status
 
     private val _lidStatus = MutableStateFlow<ModelStatus>(if (isWhisperTinyReady()) ModelStatus.Ready else ModelStatus.NotDownloaded)
     val lidStatus: StateFlow<ModelStatus> = _lidStatus
@@ -112,11 +119,24 @@ class ModelManager(private val context: Context) {
         _canaryStatus.value = ModelStatus.NotDownloaded
     }
     suspend fun deleteNemotron() = withContext(Dispatchers.IO){
-        // Delete all nemotron variants (legacy + 160/560)
+        // Delete all nemotron variants (legacy + 160/560) — explicit "Delete all" action
         File(context.filesDir, "nemotron").deleteRecursively()
         File(context.filesDir, "nemotron-160").deleteRecursively()
         File(context.filesDir, "nemotron-560").deleteRecursively()
         _nemotronStatus.value = ModelStatus.NotDownloaded
+        _nemotron160Status.value = ModelStatus.NotDownloaded
+        _nemotron560Status.value = ModelStatus.NotDownloaded
+    }
+    suspend fun deleteNemotron560() = withContext(Dispatchers.IO){
+        File(context.filesDir, "nemotron-560").deleteRecursively()
+        _nemotron560Status.value = ModelStatus.NotDownloaded
+        // Update aggregate to reflect remaining variants
+        _nemotronStatus.value = if (isNemotronReady()) ModelStatus.Ready else ModelStatus.NotDownloaded
+    }
+    suspend fun deleteNemotron160() = withContext(Dispatchers.IO){
+        File(context.filesDir, "nemotron-160").deleteRecursively()
+        _nemotron160Status.value = ModelStatus.NotDownloaded
+        _nemotronStatus.value = if (isNemotronReady()) ModelStatus.Ready else ModelStatus.NotDownloaded
     }
     suspend fun deleteLid() = withContext(Dispatchers.IO){
         File(context.filesDir, "whisper-tiny").deleteRecursively()
@@ -139,15 +159,21 @@ class ModelManager(private val context: Context) {
             "accurate" -> _canaryStatus.value = ModelStatus.Downloading(prog, bytes, total)
             "lid" -> _lidStatus.value = ModelStatus.Downloading(prog, bytes, total)
             "fastconformer" -> _fastConformerStatus.value = ModelStatus.Downloading(prog, bytes, total)
-            "nemotron-560", "nemotron-160", "streaming", "nemotron" -> _nemotronStatus.value = ModelStatus.Downloading(prog, bytes, total)
+            "nemotron-560" -> _nemotron560Status.value = ModelStatus.Downloading(prog, bytes, total)
+            "nemotron-160" -> _nemotron160Status.value = ModelStatus.Downloading(prog, bytes, total)
+            "streaming", "nemotron" -> _nemotronStatus.value = ModelStatus.Downloading(prog, bytes, total)
         }
+        // Keep aggregate in sync only for legacy callers (not variant-specific)
+        if (id.startsWith("nemotron")) _nemotronStatus.value = if (id=="nemotron-560") _nemotron560Status.value else if (id=="nemotron-160") _nemotron160Status.value else _nemotronStatus.value
     }
     fun setVerifying(id: String){
         when(id){
             "accurate"-> _canaryStatus.value=ModelStatus.Verifying
             "lid" -> _lidStatus.value=ModelStatus.Verifying
             "fastconformer" -> _fastConformerStatus.value=ModelStatus.Verifying
-            "nemotron-560", "nemotron-160", "streaming", "nemotron" -> _nemotronStatus.value=ModelStatus.Verifying
+            "nemotron-560" -> _nemotron560Status.value=ModelStatus.Verifying
+            "nemotron-160" -> _nemotron160Status.value=ModelStatus.Verifying
+            "streaming", "nemotron" -> _nemotronStatus.value=ModelStatus.Verifying
         }
     }
     fun setReady(id: String){
@@ -155,15 +181,20 @@ class ModelManager(private val context: Context) {
             "accurate"-> _canaryStatus.value=ModelStatus.Ready
             "lid" -> _lidStatus.value=ModelStatus.Ready
             "fastconformer" -> _fastConformerStatus.value=ModelStatus.Ready
-            "nemotron-560", "nemotron-160", "streaming", "nemotron" -> _nemotronStatus.value=ModelStatus.Ready
+            "nemotron-560" -> _nemotron560Status.value=ModelStatus.Ready
+            "nemotron-160" -> _nemotron160Status.value=ModelStatus.Ready
+            "streaming", "nemotron" -> _nemotronStatus.value=ModelStatus.Ready
         }
+        if (id=="nemotron-560" || id=="nemotron-160") _nemotronStatus.value = if (isNemotronReady()) ModelStatus.Ready else _nemotronStatus.value
     }
     fun setFailed(id: String, err: String){
         when(id){
             "accurate"-> _canaryStatus.value=ModelStatus.Failed(err)
             "lid" -> _lidStatus.value=ModelStatus.Failed(err)
             "fastconformer" -> _fastConformerStatus.value=ModelStatus.Failed(err)
-            "nemotron-560", "nemotron-160", "streaming", "nemotron" -> _nemotronStatus.value=ModelStatus.Failed(err)
+            "nemotron-560" -> _nemotron560Status.value=ModelStatus.Failed(err)
+            "nemotron-160" -> _nemotron160Status.value=ModelStatus.Failed(err)
+            "streaming", "nemotron" -> _nemotronStatus.value=ModelStatus.Failed(err)
         }
     }
 
