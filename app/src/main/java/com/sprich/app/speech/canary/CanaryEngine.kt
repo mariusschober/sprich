@@ -47,10 +47,12 @@ class CanaryEngine(
     private var recognizer: Any? = null
     @Volatile private var recognizerLang: String = "en"
 
-    // Per-utterance PCM capture — isolated from global ring, frozen at finalization.
-    private val utteranceLock = Any()
-    private val utterancePcm = mutableListOf<Short>()
-    private var utteranceFrozen: ShortArray? = null
+    // Per-utterance PCM capture — single authoritative buffer, primitive, bounded, exactly once.
+    // No MutableList<Short> boxing, no removeAt(0) shifts. Owned solely by engine.
+    private val utteranceBuffer = com.sprich.app.core.audio.UtterancePcmBuffer(16000 * 30)
+
+    // Epoch to discard stale partials after session cancel / new session
+    private val sessionEpoch = java.util.concurrent.atomic.AtomicLong(0)
 
     // Diagnostics counters for stress tests (debug builds)
     @Volatile var nativeDecodeStarts: Long = 0
@@ -93,12 +95,13 @@ class CanaryEngine(
     }
 
     override suspend fun unload() {
+        sessionEpoch.incrementAndGet()
         inferenceMutex.withLock {
             job?.cancel()
             try { recognizer?.javaClass?.getMethod("release")?.invoke(recognizer) } catch (_: Exception) {}
             recognizer = null; loaded = false
             pcmRing.clear()
-            synchronized(utteranceLock) { utterancePcm.clear(); utteranceFrozen = null }
+            utteranceBuffer.clear()
             stabilizer.reset()
             scope.coroutineContext.cancelChildren()
             nativeDecodeStarts = 0; nativeDecodeCurrent = 0; nativeDecodeMaxConcurrency = 0
@@ -106,6 +109,17 @@ class CanaryEngine(
     }
 
     private fun isSilence(pcm: ShortArray): Boolean {
+        if (pcm.isEmpty()) return true
+        var sum = 0.0
+        for (s in pcm) { val f = s / 32768.0; sum += f * f }
+        // Trust VAD for whisper: only reject true digital silence, not quiet speech.
+        // Previous 0.004 threshold discarded whisper that VAD correctly detected (VAD ~0.0012).
+        // Keep only extremely low defensive gate for digital zero.
+        return kotlin.math.sqrt(sum / pcm.size) < 0.0005
+    }
+
+    /** Legacy threshold for tests that want to simulate old behavior. */
+    private fun isSilenceLegacy(pcm: ShortArray): Boolean {
         if (pcm.isEmpty()) return true
         var sum = 0.0
         for (s in pcm) { val f = s / 32768.0; sum += f * f }
@@ -117,31 +131,41 @@ class CanaryEngine(
             Log.w("CanaryEngine", "beginSession task=${config.task} — treating as TRANSCRIBE unless explicit translation invoked")
         }
         cfg = config; pcmRing.clear(); stabilizer.reset()
-        synchronized(utteranceLock) { utterancePcm.clear(); utteranceFrozen = null }
+        utteranceBuffer.clear()
+        val myEpoch = sessionEpoch.incrementAndGet()
         job?.cancel()
         job = scope.launch {
             while (isActive) {
                 delay(350)
+                if (sessionEpoch.get() != myEpoch) { // session cancelled / new session started — drop stale work
+                    Log.i("CanaryEngine", "partial decode dropped stale epoch $myEpoch vs ${sessionEpoch.get()}")
+                    return@launch
+                }
                 if (pcmRing.available() < 16000 * 0.7) continue
                 val effectiveLang = cfg?.speechLanguage ?: SpeechLanguage.fromLegacy(cfg?.language ?: Language.AUTO)
-                // AUTO has NO native support on Canary. Do NOT attempt multi-decode guessing.
-                // Conservative fallback: decode as EN and emit with note. Explicit language is required for reliable Auto.
-                if (effectiveLang is SpeechLanguage.Auto) {
-                    // Still emit partials decoded as EN (or last explicit) — better than fabricating language.
-                    // Caller should have provided explicit language via LID stage if true Auto desired.
-                    // We ensure recognizer is in EN to avoid leaving it in previous utterance's language.
-                    try { switchLanguageLocked("en") } catch (_: Throwable) {}
-                } else if (effectiveLang is SpeechLanguage.Fixed) {
-                    try { switchLanguageLocked(langCodeFor(effectiveLang.toLegacyLanguage())) } catch (_: Throwable) {}
-                } else if (cfg?.language != Language.AUTO) {
-                    try { switchLanguageLocked(langCodeFor(cfg?.language)) } catch (_: Throwable) {}
-                }
-                val snap = pcmRing.snapshotLast(30f)
-                if (snap.isEmpty() || isSilence(snap)) continue
-                val hyp = transcribeLocked(snap)
+                // All recognizer access must hold inferenceMutex — single authoritative owner
+                val hyp: String = try {
+                    inferenceMutex.withLock {
+                        if (sessionEpoch.get() != myEpoch) return@withLock ""
+                        if (effectiveLang is SpeechLanguage.Auto) {
+                            try { switchLanguageLocked("en") } catch (_: Throwable) {}
+                        } else if (effectiveLang is SpeechLanguage.Fixed) {
+                            try { switchLanguageLocked(langCodeFor(effectiveLang.toLegacyLanguage())) } catch (_: Throwable) {}
+                        } else if (cfg?.language != Language.AUTO) {
+                            try { switchLanguageLocked(langCodeFor(cfg?.language)) } catch (_: Throwable) {}
+                        }
+                        val snap = pcmRing.snapshotLast(30f)
+                        if (snap.isEmpty() || isSilence(snap)) return@withLock ""
+                        transcribeLocked(snap)
+                    }
+                } catch (_: Throwable) { "" }
+                if (sessionEpoch.get() != myEpoch) continue // dropped stale decode
                 if (hyp.isBlank()) continue
+                // Stabilizer mutation also gated by epoch
+                if (sessionEpoch.get() != myEpoch) continue
                 val res = stabilizer.pushHypothesis(hyp)
                 if (res.stable.isEmpty() && res.unstable.isEmpty()) continue
+                if (sessionEpoch.get() != myEpoch) continue
                 flow.tryEmit(TranscriptUpdate(res.stable, res.unstable, false, lang = effectiveLang.toLegacyLanguage()))
             }
         }
@@ -149,64 +173,55 @@ class CanaryEngine(
 
     override fun pushAudio(samples: ShortArray, timestampNanos: Long) {
         pcmRing.write(samples)
-        synchronized(utteranceLock) {
-            // Append to per-utterance capture if not frozen. Frozen buffer is cleared on beginSession / after endUtterance.
-            if (utteranceFrozen == null) {
-                for (s in samples) utterancePcm.add(s)
-                // Bound to 30s to avoid unbounded growth if VAD fails
-                if (utterancePcm.size > 16000 * 30) {
-                    val drop = utterancePcm.size - 16000 * 30
-                    repeat(drop) { utterancePcm.removeAt(0) }
-                }
-            }
-        }
+        utteranceBuffer.append(samples)
     }
 
-    /** Called by session coordinator at speech onset to seed pre-roll. */
+    /**
+     * Called by session coordinator at speech onset to seed pre-roll.
+     * Ownership contract: this owns seeding preRoll exactly once — caller must NOT pushAudio(preRoll) again.
+     */
     fun beginUtteranceCapture(preRoll: ShortArray) {
-        synchronized(utteranceLock) {
-            utterancePcm.clear()
-            utteranceFrozen = null
-            for (s in preRoll) utterancePcm.add(s)
-        }
+        utteranceBuffer.beginWithPreRoll(preRoll)
         pcmRing.clear()
-        // Also seed ring for partial decoding
+        // Also seed ring for partial decoding (same single copy)
         if (preRoll.isNotEmpty()) pcmRing.write(preRoll)
     }
 
     /** Snapshot of current utterance PCM — the exact buffer fallback must use. */
-    fun snapshotUtterancePcm(): ShortArray = synchronized(utteranceLock) {
-        utteranceFrozen ?: utterancePcm.toShortArray()
-    }
+    fun snapshotUtterancePcm(): ShortArray = utteranceBuffer.snapshot()
 
     /** Freeze utterance buffer at endpoint so concurrent pushes don't mutate fallback source. */
-    private fun freezeUtterance(): ShortArray = synchronized(utteranceLock) {
-        val frozen = utterancePcm.toShortArray()
-        utteranceFrozen = frozen
-        frozen
-    }
+    private fun freezeUtterance(): ShortArray = utteranceBuffer.freeze()
 
     fun clearUtteranceCapture() {
-        synchronized(utteranceLock) { utterancePcm.clear(); utteranceFrozen = null }
+        utteranceBuffer.clear()
         pcmRing.clear()
         stabilizer.reset()
     }
 
     override fun partialTranscript(): Flow<TranscriptUpdate> = flow
 
-    override suspend fun endUtterance(): FinalTranscript = withContext(inferenceDispatcher) {
+    override suspend fun endUtterance(): FinalTranscript = endUtteranceWithSnapshot(ShortArray(0))
+
+    // For continuous speech: allow next utterance capture while previous final decodes.
+    // Endpoint captures frozen PCM immediately; decode uses that snapshot, not live buffer that may be overwritten.
+    suspend fun endUtteranceWithSnapshot(snapshotPcm: ShortArray): FinalTranscript = withContext(inferenceDispatcher) {
         inferenceMutex.withLock {
-            // Serialize: cancel speculative job under mutex to avoid concurrent decode
             job?.cancel()
+            sessionEpoch.incrementAndGet()
             cfg?.let { if (it.task != TranscriptionTask.TRANSCRIBE) Log.w("CanaryEngine", "endUtterance with task=${it.task}") }
-            // Freeze per-utterance PCM at finalization — cloud fallback must use this exact slice.
-            val frozenUtterance = freezeUtterance()
-            // Prefer frozen utterance buffer if we have it; fall back to ring snapshot for legacy callers (tests)
-            val snap = if (frozenUtterance.isNotEmpty()) frozenUtterance else pcmRing.snapshotLast(30f)
+            // Prefer explicitly provided snapshot (captured at endpoint before live buffer was reused for next utterance)
+            // Fall back to internal frozen utterance buffer, then ring snapshot for legacy callers/tests
+            val frozenUtterance = if (snapshotPcm.isNotEmpty()) snapshotPcm else freezeUtterance()
+            val snap = when {
+                frozenUtterance.isNotEmpty() -> frozenUtterance
+                snapshotPcm.isNotEmpty() -> snapshotPcm
+                else -> pcmRing.snapshotLast(30f)
+            }
             if (snap.isEmpty() || isSilence(snap)) {
                 flow.tryEmit(TranscriptUpdate("", "", isFinal = true))
                 pcmRing.clear()
-                synchronized(utteranceLock) { utterancePcm.clear(); utteranceFrozen = null }
+                utteranceBuffer.clear()
                 stabilizer.reset()
                 return@withLock FinalTranscript("")
             }
@@ -222,7 +237,7 @@ class CanaryEngine(
             if (text.isBlank()) {
                 flow.tryEmit(TranscriptUpdate("", "", isFinal = true))
                 pcmRing.clear()
-                synchronized(utteranceLock) { utterancePcm.clear(); utteranceFrozen = null }
+                utteranceBuffer.clear()
                 stabilizer.reset()
                 return@withLock FinalTranscript("")
             }
@@ -230,15 +245,16 @@ class CanaryEngine(
             stabilizer.commitStable()
             flow.tryEmit(TranscriptUpdate(res.stable, res.unstable, true))
             pcmRing.clear()
-            synchronized(utteranceLock) { utterancePcm.clear(); utteranceFrozen = null }
+            utteranceBuffer.clear()
             FinalTranscript(text.trim())
         }
     }
 
     override fun cancelSession() {
+        sessionEpoch.incrementAndGet()
         job?.cancel()
         pcmRing.clear()
-        synchronized(utteranceLock) { utterancePcm.clear(); utteranceFrozen = null }
+        utteranceBuffer.clear()
         stabilizer.reset()
         // Synchronous clear — with replay=0 this never seeds next session
         flow.tryEmit(TranscriptUpdate("", "", true))

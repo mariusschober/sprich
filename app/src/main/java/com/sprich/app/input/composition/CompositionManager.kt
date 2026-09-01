@@ -122,6 +122,7 @@ class CompositionManager {
             if (compositionRejected) return false
             // Detect editors that silently commit composing text while returning success.
             // Such editors duplicate the hypothesis: "Hello" -> "Hello world" becomes "HelloHello world"
+            // Policy: never delete user text destructively — just abandon composing and fallback to IME-local preview + final-only.
             if (composingActive && lastComposing != null) {
                 try {
                     val before = ic.getTextBeforeCursor(400, 0)?.toString().orEmpty()
@@ -130,29 +131,19 @@ class CompositionManager {
                         if (firstWord.length >= 2) {
                             val countFirst = before.windowed(firstWord.length, 1, false).count { it == firstWord }
                             if (countFirst >= 2 && before.contains(lastComposing!!)) {
-                                Log.w("Composition", "silent-commit detected firstWord=$firstWord count=$countFirst beforeLen=${before.length} lastComposing=$lastComposing")
+                                Log.w("Composition", "silent-commit detected firstWord=$firstWord count=$countFirst beforeLen=${before.length} lastComposing=$lastComposing — falling back to final-only without deletion")
                                 compositionRejected = true
                                 try { ic.finishComposingText() } catch (_: Exception) {}
-                                try {
-                                    val toDelete = lastComposing!!.length + if (leadingSpaceNeeded == true) 1 else 0
-                                    ic.deleteSurroundingText(toDelete, 0)
-                                    Log.i("Composition", "silent-commit cleanup deleted $toDelete")
-                                } catch (_: Exception) {}
+                                // Do NOT delete — never delete real user text based on heuristic
                                 composingActive = false
                                 return false
                             }
                         }
-                        // Also check exact duplicate of lastComposing
                         val countExact = before.windowed(lastComposing!!.length, 1, false).count { it == lastComposing }
                         if (countExact >= 2) {
-                            Log.w("Composition", "silent-commit detected countExact=$countExact beforeLen=${before.length} lastComposing=$lastComposing")
+                            Log.w("Composition", "silent-commit detected countExact=$countExact beforeLen=${before.length} lastComposing=$lastComposing — final-only")
                             compositionRejected = true
                             try { ic.finishComposingText() } catch (_: Exception) {}
-                            try {
-                                val toDelete = lastComposing!!.length + if (leadingSpaceNeeded == true) 1 else 0
-                                ic.deleteSurroundingText(toDelete, 0)
-                                Log.i("Composition", "silent-commit cleanup deleted $toDelete")
-                            } catch (_: Exception) {}
                             composingActive = false
                             return false
                         }
@@ -175,35 +166,28 @@ class CompositionManager {
                 return false
             } else {
                 // Verify editor didn't silently commit despite returning true: check if committed length exploded
+                // Policy: never delete — just fallback to final-only preview.
                 try {
                     val after = ic.getTextBeforeCursor(500, 0)?.toString().orEmpty()
                     if (beforeLen >= 0 && lastComposing != null) {
                         val expectedGrowth = visibleComposing.length - lastComposing!!.length
                         val actualGrowth = after.length - beforeLen
-                        // Silent commit: actual growth is close to visibleComposing.length, not expected delta
                         if (actualGrowth > expectedGrowth + 1 && visibleComposing.isNotEmpty()) {
                             if (after.contains(lastComposing!!) && after.contains(visibleComposing) && after.length >= visibleComposing.length + lastComposing!!.length) {
-                                Log.w("Composition", "silent-commit post-check actualGrowth=$actualGrowth expected=$expectedGrowth before=$beforeLen after=${after.length}")
+                                Log.w("Composition", "silent-commit post-check actualGrowth=$actualGrowth expected=$expectedGrowth before=$beforeLen after=${after.length} — final-only no delete")
                                 compositionRejected = true
                                 try { ic.finishComposingText() } catch (_: Exception) {}
-                                try {
-                                    val toDelete = lastComposing!!.length + if (leadingSpaceNeeded == true) 1 else 0
-                                    ic.deleteSurroundingText(toDelete, 0)
-                                } catch (_: Exception) {}
                                 composingActive = false
                                 return false
                             }
                         }
-                        // Also check firstWord duplicate in after — independent of growth
                         val firstWord = visibleComposing.trim().split(Regex("\\s+")).firstOrNull() ?: ""
                         if (firstWord.length >= 2) {
                             val cnt = after.windowed(firstWord.length, 1, false).count { it == firstWord }
                             if (cnt >= 2) {
-                                Log.w("Composition", "silent-commit post firstWord duplicate cnt=$cnt afterLen=${after.length}")
+                                Log.w("Composition", "silent-commit post firstWord duplicate cnt=$cnt afterLen=${after.length} — final-only")
                                 compositionRejected = true
                                 try { ic.finishComposingText() } catch (_: Exception) {}
-                                // Try to clean duplicated first word
-                                try { ic.deleteSurroundingText(firstWord.length, 0) } catch (_: Exception) {}
                                 composingActive = false
                                 return false
                             }
@@ -227,14 +211,37 @@ class CompositionManager {
         // Caller should finish composing
     }
 
-    fun finishIfActive(ic: InputConnection?) {
+    /**
+     * Discard speculative partial — must NOT commit it.
+     * Uses setComposingText("",1) + finishComposingText to ensure Android does not convert composing to committed.
+     * Required for FIELD_LOST, INPUT_RESTARTED, WINDOW_HIDDEN, PASSWORD, ERROR, SERVICE_DESTROYED.
+     */
+    fun discardPartial(ic: InputConnection?) {
         if (composingActive) {
-            try { ic?.finishComposingText() } catch(_:Exception){}
+            try { ic?.setComposingText("", 1) } catch (_: Exception) {}
+            try { ic?.finishComposingText() } catch (_: Exception) {}
             composingActive = false
+            Log.i("Composition", "discarded speculative composing without commit")
         }
         lastStable = ""; lastUnstable=""; lastComposing = null
         compositionRejected = false
         leadingSpaceNeeded = null
+    }
+
+    /**
+     * Commit final text — replaces composing span atomically via commitText.
+     * Only called for successful utterance finalization.
+     */
+    fun commitFinal(ic: InputConnection?, text: String): Boolean {
+        if (ic == null) return false
+        // Delegate to applyUpdate with isFinal=true for consistent spacing logic
+        return applyUpdate(ic, text, "", true)
+    }
+
+    /** Legacy alias — prefer discardPartial for cancellations. */
+    fun finishIfActive(ic: InputConnection?) {
+        // For safety, treat as discard, not commit. Callers that need commit should use commitFinal.
+        discardPartial(ic)
     }
 
     fun hasComposing(): Boolean = composingActive

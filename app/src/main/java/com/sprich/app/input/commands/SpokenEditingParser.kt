@@ -50,9 +50,8 @@ object SpokenEditingParser {
         "borrar eso" to "__DELETE_LAST__",
     )
 
-    private val correctionTriggers = setOf("actually", "no", "correction", "scratch that", "i mean", "rather",
-        "eigentlich", "nein", "korrektur", "ich meine", "eher",
-        "en realidad", "no", "corrección", "quiero decir")
+    // Removed correctionTriggers — implicit backtracking was unsafe (substring "no" in "not" etc.)
+    // Only explicit whole-utterance delete commands remain. See mission: false positives worse than misses.
 
     fun parse(text: String, lang: Language, enableCommands: Boolean): EditResult {
         if (!enableCommands) return EditResult(applyITN(text, lang), false)
@@ -62,54 +61,42 @@ object SpokenEditingParser {
             Language.ES -> esCommands
             else -> enCommands
         }
-        // Check if entire utterance is a command (or ends with command phrase)
-        // Conservative: only if text exactly equals command or "xxx , comma" at end with punctuation command allowed inline
+        // Check if entire utterance is a command — conservative: whole utterance equals command phrase only
         if (map.containsKey(lower)) {
             val v = map[lower]!!
             return EditResult(v, true)
         }
-        // Inline punctuation: replace spoken punctuation words surrounded by spaces, but be conservative
-        // e.g., "hello comma world" -> "hello, world"
+        // Inline punctuation: replace spoken punctuation words surrounded by spaces, word-boundary, language-specific
+        // e.g., "hello comma world" -> "hello, world" (EN) ; "hallo komma welt" -> "hallo, welt" (DE)
         var out = text
         var foundInline = false
         for ((k,v) in map) {
             if (v.startsWith("__DELETE")) continue
-            // punctuation mapping only
-            if (v.length <= 2) {
-                // Replace word boundaries, case-insensitive
+            // punctuation mapping only (single char or colon/semicolon etc.)
+            if (v.length <= 2 || v == " - ") {
+                // Word-boundary regex ensures "no" does not match "not", "innovative" etc.
                 val regex = Regex("\\b${Regex.escape(k)}\\b", RegexOption.IGNORE_CASE)
                 if (regex.containsMatchIn(out)) {
-                    // Only replace if not at start and seems intentional: keep simple
                     out = regex.replace(out, v)
                     foundInline = true
                 }
             }
         }
-        // Backtracking: "A actually B" -> keep B only after trigger
-        for (trigger in correctionTriggers) {
-            val idx = out.lowercase().lastIndexOf(trigger)
-            if (idx > 0) {
-                val before = out.substring(0, idx).trim()
-                val after = out.substring(idx + trigger.length).trim().removePrefix(",").trim()
-                if (after.isNotEmpty() && before.isNotEmpty()) {
-                    // Only apply if words before not huge? conservative
-                    // For now, if trigger preceded by punctuation or dash, we cut
-                    out = after // simplified: keep only correction
-                    break
-                }
-            }
-        }
+        // Correction backtracking REMOVED entirely per reliability requirement — no substring triggers.
         out = applyITN(out, lang)
         return EditResult(out, foundInline)
     }
 
     private fun applyITN(text: String, lang: Language): String {
+        // Language-aware ITN — English patterns only for EN, never for DE/ES/FR
+        if (lang != Language.EN && lang != Language.AUTO) {
+            return text
+        }
         var t = text
-        // Numbers: "five point two" -> 5.2 (EN)
-        // Conservative: only simple patterns
-        t = t.replace(Regex("\\bzero\\b", RegexOption.IGNORE_CASE), "0")
-        t = t.replace(Regex("\\bone\\b", RegexOption.IGNORE_CASE), "1")
-        // Email: "marius at example dot com" -> marius@example.com
+        // Numbers: disabled for reliability — simple "zero"/"one" -> "0"/"1" causes false positives
+        // e.g., "no one knows" -> "no 1 knows" is worse than missed ITN. Keep only email which has clear structure.
+        // If numeric ITN needed later, require explicit numeric context, not unconditional word replace.
+        // Email: "marius at example dot com" -> marius@example.com (EN only, with word boundaries)
         t = Regex("\\b([a-zA-Z0-9_\\-]+)\\s+at\\s+([a-zA-Z0-9_\\-]+)\\s+dot\\s+([a-z]{2,})\\b", RegexOption.IGNORE_CASE)
             .replace(t) { m -> "${m.groupValues[1]}@${m.groupValues[2]}.${m.groupValues[3]}" }
         t = Regex("\\b([a-zA-Z0-9_\\-]+)\\s+dot\\s+com\\b", RegexOption.IGNORE_CASE)

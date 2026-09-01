@@ -2,6 +2,7 @@ package com.sprich.app.input.lifecycle
 
 import android.view.inputmethod.InputConnection
 import com.sprich.app.input.composition.CompositionManager
+import java.util.Collections
 
 /**
  * Isolates IME/focus correctness:
@@ -18,6 +19,8 @@ class FieldSessionController(
     @Volatile private var currentFieldId: String? = null
     @Volatile private var startingSelectionStart: Int = -1
     @Volatile private var startingSelectionEnd: Int = -1
+    private val finalizedUtteranceIds = Collections.synchronizedSet(mutableSetOf<Long>())
+    @Volatile private var utteranceCounter: Long = 0L
 
     fun onFieldFocused(fieldId: String, selectionStart: Int, selectionEnd: Int): Long {
         val id = session.start()
@@ -25,16 +28,19 @@ class FieldSessionController(
         currentFieldId = fieldId
         startingSelectionStart = selectionStart
         startingSelectionEnd = selectionEnd
+        finalizedUtteranceIds.clear()
+        utteranceCounter = 0L
         composition.reset()
         return id
     }
 
     fun onFieldLost(fieldId: String) {
         if (fieldId == currentFieldId) {
-            composition.finishIfActive(null)
-            session.end()
+            try { composition.discardPartial(null) } catch (_: Exception) { composition.finishIfActive(null) }
+            try { session.end() } catch (_: Exception) {}
             currentFieldId = null
             currentSessionId = 0L
+            finalizedUtteranceIds.clear()
         }
     }
 
@@ -42,30 +48,70 @@ class FieldSessionController(
         if (sessionId != currentSessionId) return false // late callback ignored
         if (!session.isSessionValid(sessionId)) return false
         if (ic == null) return false
-        // Verify IC still belongs to current field by checking selection hasn't moved unexpectedly?
-        // We trust caller has revalidated currentInputConnection; we also check session validity.
         return composition.applyUpdate(ic, stable, unstable, false)
     }
 
+    /**
+     * Per-utterance commit — keeps field session alive for next utterance.
+     * Exactly once per utteranceId within the same field session.
+     * Transitions Finalizing -> Inserting -> Listening without invalidating field session.
+     */
+    fun commitUtterance(sessionId: Long, utteranceId: Long, ic: InputConnection?, text: String): Boolean {
+        if (sessionId != currentSessionId) return false
+        if (!session.isSessionValid(sessionId)) return false
+        if (ic == null) return false
+        // Exactly once per utteranceId
+        val claimed = synchronized(finalizedUtteranceIds) {
+            if (finalizedUtteranceIds.contains(utteranceId)) false
+            else { finalizedUtteranceIds.add(utteranceId); true }
+        }
+        if (!claimed) return false
+        session.onInserting()
+        val ok = composition.applyUpdate(ic, text, "", true)
+        if (ok) {
+            // Return to Listening for next utterance within same field session
+            session.onListeningAgain()
+        } else {
+            // If commit failed, keep session in Inserting? Transition to Listening or Error
+            // Try to return to Listening so next utterance can still be captured
+            try { session.onListeningAgain() } catch (_: Exception) {}
+        }
+        // Field session stays alive — currentFieldId and currentSessionId unchanged
+        return ok
+    }
+
+    /**
+     * Legacy field-terminating commit — ends field session (used for explicit stop or field loss).
+     * Prefer commitUtterance for per-utterance commits that keep listening.
+     */
     fun commitFinal(sessionId: Long, ic: InputConnection?, text: String): Boolean {
         if (sessionId != currentSessionId) return false
         if (!session.isSessionValid(sessionId)) return false
         if (ic == null) return false
-        // ImeWriter: single final commit, composing span replaced atomically
         session.onInserting()
         val ok = composition.applyUpdate(ic, text, "", true)
         session.end()
         currentFieldId = null
         currentSessionId = 0L
+        finalizedUtteranceIds.clear()
         return ok
     }
 
+    /** Generate next utteranceId within current field session (monotonic). */
+    fun nextUtteranceId(): Long = synchronized(finalizedUtteranceIds) { ++utteranceCounter }
+
     fun isCurrentSession(id: Long): Boolean = id == currentSessionId
 
+    fun currentSessionId(): Long = currentSessionId
+
     fun cancelActive() {
-        composition.finishIfActive(null)
-        if (session.isActive) session.end()
+        try { composition.discardPartial(null) } catch (_: Exception) { composition.finishIfActive(null) }
+        if (session.isActive) try { session.end() } catch (_: Exception) {}
         currentFieldId = null
         currentSessionId = 0L
+        finalizedUtteranceIds.clear()
     }
+
+    /** For testing: check if utteranceId already finalized. */
+    fun isUtteranceFinalized(utteranceId: Long): Boolean = finalizedUtteranceIds.contains(utteranceId)
 }
