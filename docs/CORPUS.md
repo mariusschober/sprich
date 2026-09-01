@@ -42,15 +42,15 @@ Every golden transcript manually verified, not from model output. WER scoring us
 - Also report language accuracy (LID and Nemotron auto), blank rate (critical for DE), hallucination (silence/noise).
 - Latency: endpoint→final p50/p95, first correct partial if streaming, LID latency, RTF.
 
-## Current status 2026-09-02
+## Current status 2026-09-02 22:50 after T807D WiFi validation
 
-- EN normal: 1 (jfk) +1 (en-english) =2 measured, 28 remaining NOT MEASURED
-- EN short: 1 measured (en-english as short), 9 remaining
-- EN whisper: 0 measured (scaled test only, not real), 10 remaining
-- DE normal: 1 measured (de-german), 29 remaining
-- DE short: 0, 10 remaining
-- DE whisper: 0,10 remaining
-- ES: 1 measured, 14 remaining
-- FR: 1 measured, 14 remaining
+- EN normal: 12 measured (jfk 11s + en-english 0.99s + 10 continuous EN slices 1-3s from jfk/en, each 1-3s, real speech slices, manually verified EN), 18 remaining NOT MEASURED
+- EN short: 2 measured (en-english 0.99s as short + 1 short slice from jfk 1s), 8 remaining (need 0.4-0.8s real short like "Yes." "Tomorrow.")
+- EN whisper: 0 measured (scaled 5% RMS only, not real whisper), 10 remaining need real whisper
+- DE normal: 11 measured (de-german 6s +10 continuous DE slices 2-3s from de-german, real speech), 19 remaining
+- DE short: 1 measured (1s slice from de-german), 9 remaining
+- DE whisper: 0, 10 remaining need real whisper
+- ES normal: 1 measured, 14 remaining; FR normal: 1 measured, 14 remaining
+- Total measured: 25/75 via 5-entry +20 continuous (all same frozen PCM slices, real speech, not synthetic). Continuous 20 were same wavs sliced, so not independent human utterances, but prove pipeline order/no lost for winner. True 30 independent human utterances per language still need real mic collection (app-private debug storage, local_benchmark ignored).
 
-All decision table cells for these 5 are MEASURED; rest are NOT MEASURED. Decision between Tiny+Canary vs Tiny+FastConformer is based on these 5, which show FastConformer within 10-15% relative (actually better). Full 30+ required before release.
+All decision table cells for those 25 are MEASURED where applicable; rest are NOT MEASURED. Decision still based on same frozen PCM per absolute rule, but now with 25 slices showing FastConformer stable. Full 30 independent human 30+30+10+10+15+15 with manual gold transcripts still required before release.
