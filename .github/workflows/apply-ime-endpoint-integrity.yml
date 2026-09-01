@@ -39,157 +39,32 @@ jobs:
 
           path = Path("app/src/main/java/com/sprich/app/input/ime/SprichIME.kt")
           text = path.read_text()
+          operations = [
+              ('    private var pipelinePushedSampleCount = 0L\n    private var pipelineStartElapsed = 0L\n    private var instantMode: Boolean = false\n', '    private var pipelinePushedSampleCount = 0L\n    private var pipelineStartElapsed = 0L\n    // Exact PCM sent to the recognizer for the current utterance. Frozen at endpoint.\n    private val utteranceAudio = com.sprich.app.core.audio.AudioRingBuffer((SAMPLE_RATE * 40).toInt())\n    private var instantMode: Boolean = false\n'),
+              ('    private fun toggleDictation() {\n        try {\n            if (isDictationRunning()) {\n                stopDictation()\n', '    private fun toggleDictation() {\n        try {\n            if (isDictationRunning()) {\n                stopDictation(commitPending = true)\n'),
+              ('            composition.reset()\n            vad.reset()\n            lastVadState = Vad.State.SILENCE\n', '            composition.reset()\n            vad.reset()\n            utteranceAudio.clear()\n            lastVadState = Vad.State.SILENCE\n'),
+              ('                val preRoll = audio.snapshotPrebufferMs(PRE_ROLL_MS)\n                pipelinePushedSampleCount += preRoll.size\n                engine.pushAudio(preRoll, timestampNanos)\n', '                val preRoll = audio.snapshotPrebufferMs(PRE_ROLL_MS)\n                utteranceAudio.clear()\n                utteranceAudio.write(preRoll)\n                pipelinePushedSampleCount += preRoll.size\n                engine.pushAudio(preRoll, timestampNanos)\n'),
+              ('            ) {\n                pipelinePushedSampleCount += samples.size\n                engine.pushAudio(samples, timestampNanos)\n            }\n', '            ) {\n                utteranceAudio.write(samples)\n                pipelinePushedSampleCount += samples.size\n                engine.pushAudio(samples, timestampNanos)\n            }\n'),
+              ('                latency.mark("endpointDetected")\n                Log.i("SprichIME", "endpoint detected pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount")\n                endpointJob = scope.launch { finalizeUtterance(generation) }\n', '                latency.mark("endpointDetected")\n                Log.i("SprichIME", "endpoint detected pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount")\n                val frozenUtterance = utteranceAudio.snapshotLastSamples(utteranceAudio.available())\n                endpointJob = scope.launch { finalizeUtterance(generation, frozenUtterance) }\n'),
+              ('    private suspend fun finalizeUtterance(generation: Long) {\n', '    private suspend fun finalizeUtterance(generation: Long, frozenUtterance: ShortArray) {\n'),
+              ('                statusText?.text = "Transcribing (cloud)…"\n                val snapshot = audio.ringBuffer.snapshotLast(30f)\n                val result = remoteStt.transcribe(snapshot, SAMPLE_RATE.toInt(), activeConfig.language)\n                val remoteText = result.getOrNull()?.trim().orEmpty()\n                Log.i("SprichIME", "remoteStt mode=$sttModeRaw ok=${result.isSuccess} chars=${remoteText.length} samples=${snapshot.size}")\n', '                statusText?.text = "Transcribing (cloud)…"\n                val result = remoteStt.transcribe(frozenUtterance, SAMPLE_RATE.toInt(), activeConfig.language)\n                val remoteText = result.getOrNull()?.trim().orEmpty()\n                Log.i("SprichIME", "remoteStt mode=$sttModeRaw ok=${result.isSuccess} chars=${remoteText.length} samples=${frozenUtterance.size}")\n'),
+              ('            pipelinePushedSampleCount = 0L\n            // Prepare for the next utterance without dropping mic. beginSession may throw if engine was torn down.\n', '            pipelinePushedSampleCount = 0L\n            utteranceAudio.clear()\n            // Prepare for the next utterance without dropping mic. beginSession may throw if engine was torn down.\n'),
+              ('            endpointPending.set(false)\n            utteranceActive.set(false)\n            throw e\n', '            endpointPending.set(false)\n            utteranceActive.set(false)\n            utteranceAudio.clear()\n            throw e\n'),
+              ('        endpointPending.set(false)\n        lastPartialText = ""\n        session.error(reason)\n', '        endpointPending.set(false)\n        lastPartialText = ""\n        utteranceAudio.clear()\n        session.error(reason)\n'),
+              ('    private fun stopDictation() {\n', '    private fun stopDictation(commitPending: Boolean = false) {\n'),
+              ('        val shouldCommit = wasActive && pipelinePushedSampleCount > 8000\n', '        val shouldCommit = commitPending && wasActive && pipelinePushedSampleCount > 8000\n'),
+              ('                    pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L\n                    vad.reset()\n', '                    pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L\n                    utteranceAudio.clear()\n                    vad.reset()\n'),
+              ('        pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L\n        vad.reset()\n', '        pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L\n        utteranceAudio.clear()\n        vad.reset()\n'),
+          ]
 
-          def replace_once(old: str, new: str) -> None:
-              global text
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"expected exactly one match, found {count}: {old[:100]!r}")
+          failures = [(index, text.count(old), old[:120]) for index, (old, _) in enumerate(operations, start=1) if text.count(old) != 1]
+          if failures:
+              for index, count, preview in failures:
+                  print(f"operation {index}: expected 1 match, found {count}: {preview!r}")
+              raise SystemExit(1)
+
+          for old, new in operations:
               text = text.replace(old, new, 1)
-
-          replace_once(
-              """    private var pipelinePushedSampleCount = 0L
-              private var pipelineStartElapsed = 0L
-              private var instantMode: Boolean = false
-          """,
-              """    private var pipelinePushedSampleCount = 0L
-              private var pipelineStartElapsed = 0L
-              // Exact PCM sent to the recognizer for the current utterance. Frozen at endpoint.
-              private val utteranceAudio = com.sprich.app.core.audio.AudioRingBuffer((SAMPLE_RATE * 40).toInt())
-              private var instantMode: Boolean = false
-          """,
-          )
-          replace_once(
-              """    private fun toggleDictation() {
-                  try {
-                      if (isDictationRunning()) {
-                          stopDictation()
-          """,
-              """    private fun toggleDictation() {
-                  try {
-                      if (isDictationRunning()) {
-                          stopDictation(commitPending = true)
-          """,
-          )
-          replace_once(
-              """            composition.reset()
-              vad.reset()
-              lastVadState = Vad.State.SILENCE
-          """,
-              """            composition.reset()
-              vad.reset()
-              utteranceAudio.clear()
-              lastVadState = Vad.State.SILENCE
-          """,
-          )
-          replace_once(
-              """                val preRoll = audio.snapshotPrebufferMs(PRE_ROLL_MS)
-                  pipelinePushedSampleCount += preRoll.size
-                  engine.pushAudio(preRoll, timestampNanos)
-          """,
-              """                val preRoll = audio.snapshotPrebufferMs(PRE_ROLL_MS)
-                  utteranceAudio.clear()
-                  utteranceAudio.write(preRoll)
-                  pipelinePushedSampleCount += preRoll.size
-                  engine.pushAudio(preRoll, timestampNanos)
-          """,
-          )
-          replace_once(
-              """            ) {
-                  pipelinePushedSampleCount += samples.size
-                  engine.pushAudio(samples, timestampNanos)
-              }
-          """,
-              """            ) {
-                  utteranceAudio.write(samples)
-                  pipelinePushedSampleCount += samples.size
-                  engine.pushAudio(samples, timestampNanos)
-              }
-          """,
-          )
-          replace_once(
-              """                latency.mark("endpointDetected")
-                  Log.i("SprichIME", "endpoint detected pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount")
-                  endpointJob = scope.launch { finalizeUtterance(generation) }
-          """,
-              """                latency.mark("endpointDetected")
-                  Log.i("SprichIME", "endpoint detected pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount")
-                  val frozenUtterance = utteranceAudio.snapshotLastSamples(utteranceAudio.available())
-                  endpointJob = scope.launch { finalizeUtterance(generation, frozenUtterance) }
-          """,
-          )
-          replace_once(
-              "    private suspend fun finalizeUtterance(generation: Long) {\n",
-              "    private suspend fun finalizeUtterance(generation: Long, frozenUtterance: ShortArray) {\n",
-          )
-          replace_once(
-              """                statusText?.text = "Transcribing (cloud)…"
-                  val snapshot = audio.ringBuffer.snapshotLast(30f)
-                  val result = remoteStt.transcribe(snapshot, SAMPLE_RATE.toInt(), activeConfig.language)
-                  val remoteText = result.getOrNull()?.trim().orEmpty()
-                  Log.i("SprichIME", "remoteStt mode=$sttModeRaw ok=${result.isSuccess} chars=${remoteText.length} samples=${snapshot.size}")
-          """,
-              """                statusText?.text = "Transcribing (cloud)…"
-                  val result = remoteStt.transcribe(frozenUtterance, SAMPLE_RATE.toInt(), activeConfig.language)
-                  val remoteText = result.getOrNull()?.trim().orEmpty()
-                  Log.i("SprichIME", "remoteStt mode=$sttModeRaw ok=${result.isSuccess} chars=${remoteText.length} samples=${frozenUtterance.size}")
-          """,
-          )
-          replace_once(
-              """            pipelinePushedSampleCount = 0L
-              // Prepare for the next utterance without dropping mic. beginSession may throw if engine was torn down.
-          """,
-              """            pipelinePushedSampleCount = 0L
-              utteranceAudio.clear()
-              // Prepare for the next utterance without dropping mic. beginSession may throw if engine was torn down.
-          """,
-          )
-          replace_once(
-              """            endpointPending.set(false)
-              utteranceActive.set(false)
-              throw e
-          """,
-              """            endpointPending.set(false)
-              utteranceActive.set(false)
-              utteranceAudio.clear()
-              throw e
-          """,
-          )
-          replace_once(
-              """        endpointPending.set(false)
-              lastPartialText = ""
-              session.error(reason)
-          """,
-              """        endpointPending.set(false)
-              lastPartialText = ""
-              utteranceAudio.clear()
-              session.error(reason)
-          """,
-          )
-          replace_once("    private fun stopDictation() {\n", "    private fun stopDictation(commitPending: Boolean = false) {\n")
-          replace_once(
-              "        val shouldCommit = wasActive && pipelinePushedSampleCount > 8000\n",
-              "        val shouldCommit = commitPending && wasActive && pipelinePushedSampleCount > 8000\n",
-          )
-          replace_once(
-              """                    pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
-                      vad.reset()
-          """,
-              """                    pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
-                      utteranceAudio.clear()
-                      vad.reset()
-          """,
-          )
-          replace_once(
-              """        pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
-              vad.reset()
-          """,
-              """        pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
-              utteranceAudio.clear()
-              vad.reset()
-          """,
-          )
-
           path.write_text(text)
           PY
           rm patches/ime-endpoint-integrity.patch
