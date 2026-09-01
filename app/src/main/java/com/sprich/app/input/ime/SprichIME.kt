@@ -705,9 +705,9 @@ class SprichIME : InputMethodService() {
             // If Auto requested, check if Tiny LID model is available (Candidate A). If yes, allow Auto with per-utterance detection.
             // Otherwise require explicit selection.
             if (speechLanguage is SpeechLanguage.Auto) {
+                // Single source of truth: ModelManager.isWhisperTinyReady() checks both encoder+decoder+tokens + size
                 val lidReady = try {
-                    val d = java.io.File(filesDir, "whisper-tiny")
-                    java.io.File(d, "tiny-encoder.int8.onnx").exists() && java.io.File(d, "tiny-decoder.int8.onnx").exists()
+                    com.sprich.app.models.manager.ModelManager(this).isWhisperTinyReady()
                 } catch (_: Exception) { false }
                 if (!lidReady) {
                     Log.w("SprichIME", "Auto language requested but Tiny LID not downloaded — explicit selection required.")

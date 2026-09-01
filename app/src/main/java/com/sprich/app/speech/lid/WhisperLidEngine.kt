@@ -44,18 +44,19 @@ class WhisperLidEngine(
         true
     } catch (_: Throwable) { false }
 
-    // Single source of truth: ModelManager.isWhisperTinyReady() checks both files + size
-    // Fallback direct check for tests that bypass ModelManager
+    // Single source of truth: ModelManager.isWhisperTinyReady() checks both files + size + tokens
+    // Fallback direct check for tests that bypass ModelManager — must match ModelManager logic
     private fun isTinyReady(): Boolean {
         // Use ModelManager as authoritative source if available
         try {
             if (modelManager.isWhisperTinyReady()) return true
         } catch (_: Exception) {}
-        // Direct filesystem check (same logic as ModelManager)
+        // Direct filesystem check (same logic as ModelManager: encoder+decoder+tokens)
         val d = java.io.File(context.filesDir, "whisper-tiny")
         val enc = java.io.File(d, "tiny-encoder.int8.onnx")
         val dec = java.io.File(d, "tiny-decoder.int8.onnx")
-        return enc.exists() && enc.length() > 5_000_000 && dec.exists() && dec.length() > 50_000_000
+        val tok = java.io.File(d, "tiny-tokens.txt")
+        return enc.exists() && enc.length() > 5_000_000 && dec.exists() && dec.length() > 50_000_000 && tok.exists() && tok.length() > 1000
     }
 
     suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
