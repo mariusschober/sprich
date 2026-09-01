@@ -62,12 +62,13 @@ class AudioRingBufferTest {
     }
 
     @Test
-    fun snapshotLastSamplesFreezesExactTail() {
+    fun snapshotLastSamplesReturnsAnImmutableExactTail() {
         val rb = AudioRingBuffer(8)
         rb.write(shortArrayOf(1,2,3,4,5,6))
-        assertArrayEquals(shortArrayOf(3,4,5,6), rb.snapshotLastSamples(4))
+        val frozen = rb.snapshotLastSamples(4)
         rb.write(shortArrayOf(7,8))
-        assertArrayEquals(shortArrayOf(3,4,5,6), shortArrayOf(3,4,5,6))
+        assertArrayEquals(shortArrayOf(3,4,5,6), frozen)
+        assertArrayEquals(shortArrayOf(5,6,7,8), rb.snapshotLastSamples(4))
     }
 
     @Test
