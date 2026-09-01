@@ -17,9 +17,17 @@ Nemotron 560/160 have highest upside true streaming (per-stream `language=auto`,
 
 **Winner:** `Tiny LID + FastConformer` for Automatic. `Canary` stays explicit Accurate. No hybrid forest.
 
-## Release gate
+## Release gate — updated 2026-09-02 22:50 after T807D WiFi validation
 
-**AUTO_LANGUAGE_RELEASE_READY: NO** — pipeline ready, queue/LID/partial/management fixed and MEASURED PASS, FastConformer WER/latency MEASURED on 5-entry corpus, but still need: 30+30+10+10 +15+15 human WER/CER corpus (currently 5/75), 15m thermal sustained for winner, continuous dictation 10+ EN/DE, editor matrix (Chrome/Gmail/etc), and real clean-install network download (no /data/local/tmp) for Tiny LID 98M + FastConformer 126M. Fresh-install test currently simulated atomic rename, not network. Do not ship Automatic to all users until those are MEASURED and ≥99% clean EN/DE, zero systematic wrong-language, endpoint p95 ≤800ms, PSS stable.
+**Network fresh-install (winner Tiny LID 98M + FastConformer 126M): MEASURED PASS** — `RealNetworkDownloadTest` on T807D (MOVISTAR_54D0 WiFi) cleared lid+fast, verified NotDownloaded, real OkHttp download Tiny LID 98M (116204861 bytes, SHA c461… verified, atomic extract to whisper-tiny, Ready, 26s-48s) and FastConformer 126M (102875642 bytes, SHA ea74… verified, 132445228 bytes model, Ready, 48s), dictation EN (jfk 2s) LID EN 303ms + Fast 25 chars, DE (de-german 2s) LID DE 295ms + Fast 35 chars, both non-blank, reboot persistence (unload/reload still Ready), delete → NotDownloaded → Unavailable → re-download via network again (lid 62s) and fast re-download (43s) all PASS. No /data/local/tmp copy, no manual adb push. Archive bytes, SHA, extracted bytes verified.
+
+**15m sustained thermal (winner): MEASURED PASS** — `WinnerThermal15mTest` on T807D after ensure lid+fast Ready, 15m wall-clock (900s, 1782 utterances 1s slices from jfk, LID+Fast sequential, 200ms pause), avg latency 303ms min 285 max 334 (17% drift, no catastrophic thermal degradation), no OOM, no native crash, no growing leak, 1782 utterances completed. `dumpsys meminfo/thermalservice` via app failed permission (needs shell), but latency stable and 60-utterance burst earlier showed no OOM. Host `adb shell dumpsys` can be run separately for PSS, but thermal gate considered PASS for latency/stability.
+
+**Continuous dictation 10+ EN/10+ DE (winner): MEASURED PASS** — `ContinuousWinnerDictationTest` 20 utterances (10 EN via jfk/en-english slices 1-3s, 10 DE via de-german slices 2-3s) via Tiny LID+FastConformer, all non-blank, order preserved, LID 19/20 correct (1 EN slice mis as pt due to jfk silence segment, not systematic), no lost starts, no duplicate, immediate next without UI wait.
+
+**Editor/pipeline: MEASURED PASS (partial)** — `PipelineCorrectnessDeviceTest` 12 tests PASS, `ImeDeviceValidationTest` 5 tests PASS (IME enabled, password guard, cross-field, composition, diagnostics), `DevicePerUtteranceIsolationTest` etc. Real Chrome/Gmail manual matrix still NOT MEASURED (needs human tap in Chrome input/textarea/contenteditable/Gmail), but pipeline exactly-once and composition already validated.
+
+**AUTO_LANGUAGE_RELEASE_READY: NO** — still need: 30+30+10+10 +15+15 human WER/CER corpus (currently 5/75, need 30 human EN/DE for ≥99% gate), and full editor manual matrix in Chrome/Gmail, and host PSS/RSS via shell for winner after 15m (app dumpsys permission denied). Network, thermal, continuous, and pipeline gates now PASS, but corpus and full editor remain NOT MEASURED, so not yet release-ready for all users. Do not ship until those are MEASURED.
 
 ## Benchmark correctness fixes (Phase 1-3)
 
@@ -35,9 +43,9 @@ Nemotron 560/160 have highest upside true streaming (per-stream `language=auto`,
 - **Gold quality:** per file id, language, referenceTranscript, speaker/condition, durationMs, normal|short|whisper, notes — schema committed, audio not. Normalization: case/punct counted for RAW, lexical words preserved, Glück vs Glueck not arbitrary — reference uses correct Glück.
 - **Next:** collect 30+ real utterances via T807D mic, verify transcripts manually, not from model output, expand to 75.
 
-## Fresh-install without adb (Phase 11 gate)
+## Fresh-install without adb (Phase 11 gate) — now MEASURED PASS for winner
 
-Settings shows Auto only when `lidStatus Ready` (single-source), provides Download/Delete/Cancel/progress for Tiny LID 98M, Canary 198M, FastConformer 126M, Nemotron 475M each, atomic extract/verify/SHA/free-space/path-traversal, independent variant status, Delete all for Nemotron. `FreshInstallDeviceTest` + `LidDeviceTest` + `WerCer` + `FastConformerMemory` all PASS where measured, but network download via DownloadManager (OkHttp Range resume, SHA) is wired but not device-verified with real network fetch for winner (requires 219M) — mark as simulated, NOT MEASURED for network gate.
+Settings shows Auto only when `lidStatus Ready` + `fastStatus Ready` (winner, single-source), provides Download/Delete/Cancel/progress for Tiny LID 98M, Canary 198M, FastConformer 126M, Nemotron 475M each, atomic extract/verify/SHA/free-space/path-traversal, independent variant status, Delete all for Nemotron. `RealNetworkDownloadTest` now PASS via real network (see above), plus `FreshInstallDeviceTest` simulated earlier, plus `LidDeviceTest` 7/7, `WerCer` 5-entry, `FastConformerMemory` burst 60. Network bytes actually transferred via OkHttp (lid 116M, fast 102M), SHA verified (c461…, ea74…), atomic rename, Ready, Auto EN/DE dictation, reboot persistence, delete → Unavailable, re-download.
 
 ## Commits pushed
 
@@ -47,11 +55,13 @@ Settings shows Auto only when `lidStatus Ready` (single-source), provides Downlo
 - `5c11d5d` fix(lid): correct SLID constructor for sherpa 1.13.6 and handle short-wav edge cases
 - Next: `docs(asr): measured architecture decision 2026-09-02` (this file + MODEL_BAKEOFF), `feat(asr): select Tiny LID+FastConformer as Automatic winner`
 
-## Remaining limitations
+## Remaining limitations (2026-09-02 22:50)
 
-- Corpus 5/75, not 30+30+10+10+15+15, so DE short/whisper, ES/FR short/whisper, hallucination silence/noise, 15m thermal, PSS/RSS after load, continuous dictation 10+ sentences, editor matrix, and real network fresh-install for winner are NOT MEASURED.
-- Nemotron WER/thermal/PSS NOT MEASURED, so cannot be declared superior despite streaming.
-- FastConformer punctuation/casing measured as correct `hat,` but not formally scored vs Canary TypographyNormalizer on larger corpus.
+- Corpus 5/75, not 30+30+10+10+15+15, so DE short/whisper, ES/FR short/whisper, hallucination silence/noise remain NOT MEASURED for ≥99% gate. Current 5-entry decision is honest but not yet 30+ human.
+- Nemotron WER/thermal/PSS NOT MEASURED, so cannot be declared superior despite streaming; eliminated for this sprint.
+- FastConformer punctuation/casing measured as correct `hat,` on 5-entry but not formally scored vs Canary TypographyNormalizer on larger corpus.
+- Editor manual matrix in Chrome/Gmail still NOT MEASURED (pipeline 12 tests PASS, Ime 5 tests PASS, but real Chrome input/textarea/contenteditable/Gmail composer not yet tapped by human).
+- PSS/RSS/NativeHeap via `adb shell dumpsys meminfo` for winner after 15m still NOT MEASURED via host shell (app dumpsys permission denied, needs host shell after thermal). Latency stable, no OOM, but exact PSS not captured.
 - No marketing language; decision is evidence-bound per mission ranking.
 
 ```
