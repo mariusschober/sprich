@@ -46,14 +46,56 @@ class DownloadManager(
     }
 
     suspend fun downloadNemotron(onProgress: ((Float)->Unit)? = null) = withContext(Dispatchers.IO) {
-        val entry = modelManager.getManifest().models.find{ it.id=="streaming"} ?: throw Exception("manifest missing")
-        // Real GGUF streaming download — same hardened pipeline as Canary (Range resume, SHA, atomic)
-        // Decision: direct HF LFS URL with no mirror, CPU fallback default, user-initiated only
+        // Legacy GGUF — kept for backward compat, delegates to 560
+        downloadNemotron560(onProgress)
+    }
+
+    suspend fun downloadLid(onProgress: ((Float)->Unit)? = null) = withContext(Dispatchers.IO) {
+        val entry = modelManager.getManifest().models.find{ it.id=="lid"} ?: throw Exception("manifest missing lid")
         downloadAndExtract(
-            id = "streaming",
+            id = "lid",
             url = entry.sourceUrl,
-            destDir = File(context.filesDir, "nemotron"),
-            tmpFile = File(context.cacheDir, "nemotron.gguf.tmp"),
+            destDir = File(context.filesDir, "whisper-tiny"),
+            tmpFile = File(context.cacheDir, "whisper-tiny.tar.bz2"),
+            expectedSha = entry.sha256,
+            requiredBytes = entry.requiredFreeBytes,
+            onProgress = onProgress,
+        )
+    }
+
+    suspend fun downloadFastConformer(onProgress: ((Float)->Unit)? = null) = withContext(Dispatchers.IO) {
+        val entry = modelManager.getManifest().models.find{ it.id=="fastconformer"} ?: throw Exception("manifest missing fastconformer")
+        downloadAndExtract(
+            id = "fastconformer",
+            url = entry.sourceUrl,
+            destDir = File(context.filesDir, "fastconformer"),
+            tmpFile = File(context.cacheDir, "fastconformer.tar.bz2"),
+            expectedSha = entry.sha256,
+            requiredBytes = entry.requiredFreeBytes,
+            onProgress = onProgress,
+        )
+    }
+
+    suspend fun downloadNemotron560(onProgress: ((Float)->Unit)? = null) = withContext(Dispatchers.IO) {
+        val entry = modelManager.getManifest().models.find{ it.id=="nemotron-560"} ?: throw Exception("manifest missing nemotron-560")
+        downloadAndExtract(
+            id = "nemotron-560",
+            url = entry.sourceUrl,
+            destDir = File(context.filesDir, "nemotron-560"),
+            tmpFile = File(context.cacheDir, "nemotron-560.tar.bz2"),
+            expectedSha = entry.sha256,
+            requiredBytes = entry.requiredFreeBytes,
+            onProgress = onProgress,
+        )
+    }
+
+    suspend fun downloadNemotron160(onProgress: ((Float)->Unit)? = null) = withContext(Dispatchers.IO) {
+        val entry = modelManager.getManifest().models.find{ it.id=="nemotron-160"} ?: throw Exception("manifest missing nemotron-160")
+        downloadAndExtract(
+            id = "nemotron-160",
+            url = entry.sourceUrl,
+            destDir = File(context.filesDir, "nemotron-160"),
+            tmpFile = File(context.cacheDir, "nemotron-160.tar.bz2"),
             expectedSha = entry.sha256,
             requiredBytes = entry.requiredFreeBytes,
             onProgress = onProgress,
