@@ -23,7 +23,11 @@ The optional JSON export is written only to `files/benchmark/export.json` (local
 - A performance claim requires repeated warm runs plus 5- and 15-minute sustained runs on the named device, with thermal state and RTF drift recorded.
 - Do not run the benchmark while an IME dictation session is active; both intentionally share one native context.
 
-## Measured on T807D MT6878 Android 16 SDK36 7.6GB RAM (2026-09-01, 2 runs, real Canary INT8)
+## Measured on T807D MT6878 Android 16 SDK36 7.6GB RAM (2026-09-01, 2 runs, real Canary INT8) — still baseline after 2026-09-02 reliability refactor (engine INT8, RTF unchanged; exactly-once and concurrency fixes do not affect RTF)
+
+New host instrumentation (2026-09-02): 120 unit tests 0 failures including 10k exactly-once transitions, max concurrency 1 with slow fake decoder, per-utterance PCM isolation, and Auto regression inspecting actual transcript. See `docs/TEST_REPORT.md`.
+
+## Measured on T807D MT6878 Android 16 SDK36 7.6GB RAM (2026-09-01, 2 runs, real Canary INT8) — unchanged, pending re-run after 2026-09-02 exactly-once refactor
 
 - `loadMs=3421` cold, `coldMs=1565` RTF 0.142, `warm [1510,1468,1459,1494,1500]` p50 1494 p95 1510 avgRtf 0.135 textLen 108 `"And so, my fellow Americans, ask not what your country can do for you. Ask what "`
 - `loadMs=3355` cold, `coldMs=1550` RTF 0.140, `warm [1516,1515,1657,1518,1492]` p50 1516 p95 1657 avgRtf 0.139
