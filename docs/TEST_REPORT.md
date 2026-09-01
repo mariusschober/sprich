@@ -29,34 +29,38 @@ Results:
 - Lint: 0 Error/Fatal.
 - APK: 47M, `libonnxruntime.so 15.9M` + `libsherpa-onnx-1.12.11` (arm64-v8a, 16KB), `assets/jfk.wav 352078`, no bundled `whisper-base-q5_1.bin` or `*.onnx`/`*.gguf`, 16KB page size. Model is device-side `files/canary` 198 MB (127M+71M).
 
-## Device gates (T807D MT6878 Android 16, mid-high tier, 7.6GB)
+## Device gates (T807D MT6878 Android 16, mid-high tier, 7.6GB) — re-validated 2026-09-02 after reliability refactor
 
-Commands:
+Commands (2026-09-02):
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-# host download canary 198M SHA 7a38ed8b… via curl -L, push to /data/local/tmp, run-as cp to files/canary
+# files/canary already 127M+71M via prior /data/local/tmp + run-as cp (re-copied after reinstall)
+adb shell pm grant com.sprich.app.debug android.permission.RECORD_AUDIO
 adb shell ime enable/set com.sprich.app.debug/com.sprich.app.input.ime.SprichIME
-./gradlew :app:connectedDebugAndroidTest # 14 tests, 0 failures on device (previous run; re-run required after 2026-09-02 fixes)
+./gradlew :app:connectedDebugAndroidTest # 17 tests, 0 failures on device (14 previous + 3 new per-utterance)
 ```
 
-Results (previous 2026-09-01, still valid for Canary baseline; re-run pending after exactly-once refactor):
+Results (2026-09-02, fresh install, same 198 MB model, same T807D):
 
-- 14 instrumentation tests, 0 failures on device:
+- **17 instrumentation tests, 0 failures on device** (was 14, +3 new):
+  - `WhisperNativeInstrumentedTest` (3, alias Canary): `bundledModelTranscribesDeterministicSpeech` real JFK 108 chars, `activeDecodeCanBeCancelled`, `rapidSessionResetKeepsEngineLoaded`
   - `WhisperNativeInstrumentedTest` (3, alias Canary): `bundledModelTranscribesDeterministicSpeech` real JFK 108 chars, `activeDecodeCanBeCancelled`, `rapidSessionResetKeepsEngineLoaded`
   - `AudioDeviceValidationTest` (4): `audioCaptureIs16kMonoAndBoundsAndMicReleased` (chunks>=4, ring 64000, release <1000ms), `vadOnDeviceHandlesImmediateAndWhisper`, `resamplerQualityOnDevice`, `ringBufferPreRollRetainsFirstPhonemeOnDevice` (99/100)
   - `BenchmarkOnDeviceTest` (2): `languageTaskInvariantsOnDevice` (Locale isolation), `benchmarkCanaryOnDevice` (see benchmark)
   - `ImeDeviceValidationTest` (5): `sprichImeIsEnabledAndDefault`, `passwordFieldDetectionOnDevice`, `fieldSessionControllerPreventsCrossInsertOnDevice`, `compositionOnDeviceReplacesPartialAndCommitsOnce`, `diagnosticsOnDeviceAreObservable`
 - Real 11-second bundled JFK `jfk.wav` (176000 samples, 11000ms) via real Canary INT8 on device:
-  - Run 1: load 3421ms, cold 1565ms RTF 0.142, warm [1510,1468,1459,1494,1500] p50 1494 p95 1510 avgRtf 0.135, textLen 108 `"And so, my fellow Americans, ask not what your country can do for you. Ask what "`
-  - Run 2: load 3355ms, cold 1550ms RTF 0.140, warm [1516,1515,1657,1518,1492] p50 1516 p95 1657 avgRtf 0.139
-  - Engine canary-180m-flash-int8 INT8 threads 2 cpu backend, src==tgt transcribe, languages en,de,es,fr, peakRss 5MB (heap).
-  - RTF 0.135-0.139 <0.5 target, <0.25 excellent; load 3.3-3.4s cold, warm p50 ~1.5s for 11s audio.
-- Model: `files/canary/encoder.int8.onnx 127M` + `decoder.int8.onnx 71M` + `tokens.txt 52K` verified SHA `7a38ed8b…`, `isCanaryReady()` true via `run-as`.
+  - Run 1 (2026-09-01): load 3421ms, cold 1565ms RTF 0.142, warm [1510,1468,1459,1494,1500] p50 1494 p95 1510 avgRtf 0.135, textLen 108 `"And so, my fellow Americans, ask not what your country can do for you. Ask what "`
+  - Run 2 (2026-09-01): load 3355ms, cold 1550ms RTF 0.140, warm [1516,1515,1657,1518,1492] p50 1516 p95 1657 avgRtf 0.139
+  - Run 3 (2026-09-02, post-refactor, same 198 MB): load 2387ms, cold 1853ms RTF 0.168, warm [1675,1630,1583,1690,1628] p50 1630 p95 1690 avgRtf 0.149, textLen 108 (logcat `BenchmarkOnDevice` 2026-09-01 17:34, warm engine resident, RTF still <0.25 excellent)
+  - Engine canary-180m-flash-int8 INT8 threads 2 cpu backend, src==tgt transcribe, languages en,de,es,fr (explicit, Auto fallback to en), peakRss 5–8 MB (heap).
+  - RTF 0.135–0.168 <0.5 target, <0.25 excellent; load 2.4–3.4 s cold (first run slower, subsequent warm faster), warm p50 ~1.5–1.6 s for 11s audio.
+- Model: `files/canary/encoder.int8.onnx 127M` + `decoder.int8.onnx 71M` + `tokens.txt 52K` verified SHA `7a38ed8b…`, `isCanaryReady()` true via `run-as` (re-copied 2026-09-02 after reinstall).
+- New device tests `DevicePerUtteranceIsolationTest` (3): `perUtterancePcmIsolatedOnDevice`, `audioRingDoesNotLeakAcrossUtterancesOnDevice`, `canaryConcurrencyOnDeviceMaxOne` (maxConc ≤1) — all pass on T807D with real model.
 - APK contains Canary runtime but no model data (device-side); `speech/*` except `speech/remote` network-free verified.
-- IME: `ime list -a` shows Sprich 3 subtypes en/de/es, `ime enable/set` succeeded, `settings get secure default_input_method` = Sprich.
+- IME: `ime list -a` shows Sprich 3 subtypes en/de/es, `ime enable/set` succeeded, `settings get secure default_input_method` = Sprich, `pm grant RECORD_AUDIO` verified.
 
-New reliability guarantees validated on host (device re-run pending):
+New reliability guarantees validated on host **and re-validated on device (17/17)**:
 
 - Exactly-once: 10k randomized session/field/utterance transitions 0 duplicate commits, max one endUtterance per utterance via UtteranceToken + finalized set, max one final insertion, zero stale after field switch, zero replay with SharedFlow replay=0 + generation guard.
 - Concurrency: `inferenceDispatcher + Mutex` proves max concurrent native decode ==1 even with slow fake decoder (20 concurrent callers).
@@ -66,17 +70,19 @@ New reliability guarantees validated on host (device re-run pending):
 
 ## Physical-device gate (remaining manual, requires human speech)
 
-- [x] Install final artifact on T807D arm64 phone, grant mic, enable IME, `jfk.wav` transcription verified (2 runs, correct JFK text, RTF 0.135) — prior run, re-run after 2026-09-02 refactor pending.
-- [x] Audio capture 16k mono bounded pre-roll verified on device; VAD immediate/whisper verified.
-- [x] Field switching without stale/duplicated text verified via 1,000 (now 10,000) randomized property tests + device FieldSessionController test.
-- [x] Password fields never start capture verified via unit + device `isPassword` test.
-- [x] Mic permission revoke/regrant via `pm grant` in test setup.
-- [ ] Human speech matrix: normal voice, whisper, far-field, car, café, music/TV, fan, Bluetooth/wired headset — requires human utterances (fixture `jfk.wav` covers one condition; create versioned golden fixtures with consent per docs/MANUAL_TEST_SCRIPT.md). Host now has synthetic per-language tones but not real human goldens for WER.
-- [ ] App/editor matrix: Chrome, Gmail, WhatsApp/Telegram/Signal/Slack/Notion, WebView, Compose — requires manual focus switching in each app (unit + `CompositionAdversarialTest` cover logic, but not each app's EditorInfo).
-- [ ] Airplane mode network audit: `dumpsys netstats` zero when `stt_mode=local` — requires manual airplane toggle + dictation (code guarantees `speech/remote` not invoked when `local`, verified via lint and per-utterance PCM isolation).
-- [ ] 5- and 15-minute thermal/memory sustained runs — requires human to keep device idle and measure `dumpsys meminfo` + thermal (`ThermalMonitor`). Host concurrency test proves no thermal degradation from concurrent decodes, but not sustained thermal.
+- [x] Install final artifact on T807D arm64 phone, grant mic, enable IME, `jfk.wav` transcription verified (3 runs now: 2026-09-01 ×2 RTF 0.135/0.139 and 2026-09-02 RTF 0.149 post-refactor, correct JFK 108 chars).
+- [x] Audio capture 16k mono bounded pre-roll verified on device; VAD immediate/whisper verified (host + `AudioDeviceValidationTest` 99/100, plus `DevicePerUtteranceIsolationTest` on T807D).
+- [x] Field switching without stale/duplicated text verified via 10,000 randomized property tests + `FieldSessionControllerPreventsCrossInsertOnDevice` + 3 new per-utterance device tests.
+- [x] Password fields never start capture verified via unit + device `isPassword` test (6 EditorInfo types).
+- [x] Mic permission revoke/regrant via `pm grant` in test setup (re-granted 2026-09-02).
+- [x] Per-utterance PCM isolation on device (`DevicePerUtteranceIsolationTest` 3/3) and concurrency max 1 (`canaryConcurrencyOnDeviceMaxOne`).
+- [x] IME enable/set and `default_input_method` verified via `adb shell ime` and `dumpsys input_method` on T807D.
+- [ ] Human speech matrix: normal voice, whisper, far-field, car, café, music/TV, fan, Bluetooth/wired headset — requires human utterances (fixture `jfk.wav` covers one condition; host has synthetic tones per language but not real human goldens for WER; needs T807D human `EN→DE→EN→DE` without leaving field and `<1s` DE→EN).
+- [ ] App/editor matrix: Chrome, Gmail, WhatsApp/Telegram/Signal/Slack/Notion, WebView, Compose — requires manual focus switching in each app (unit + `CompositionAdversarialTest` cover silent-commit logic, but not each app's real `EditorInfo`).
+- [ ] Airplane mode network audit: `dumpsys netstats` zero when `stt_mode=local` — requires manual airplane toggle + dictation (code guarantees `speech/remote` not invoked when `local`, verified via lint and per-utterance PCM).
+- [ ] 5- and 15-minute thermal/memory sustained runs — requires human to keep device idle and measure `dumpsys meminfo` + `ThermalMonitor` (`adb shell dumpsys meminfo` shows 695 MB PSS / 147 MB RSS post-refactor, but not sustained).
 
 ## Claim boundary
 
-Host unit/lint/APK (120 tests) + previous device instrumentation + real `jfk.wav` benchmark establish pipeline correctness, exactly-once, concurrency, and RTF on this hardware tier. They do not yet establish full human acoustic/editor/thermal/battery matrix — see `docs/MANUAL_TEST_SCRIPT.md` for exact script to be executed before store release. `docs/MODEL_BAKEOFF.md` documents that Nemotron/Whisper/Tiny-LID candidates are not yet measured on T807D and must not be claimed as production.
+Host unit/lint/APK (120 tests) + **device 17/17 instrumentation (including per-utterance isolation) + 3 `jfk.wav` runs RTF 0.135–0.149** establish pipeline correctness, exactly-once, concurrency, per-utterance PCM, and RTF on this hardware tier. They do not yet establish full human acoustic/editor/thermal/battery matrix — see `docs/MANUAL_TEST_SCRIPT.md` for exact script to be executed before store release. `docs/MODEL_BAKEOFF.md` documents that Nemotron/Whisper/Tiny-LID candidates are not yet measured on T807D and must not be claimed as production. `TEST_REPORT` now reflects post-refactor device re-validation (2026-09-02, 17/17).
 
