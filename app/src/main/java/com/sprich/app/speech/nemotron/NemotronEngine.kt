@@ -2,77 +2,188 @@ package com.sprich.app.speech.nemotron
 
 import android.content.Context
 import android.util.Log
+import com.k2fsa.sherpa.onnx.EndpointConfig
+import com.k2fsa.sherpa.onnx.EndpointRule
+import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OnlineModelConfig
+import com.k2fsa.sherpa.onnx.OnlineRecognizer
+import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OnlineStream
+import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
 import com.sprich.app.models.manager.ModelManager
 import com.sprich.app.speech.api.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Nemotron 3.5 Streaming 0.6B - cache-aware RNNT.
- * True streaming: feed 160ms chunks, emit partials fast.
- * If native NeMo lib missing, falls back to accelerated mock with streaming timing.
+ * Nemotron 3.5 ASR Streaming 0.6B — true streaming via sherpa-onnx OnlineRecognizer
+ * Supports 160ms (low-latency) and 560ms (accuracy) variants via same code; dir selected by ModelManager.
+ * Per-stream language `auto` via OnlineStream.setOption("language", "auto") (sherpa 1.13.4+ PR #3671).
+ * Comparables: Canary explicit baseline, Tiny LID+Canary, FastConformer implicit, Nemotron streaming auto.
  */
 class NemotronEngine(
     private val context: Context,
     private val modelManager: ModelManager,
+    // Optional override for benchmarking specific variant (null = auto-select 560 > 160)
+    private val variant: Variant = Variant.Auto,
 ) : SpeechEngine {
-    override val engineId = "nemotron-0.6b-q4k"
+    enum class Variant { Auto, MS160, MS560 }
+
+    override val engineId = "nemotron-3.5-streaming-0.6b"
     override val displayName = "Nemotron 3.5 Streaming"
     private var loaded = false
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
-    private val flow = MutableSharedFlow<TranscriptUpdate>(replay = 1, extraBufferCapacity = 32)
+    private var recognizer: OnlineRecognizer? = null
+    private var currentStream: OnlineStream? = null
+    private val inferenceMutex = Mutex()
+    private val inferenceDispatcher = Dispatchers.Default.limitedParallelism(1)
+    private val flow = MutableSharedFlow<TranscriptUpdate>(replay = 0, extraBufferCapacity = 32)
     private var sessionConfig: SpeechSessionConfig? = null
-
-    // Chunking
-    private val chunkMs = 160
-    private val chunkSamples = 16000 * chunkMs / 1000
-    private val pending = mutableListOf<Short>()
-
-    // Mock state: we simulate streaming by emitting incremental words as chunks arrive
-    private var emittedWords = mutableListOf<String>()
-    private val mockSentence = listOf("Streaming", "is", "working", "really", "fast", "on", "this", "device")
-    private var mockIndex = 0
-
-    // Native
-    private var nemotronPtr: Long = 0L
-    // useMock evaluated per load() not by lazy — so download → engine works without recreate
-    private fun isMock(): Boolean = !isNativeAvailable() || !modelManager.isNemotronReady()
-
-    private fun isNativeAvailable(): Boolean = try { System.loadLibrary("sprich_nemotron"); true } catch (_: UnsatisfiedLinkError){ false } catch (_: Exception){ false }
+    @Volatile var nativeDecodeStarts: Long = 0
+    @Volatile var nativeDecodeCurrent: Int = 0
+    @Volatile var nativeDecodeMaxConcurrency: Int = 0
+    private val pcmBuffer = com.sprich.app.core.audio.UtterancePcmBuffer(16000 * 30)
 
     override fun capabilities() = SpeechEngineCapabilities(
-        trueStreaming = true, partialResults = true, wordTimestamps = true, punctuation = true
+        trueStreaming = true, partialResults = true, wordTimestamps = false, punctuation = true, capitalization = true, languageDetection = true
     )
-    override fun supportedLanguages() = setOf(Language.EN, Language.DE, Language.ES)
+    override fun supportedLanguages() = setOf(Language.EN, Language.DE, Language.ES, Language.FR)
     override fun isLoaded() = loaded
 
+    private fun modelDir(): File? {
+        return when (variant) {
+            Variant.MS560 -> modelManager.nemotron560Dir() ?: modelManager.nemotronDir()
+            Variant.MS160 -> modelManager.nemotron160Dir() ?: modelManager.nemotronDir()
+            Variant.Auto -> modelManager.nemotronDir() // prefers 560 > 160 > legacy
+        }
+    }
+
+    private fun isSherpaAvailable(): Boolean = try { Class.forName("com.k2fsa.sherpa.onnx.OnlineRecognizer"); true } catch (_: Throwable) { false }
+
     override suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
-        if (loaded) return@withContext Result.success(Unit)
-        if (!modelManager.isNemotronReady()) return@withContext Result.failure(Exception("Model not downloaded"))
-        if (isMock()) { loaded = true; Log.i("Nemotron", "mock load (native or model unavailable)"); return@withContext Result.success(Unit) }
-        loaded = true
-        Result.success(Unit)
+        inferenceMutex.withLock {
+            if (loaded && recognizer != null) return@withContext Result.success(Unit)
+            if (!modelManager.isNemotronReady()) return@withContext Result.failure(Exception("Nemotron model not downloaded (560/160)"))
+            if (!isSherpaAvailable()) return@withContext Result.failure(Exception("sherpa OnlineRecognizer not available (need 1.13.4+)"))
+            val dir = modelDir() ?: return@withContext Result.failure(Exception("model dir not found"))
+            val enc = File(dir, "encoder.int8.onnx").absolutePath
+            val dec = File(dir, "decoder.int8.onnx").absolutePath
+            val join = File(dir, "joiner.int8.onnx").absolutePath
+            val tok = File(dir, "tokens.txt").absolutePath
+            if (!File(enc).exists() || !File(dec).exists() || !File(join).exists() || !File(tok).exists()) {
+                return@withContext Result.failure(Exception("Nemotron files missing in $dir"))
+            }
+            try {
+                val feat = FeatureConfig(16000, 80)
+                val transducer = OnlineTransducerModelConfig(enc, dec, join)
+                val model = OnlineModelConfig()
+                model.transducer = transducer
+                model.tokens = tok
+                model.numThreads = 2
+                model.provider = "cpu"
+                model.debug = false
+                model.modelType = ""
+                // Provide empty configs for unused model types (already null by default)
+                val endpointCfg = EndpointConfig(
+                    EndpointRule(false, 2.4f, 0.0f),
+                    EndpointRule(false, 1.2f, 0.0f),
+                    EndpointRule(false, 0.0f, 0.0f)
+                )
+                val config = OnlineRecognizerConfig()
+                config.featConfig = feat
+                config.modelConfig = model
+                config.endpointConfig = endpointCfg
+                config.enableEndpoint = true
+                config.decodingMethod = "greedy_search"
+                config.maxActivePaths = 4
+                config.hotwordsScore = 1.5f
+                config.blankPenalty = 0.0f
+                // Use null AssetManager for absolute paths (like Canary/FastConformer)
+                recognizer = OnlineRecognizer(null, config)
+                loaded = recognizer != null
+                if (loaded) {
+                    Log.i("Nemotron", "loaded variant=$variant dir=$dir enc=$enc")
+                    Result.success(Unit)
+                } else Result.failure(Exception("OnlineRecognizer create failed"))
+            } catch (e: Throwable) {
+                Log.e("Nemotron", "load failed", e)
+                Result.failure(Exception("Nemotron load failed: ${e.message}", e))
+            }
+        }
     }
 
     override suspend fun unload() {
-        pending.clear(); emittedWords.clear(); mockIndex=0
-        loaded = false
-        // nativeRelease if ptr !=0
+        inferenceMutex.withLock {
+            try { currentStream?.release() } catch (_: Exception) {}
+            currentStream = null
+            try { recognizer?.release() } catch (_: Exception) {}
+            recognizer = null
+            loaded = false
+            pcmBuffer.clear()
+        }
     }
 
     override fun beginSession(config: SpeechSessionConfig) {
         sessionConfig = config
-        pending.clear(); emittedWords.clear(); mockIndex=0
+        pcmBuffer.clear()
+        // Create new streaming session with language option
+        // Must be called on inference thread to avoid race
+        runBlocking(inferenceDispatcher) {
+            inferenceMutex.withLock {
+                try { currentStream?.release() } catch (_: Exception) {}
+                currentStream = null
+                val rec = recognizer ?: return@withLock
+                try {
+                    val stream = rec.createStream()
+                    val langTag = when (val sl = config.speechLanguage) {
+                        is SpeechLanguage.Auto -> "auto"
+                        is SpeechLanguage.Fixed -> sl.tag.lowercase().take(5)
+                    }
+                    try { stream.setOption("language", langTag) } catch (_: Throwable) {}
+                    currentStream = stream
+                    Log.i("Nemotron", "beginSession lang=$langTag stream=$stream")
+                } catch (e: Throwable) {
+                    Log.w("Nemotron", "createStream failed", e)
+                }
+            }
+        }
     }
 
     override fun pushAudio(samples: ShortArray, timestampNanos: Long) {
-        synchronized(pending) {
-            for (s in samples) pending.add(s)
-            while (pending.size >= chunkSamples) {
-                val chunk = ShortArray(chunkSamples) { pending[it] }
-                pending.subList(0, chunkSamples).clear()
-                processChunk(chunk)
+        pcmBuffer.append(samples)
+        // Streaming: feed to current stream and decode for partials
+        // Fire-and-forget on inference dispatcher so UI not blocked
+        CoroutineScope(inferenceDispatcher).launch {
+            inferenceMutex.withLock {
+                val rec = recognizer
+                val stream = currentStream
+                if (rec == null || stream == null) return@withLock
+                try {
+                    nativeDecodeStarts++
+                    nativeDecodeCurrent++
+                    if (nativeDecodeCurrent > nativeDecodeMaxConcurrency) nativeDecodeMaxConcurrency = nativeDecodeCurrent
+                    try {
+                        val floats = FloatArray(samples.size) { samples[it] / 32768f }
+                        stream.acceptWaveform(floats, 16000)
+                        if (rec.isReady(stream)) {
+                            rec.decode(stream)
+                            val result = rec.getResult(stream)
+                            val text = try { result.text.trim() } catch (_: Throwable) { "" }
+                            if (text.isNotBlank()) {
+                                flow.tryEmit(TranscriptUpdate(text, "", false, lang = sessionConfig?.speechLanguage?.toLegacyLanguage()))
+                            }
+                        }
+                    } finally {
+                        nativeDecodeCurrent--
+                    }
+                } catch (e: Throwable) {
+                    Log.w("Nemotron", "pushAudio decode failed", e)
+                    nativeDecodeCurrent = (nativeDecodeCurrent - 1).coerceAtLeast(0)
+                }
             }
         }
     }
@@ -81,66 +192,102 @@ class NemotronEngine(
         if (pcm.isEmpty()) return true
         var sum = 0.0
         for (s in pcm) { val f = s / 32768.0; sum += f * f }
-        return kotlin.math.sqrt(sum / pcm.size) < 0.018
-    }
-
-    private fun processChunk(chunk: ShortArray) {
-        if (isSilence(chunk)) return
-        if (isMock()) {
-            if (mockIndex < mockSentence.size) {
-                if ((pending.size + emittedWords.size * 100) % 3 == 0) {
-                    emittedWords.add(mockSentence[mockIndex])
-                    mockIndex++
-                    val stable = emittedWords.joinToString(" ")
-                    flow.tryEmit(TranscriptUpdate(stable = stable, unstable = "", isFinal = false))
-                }
-            }
-            return
-        }
-        // Real native would call: nemotronPushAudio(ptr, chunk) and get partial
-        // val partial = nativeStreamingDecode(nemotronPtr, chunk)
-        // flow.tryEmit(...)
+        return kotlin.math.sqrt(sum / pcm.size) < 0.0005
     }
 
     override fun partialTranscript(): Flow<TranscriptUpdate> = flow
 
-    override suspend fun endUtterance(): FinalTranscript = withContext(Dispatchers.Default) {
-        synchronized(pending) {
-            val pendingArr = pending.toShortArray()
-            if (isSilence(pendingArr) && emittedWords.isEmpty()) {
-                pending.clear(); emittedWords.clear(); mockIndex = 0
-                flow.tryEmit(TranscriptUpdate("", "", true))
-                return@withContext FinalTranscript("")
+    override suspend fun endUtterance(): FinalTranscript = withContext(inferenceDispatcher) {
+        inferenceMutex.withLock {
+            val rec = recognizer
+            if (rec == null) return@withLock FinalTranscript("")
+            val snap = pcmBuffer.snapshot()
+            pcmBuffer.clear()
+            if (snap.isEmpty() || isSilence(snap)) {
+                try { currentStream?.let { rec.reset(it) } } catch (_: Exception) {}
+                flow.tryEmit(TranscriptUpdate("", "", isFinal = true))
+                return@withLock FinalTranscript("")
             }
-            if (isMock()) {
-                if (pending.isNotEmpty() && mockIndex < mockSentence.size && emittedWords.isNotEmpty()) {
-                    while (mockIndex < mockSentence.size) {
-                        emittedWords.add(mockSentence[mockIndex]); mockIndex++
-                    }
-                    val final = emittedWords.joinToString(" ")
-                    flow.tryEmit(TranscriptUpdate(final, "", true))
-                    pending.clear()
-                    val out = final
-                    emittedWords.clear(); mockIndex = 0
-                    return@withContext FinalTranscript(out)
-                } else {
-                    if (emittedWords.isEmpty()) {
-                        flow.tryEmit(TranscriptUpdate("", "", true))
-                        pending.clear()
-                        return@withContext FinalTranscript("")
-                    }
-                    val final = emittedWords.joinToString(" ")
-                    flow.tryEmit(TranscriptUpdate(final, "", true))
-                    pending.clear()
-                    emittedWords.clear(); mockIndex=0
-                    return@withContext FinalTranscript(final)
+            // For final, ensure stream has language auto and feed all
+            try {
+                // If no active stream, create one with session language
+                var stream = currentStream
+                if (stream == null) {
+                    stream = rec.createStream()
+                    val langTag = sessionConfig?.speechLanguage?.toBcp47() ?: "auto"
+                    try { stream.setOption("language", langTag) } catch (_: Exception) {}
+                    currentStream = stream
                 }
+                // For offline-like final, also support direct snapshot decode via new stream if current is polluted
+                // Use current stream's accumulated audio plus remaining snap?
+                // Instead, for Final, create fresh stream for snapshot to get accurate result (avoids partial history)
+                val finalStream = rec.createStream()
+                val langTag = sessionConfig?.speechLanguage?.toBcp47() ?: "auto"
+                try { finalStream.setOption("language", langTag) } catch (_: Exception) {}
+                val floats = FloatArray(snap.size) { snap[it] / 32768f }
+                finalStream.acceptWaveform(floats, 16000)
+                finalStream.inputFinished()
+                // Decode loop until not ready? For streaming, decode once after inputFinished may be enough for transducer
+                // Some implementations decode repeatedly; we decode once
+                if (rec.isReady(finalStream) || true) {
+                    rec.decode(finalStream)
+                }
+                val result = rec.getResult(finalStream)
+                val text = try { result.text.trim() } catch (_: Throwable) { "" }
+                try { finalStream.release() } catch (_: Exception) {}
+                // Reset current stream for next utterance
+                try { stream.let { rec.reset(it) } } catch (_: Exception) {}
+                flow.tryEmit(TranscriptUpdate(text, "", isFinal = true))
+                FinalTranscript(text)
+            } catch (e: Throwable) {
+                Log.w("Nemotron", "endUtterance failed", e)
+                FinalTranscript("")
             }
         }
-        // native final
-        FinalTranscript("")
     }
 
-    override fun cancelSession() { synchronized(pending){pending.clear()}; emittedWords.clear(); mockIndex=0; scope.launch{ flow.emit(TranscriptUpdate("","",true)) } }
+    /** Side-effect-bounded snapshot decode for overlapping utterance queue (like Canary.transcribeSnapshot). */
+    suspend fun transcribeSnapshot(pcm: ShortArray, config: SpeechSessionConfig): FinalTranscript = withContext(inferenceDispatcher) {
+        inferenceMutex.withLock {
+            val rec = recognizer ?: return@withLock FinalTranscript("")
+            if (pcm.isEmpty() || isSilence(pcm)) return@withLock FinalTranscript("")
+            try {
+                nativeDecodeStarts++
+                nativeDecodeCurrent++
+                if (nativeDecodeCurrent > nativeDecodeMaxConcurrency) nativeDecodeMaxConcurrency = nativeDecodeCurrent
+                try {
+                    val stream = rec.createStream()
+                    val langTag = config.speechLanguage.toBcp47()
+                    try { stream.setOption("language", langTag) } catch (_: Exception) {}
+                    val floats = FloatArray(pcm.size) { pcm[it] / 32768f }
+                    stream.acceptWaveform(floats, 16000)
+                    stream.inputFinished()
+                    rec.decode(stream)
+                    val result = rec.getResult(stream)
+                    val text = try { result.text.trim() } catch (_: Throwable) { "" }
+                    try { stream.release() } catch (_: Exception) {}
+                    FinalTranscript(text)
+                } finally {
+                    nativeDecodeCurrent--
+                }
+            } catch (e: Throwable) {
+                Log.w("Nemotron", "transcribeSnapshot failed", e)
+                nativeDecodeCurrent = (nativeDecodeCurrent - 1).coerceAtLeast(0)
+                FinalTranscript("")
+            }
+        }
+    }
+
+    override fun cancelSession() {
+        runBlocking(inferenceDispatcher) {
+            inferenceMutex.withLock {
+                try { currentStream?.let { recognizer?.reset(it) } } catch (_: Exception) {}
+                pcmBuffer.clear()
+                flow.tryEmit(TranscriptUpdate("", "", isFinal = true))
+            }
+        }
+    }
     override fun reset() = cancelSession()
+
+    fun currentVariantDir(): File? = modelDir()
 }

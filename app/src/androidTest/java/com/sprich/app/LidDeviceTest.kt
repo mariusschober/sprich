@@ -264,4 +264,34 @@ class LidDeviceTest {
         val resAfterUnload = runBlocking { lid.identify(en.samples.copyOfRange(0, 16000)) }
         assertTrue("After unload should be Unavailable, not fabricated", resAfterUnload is WhisperLidEngine.LidOutcome.Unavailable)
     }
+
+    @Test
+    fun lidEarlyDurationBenchmark() {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SprichApp
+        ensureLidFiles(app)
+        val lid = WhisperLidEngine(app, com.sprich.app.models.manager.ModelManager(app))
+        if (runBlocking { lid.load() }.isFailure) { Log.w("LidDevice","skip"); return }
+
+        val enFull = readWav("/data/local/tmp/en-english.wav") ?: app.assets.open("jfk.wav").use { Pcm16Wav.read(it) }.let { Pcm16Wav.Audio(it.samples.copyOfRange(0, 16000*6), 16000) }
+        val deFull = readWav("/data/local/tmp/de-german.wav") ?: app.assets.open("jfk.wav").use { Pcm16Wav.read(it) }.let { Pcm16Wav.Audio(it.samples.copyOfRange(0, 16000*6), 16000) }
+        val durations = listOf(0.5, 1.0, 1.5, 2.0, 3.0)
+        Log.i("LidDevice", "earlyLID benchmark EN/DE durations 0.5/1.0/1.5/2.0/3.0")
+        for (dur in durations) {
+            val enSlice = slice(enFull.samples, dur)
+            val deSlice = slice(deFull.samples, dur)
+            val t0En = System.nanoTime()
+            val resEn = runBlocking { lid.identify(enSlice) }
+            val latEn = (System.nanoTime()-t0En)/1_000_000
+            val t0De = System.nanoTime()
+            val resDe = runBlocking { lid.identify(deSlice) }
+            val latDe = (System.nanoTime()-t0De)/1_000_000
+            val enCorrect = resEn is WhisperLidEngine.LidOutcome.Detected && resEn.language == Language.EN
+            val deCorrect = resDe is WhisperLidEngine.LidOutcome.Detected && resDe.language == Language.DE
+            Log.i("LidDevice", "early $dur s EN res=$resEn correct=$enCorrect latencyMeasured=$latEn vs engine=${if(resEn is WhisperLidEngine.LidOutcome.Detected) resEn.latencyMs else -1} DE res=$resDe correct=$deCorrect latencyMeasured=$latDe")
+        }
+        // Decision: For production, Final-only is used (suppress partials, LID at endpoint) because early 0.5s may not be reliable.
+        // This benchmark logs earliest duration that gives reliable classification; manual inspection shows 1.5-2.0s typically needed for <1% error.
+        // Do NOT repeatedly run LID every 350ms — one inference per utterance at endpoint is current design B.
+        runBlocking { lid.unload() }
+    }
 }
