@@ -14,7 +14,36 @@ data class UtterancePlan(
     val transcription: TranscriptionPlan,
     val refinement: RefinementPlan,
     val speechConfig: SpeechSessionConfig,
-)
+) {
+    override fun toString(): String {
+        val mode = when (transcription) {
+            is TranscriptionPlan.Local -> "LOCAL"
+            is TranscriptionPlan.ApiPrimary -> "API_PRIMARY"
+            is TranscriptionPlan.LocalApiFallback -> "LOCAL_API_FALLBACK"
+        }
+        val provider = when (transcription) {
+            is TranscriptionPlan.ApiPrimary -> transcription.remote.providerId
+            is TranscriptionPlan.LocalApiFallback -> transcription.remote.providerId
+            else -> "local"
+        }
+        val model = when (transcription) {
+            is TranscriptionPlan.ApiPrimary -> transcription.remote.model
+            is TranscriptionPlan.LocalApiFallback -> transcription.remote.model
+            else -> (transcription as? TranscriptionPlan.Local)?.route.toString() ?: "local"
+        }
+        val langPolicy = when (transcription) {
+            is TranscriptionPlan.ApiPrimary -> transcription.remote.languagePolicy.toString()
+            is TranscriptionPlan.LocalApiFallback -> transcription.remote.languagePolicy.toString()
+            else -> speechConfig.speechLanguage.toString()
+        }
+        val refinementStr = when (refinement) {
+            is RefinementPlan.Off -> "OFF"
+            is RefinementPlan.Enabled -> refinement.mode.toString()
+        }
+        // Privacy-safe: no endpoint, no credential, no transcript, no vocab, only safe ids
+        return "UtterancePlan(mode=$mode, provider=$provider, model=$model, languagePolicy=$langPolicy, refinement=$refinementStr, speechLang=${speechConfig.speechLanguage})"
+    }
+}
 
 sealed interface TranscriptionPlan {
     data class Local(val route: LocalAsrRoute) : TranscriptionPlan

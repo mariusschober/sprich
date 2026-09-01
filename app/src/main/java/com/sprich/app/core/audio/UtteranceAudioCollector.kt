@@ -87,11 +87,14 @@ class UtteranceAudioCollector(
         }
     }
 
-    /** Freeze at endpoint — returns immutable copy, prevents further appends until begin/clear. */
+    /** Freeze at endpoint — returns immutable copy, prevents further appends until begin/clear. P1-25: release chunk storage after freeze to reduce PCM copies. */
     fun freeze(): ShortArray = synchronized(lock) {
         if (frozen != null) return frozen!!
         val out = toShortArrayLocked()
         frozen = out
+        // P1-25: release chunk arrays immediately — frozen now canonical, chunks no longer needed
+        chunks.clear()
+        size = out.size
         // Return isolated copy so caller cannot mutate frozen via returned reference
         out.copyOf()
     }

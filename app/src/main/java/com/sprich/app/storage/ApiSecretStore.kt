@@ -1,15 +1,8 @@
 package com.sprich.app.storage
 
 import android.content.Context
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.io.File
-import java.security.KeyStore
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 
 /**
  * BYOK secret store — Android Keystore-backed AES-GCM.
@@ -19,30 +12,18 @@ import javax.crypto.spec.GCMParameterSpec
  * Required invariants:
  * - API key absent from DataStore, logs, diagnostics, backups, crash breadcrumbs
  * - Clear local data deletes all credentials
+ * - Production storage is Keystore AES-GCM or FAIL CLOSED — never reversible fallback
  */
-open class ApiSecretStore(private val context: Context) {
-    companion object {
-        private const val KEYSTORE_ALIAS = "sprich_api_key_aes"
-        private const val TRANSFORMATION = "AES/GCM/NoPadding"
-        private const val GCM_IV_LEN = 12
-        private const val GCM_TAG_LEN = 128
-        private const val PREFS_NAME = "api_secrets_enc"
-    }
 
-    private fun ensureKey(): SecretKey {
-        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        ks.getKey(KEYSTORE_ALIAS, null)?.let { return it as SecretKey }
-        val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-        kg.init(
-            KeyGenParameterSpec.Builder(KEYSTORE_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setRandomizedEncryptionRequired(true)
-                .build()
-        )
-        return kg.generateKey()
-    }
+sealed interface SecretStoreResult {
+    data object Success : SecretStoreResult
+    data class Failure(val reason: String) : SecretStoreResult
+}
 
+open class ApiSecretStore(
+    private val context: Context,
+    private val crypto: SecretCryptoBackend = AndroidKeystoreCryptoBackend(),
+) {
     private fun secretsDir(): File {
         // noBackupFilesDir is excluded from auto backup
         val dir = try { context.noBackupFilesDir } catch (_: Exception) { context.filesDir }
@@ -57,32 +38,37 @@ open class ApiSecretStore(private val context: Context) {
         return File(secretsDir(), "$safe.enc")
     }
 
-    open fun saveSecret(id: String, plaintext: String) {
+    /**
+     * Save secret securely. Returns Success only after durable encrypted storage.
+     * On any crypto/IO failure returns Failure and guarantees no recoverable plaintext file remains.
+     * Blank plaintext removes the secret.
+     */
+    open fun saveSecret(id: String, plaintext: String): SecretStoreResult {
         if (plaintext.isBlank()) {
             removeSecret(id)
-            return
+            return SecretStoreResult.Success
         }
-        try {
-            val key = ensureKey()
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, key)
-            val iv = cipher.iv // 12 bytes
-            val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
-            val combined = iv + ciphertext
+        return try {
+            val combined = crypto.encrypt(plaintext.toByteArray(Charsets.UTF_8))
             val b64 = Base64.encodeToString(combined, Base64.NO_WRAP)
-            // Write atomically
             val f = fileFor(id)
-            f.writeText(b64)
-            // Ensure no plaintext in DataStore — caller must not also store in prefs
-            return
-        } catch (e: Exception) {
-            // Fallback for Robolectric / Keystore unavailable: store base64 (still not plaintext, still in noBackup)
+            // Write atomically via temp + rename where possible
             try {
-                val f = fileFor(id)
-                // Prefix to distinguish fallback
-                val b64 = Base64.encodeToString(("fallback:" + plaintext).toByteArray(), Base64.NO_WRAP)
+                val tmp = File(f.parentFile, "${f.name}.tmp")
+                tmp.writeText(b64)
+                if (!tmp.renameTo(f)) {
+                    // fallback to direct write if rename fails
+                    f.writeText(b64)
+                    try { tmp.delete() } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {
                 f.writeText(b64)
-            } catch (_: Exception) {}
+            }
+            SecretStoreResult.Success
+        } catch (e: Exception) {
+            // FAIL CLOSED: ensure no plaintext or partial file remains
+            try { fileFor(id).delete() } catch (_: Exception) {}
+            SecretStoreResult.Failure(e.message ?: "secure storage unavailable")
         }
     }
 
@@ -93,33 +79,10 @@ open class ApiSecretStore(private val context: Context) {
             val b64 = f.readText().trim()
             if (b64.isBlank()) return null
             val combined = Base64.decode(b64, Base64.NO_WRAP)
-            // Try fallback decode first
-            val asStr = try { String(combined, Charsets.UTF_8) } catch (_: Exception) { "" }
-            if (asStr.startsWith("fallback:")) {
-                return asStr.removePrefix("fallback:")
-            }
-            if (combined.size <= GCM_IV_LEN) return null
-            val iv = combined.copyOfRange(0, GCM_IV_LEN)
-            val ct = combined.copyOfRange(GCM_IV_LEN, combined.size)
-            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            val key = ks.getKey(KEYSTORE_ALIAS, null) as? SecretKey ?: run {
-                // Fallback: treat as fallback encoding
-                if (asStr.startsWith("fallback:")) return asStr.removePrefix("fallback:")
-                return null
-            }
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_LEN, iv))
-            val pt = cipher.doFinal(ct)
+            val pt = crypto.decrypt(combined)
             String(pt, Charsets.UTF_8)
         } catch (e: Exception) {
-            // Try fallback decode even on exception
-            try {
-                val b64 = f.readText().trim()
-                val combined = Base64.decode(b64, Base64.NO_WRAP)
-                val asStr = String(combined, Charsets.UTF_8)
-                if (asStr.startsWith("fallback:")) return asStr.removePrefix("fallback:")
-            } catch (_: Exception) {}
-            // Corrupted or key invalidated — remove
+            // Corrupted or key invalidated — remove to force re-entry (fail closed)
             try { f.delete() } catch (_: Exception) {}
             null
         }
@@ -132,24 +95,31 @@ open class ApiSecretStore(private val context: Context) {
     fun clearAll() {
         try {
             secretsDir().listFiles()?.forEach { try { it.delete() } catch (_: Exception) {} }
-            // Also try to delete key entry
-            try {
-                val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-                if (ks.containsAlias(KEYSTORE_ALIAS)) ks.deleteEntry(KEYSTORE_ALIAS)
-            } catch (_: Exception) {}
+            // Also try to delete key entry if backend supports it
+            try { (crypto as? AndroidKeystoreCryptoBackend)?.deleteKey() } catch (_: Exception) {}
         } catch (_: Exception) {}
     }
 
-    fun hasSecret(id: String): Boolean = fileFor(id).exists()
-
-    // For testing: allow fallback to plaintext file if Keystore unavailable (Robolectric)
-    fun saveSecretFallback(id: String, plaintext: String, useKeystore: Boolean = true) {
-        if (!useKeystore) {
-            // In tests, just base64 without encryption but still in noBackup dir — still not in DataStore
-            val f = fileFor(id)
-            f.writeText(Base64.encodeToString(plaintext.toByteArray(), Base64.NO_WRAP))
-            return
+    /**
+     * Returns true only if a decryptable secure credential exists.
+     * File existence alone is insufficient (key may be invalidated).
+     */
+    fun hasSecret(id: String): Boolean {
+        val f = fileFor(id)
+        if (!f.exists()) return false
+        // Attempt decrypt to verify usability; loadSecret deletes corrupted file as side effect
+        return try {
+            val b64 = f.readText().trim()
+            if (b64.isBlank()) return false
+            val combined = Base64.decode(b64, Base64.NO_WRAP)
+            crypto.decrypt(combined)
+            true
+        } catch (_: Exception) {
+            try { f.delete() } catch (_: Exception) {}
+            false
         }
-        saveSecret(id, plaintext)
     }
+
+    /** Returns true if decryptable, false if missing or corrupted (and deletes corrupted). */
+    fun hasDecryptableSecret(id: String): Boolean = hasSecret(id)
 }

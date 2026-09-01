@@ -11,12 +11,14 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.Buffer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
  * OpenAI-compatible refinement adapter (POST /chat/completions). Tiny request, temp 0, deterministic.
+ * P0-19: bounded reads, P1-20 strict HTTPS, P1-22 clean cancellation.
  */
 class OpenAiCompatibleRefinementProvider(
     private val baseUrl: String,
@@ -27,17 +29,62 @@ class OpenAiCompatibleRefinementProvider(
     override val id = "openai-compatible-refine"
     override val capabilities = RefinementCapabilities(structuredOutput = false)
 
+    companion object {
+        const val MAX_RESPONSE_BYTES = 8192
+        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+
+        private fun isValidHttpsUrl(url: String): Boolean {
+            if (url.isBlank()) return false
+            return try {
+                val uri = java.net.URI(url.trim())
+                val scheme = uri.scheme?.lowercase() ?: return false
+                if (scheme != "https") {
+                    if (scheme == "http") {
+                        val host = uri.host?.lowercase() ?: return false
+                        val isDebug = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
+                        if (!isDebug) return false
+                        if (host != "localhost" && host != "127.0.0.1" && host != "10.0.2.2") return false
+                    } else return false
+                }
+                val host = uri.host ?: return false
+                if (host.isBlank()) return false
+                if (uri.userInfo != null) return false
+                true
+            } catch (_: Exception) { false }
+        }
+
+        private fun readBoundedBody(resp: okhttp3.Response): String? {
+            val body = resp.body ?: return ""
+            val source = body.source()
+            val buffer = Buffer()
+            var total: Long = 0
+            val limit = MAX_RESPONSE_BYTES.toLong() + 1
+            try {
+                while (total < limit) {
+                    val read = source.read(buffer, limit - total)
+                    if (read == -1L) break
+                    total += read
+                    if (total > MAX_RESPONSE_BYTES) return null
+                }
+                return buffer.readUtf8()
+            } catch (e: Exception) {
+                throw e
+            }
+        }
+    }
+
     override suspend fun refine(request: RefinementRequest): RefinementProviderResult = withContext(Dispatchers.IO) {
         if (request.text.isBlank()) throw IllegalArgumentException("empty text")
-        if (baseUrl.isBlank() || apiKey.isBlank() || model.isBlank()) throw IllegalStateException("not configured")
-
+        if (baseUrl.isBlank() || !isValidHttpsUrl(baseUrl) || apiKey.isBlank() || model.isBlank()) throw IllegalStateException("not configured — baseUrl must be https://")
         val system = buildSystemPrompt(request.mode)
         val userPayload = buildUserContent(request)
 
         val payload = JSONObject().apply {
             put("model", model)
             put("temperature", 0)
-            // keep output bounded to ~ input length + 50 tokens; max 512 to cap cost/latency
             put("max_tokens", (request.text.length / 3 + 120).coerceIn(32, 512))
             put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content", system))
@@ -51,38 +98,43 @@ class OpenAiCompatibleRefinementProvider(
             .build()
 
         val call = client.newCall(req)
-        try {
-            kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.invokeOnCompletion { cause ->
-                if (cause is kotlinx.coroutines.CancellationException) try { call.cancel() } catch (_: Exception) {}
-            }
-        } catch (_: Exception) {}
-
+        val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        val handle = job?.invokeOnCompletion { cause ->
+            if (cause is kotlinx.coroutines.CancellationException) try { call.cancel() } catch (_: Exception) {}
+        }
         val t0 = System.currentTimeMillis()
-        call.execute().use { resp ->
-            val bodyStr = resp.body?.string().orEmpty().take(8192)
-            if (!resp.isSuccessful) {
-                val code = resp.code
-                throw RefinementException(when (code) {
-                    401, 403 -> com.sprich.app.speech.remote.ApiFailure.Authentication
-                    404 -> com.sprich.app.speech.remote.ApiFailure.ModelUnavailable
-                    429 -> com.sprich.app.speech.remote.ApiFailure.RateLimited
-                    in 500..599 -> com.sprich.app.speech.remote.ApiFailure.ProviderUnavailable
-                    else -> com.sprich.app.speech.remote.ApiFailure.Http(code, bodyStr.take(120))
-                }, "refine HTTP $code")
+        try {
+            call.execute().use { resp ->
+                val bodyStr = readBoundedBody(resp)
+                if (bodyStr == null) throw RefinementException(com.sprich.app.speech.remote.ApiFailure.InvalidResponse, "Oversized response > $MAX_RESPONSE_BYTES")
+                if (!resp.isSuccessful) {
+                    val code = resp.code
+                    throw RefinementException(when (code) {
+                        401, 403 -> com.sprich.app.speech.remote.ApiFailure.Authentication
+                        404 -> com.sprich.app.speech.remote.ApiFailure.ModelUnavailable
+                        429 -> com.sprich.app.speech.remote.ApiFailure.RateLimited
+                        in 500..599 -> com.sprich.app.speech.remote.ApiFailure.ProviderUnavailable
+                        else -> com.sprich.app.speech.remote.ApiFailure.Http(code, bodyStr.take(120))
+                    }, "refine HTTP $code")
+                }
+                val json = JSONObject(bodyStr)
+                val content = json.optJSONArray("choices")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("message")
+                    ?.optString("content")
+                    ?.trim()
+                    .orEmpty()
+                if (content.isBlank()) throw RefinementException(com.sprich.app.speech.remote.ApiFailure.InvalidResponse, "empty refinement")
+                val extracted = tryParseStructured(content) ?: content.removeSurrounding("\"").trim()
+                if (extracted.isBlank()) throw RefinementException(com.sprich.app.speech.remote.ApiFailure.InvalidResponse, "blank after strip")
+                if (extracted.length > 4096) throw RefinementException(com.sprich.app.speech.remote.ApiFailure.InvalidResponse, "oversized")
+                RefinementProviderResult(extracted, System.currentTimeMillis() - t0)
             }
-            val json = JSONObject(bodyStr)
-            val content = json.optJSONArray("choices")
-                ?.optJSONObject(0)
-                ?.optJSONObject("message")
-                ?.optString("content")
-                ?.trim()
-                .orEmpty()
-            if (content.isBlank()) throw RefinementException(com.sprich.app.speech.remote.ApiFailure.InvalidResponse, "empty refinement")
-            // Try structured JSON parse first
-            val extracted = tryParseStructured(content) ?: content.removeSurrounding("\"").trim()
-            if (extracted.isBlank()) throw RefinementException(com.sprich.app.speech.remote.ApiFailure.InvalidResponse, "blank after strip")
-            if (extracted.length > 4096) throw RefinementException(com.sprich.app.speech.remote.ApiFailure.InvalidResponse, "oversized")
-            RefinementProviderResult(extracted, System.currentTimeMillis() - t0)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            try { call.cancel() } catch (_: Exception) {}
+            throw e
+        } finally {
+            try { handle?.dispose() } catch (_: Exception) {}
         }
     }
 
@@ -100,20 +152,12 @@ class OpenAiCompatibleRefinementProvider(
     }
 
     private fun tryParseStructured(content: String): String? {
-        // Accept {"corrected_text":"..."} if model supports structured output but we requested text fallback
         return try {
             val trimmed = content.trim()
             if (trimmed.startsWith("{") && trimmed.contains("corrected_text")) {
                 JSONObject(trimmed).optString("corrected_text", "").takeIf { it.isNotBlank() }
             } else null
         } catch (_: Exception) { null }
-    }
-
-    companion object {
-        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
-            .build()
     }
 }
 

@@ -16,7 +16,18 @@ data class RemoteSttConfig(
     // capabilities snapshot
     val supportsStreaming: Boolean = false,
     val supportsKeywordBiasing: Boolean = false,
-)
+) {
+    override fun toString(): String {
+        // Privacy-safe: never log full endpoint/query or credential ref secret
+        val safeEndpoint = try {
+            val uri = java.net.URI(endpoint)
+            val scheme = uri.scheme ?: "https"
+            val host = uri.host ?: "[host]"
+            "$scheme://$host/[REDACTED_PATH]"
+        } catch (_: Exception) { "[REDACTED_ENDPOINT]" }
+        return "RemoteSttConfig(providerId=$providerId, endpoint=$safeEndpoint, model=$model, languagePolicy=$languagePolicy, deadlineMs=$deadlineMs, credentialRef=[REDACTED])"
+    }
+}
 
 /**
  * Common request/response for provider abstraction.
@@ -40,6 +51,9 @@ data class RemoteSttRequest(
         r = 31 * r + languagePolicy.hashCode()
         r = 31 * r + utteranceId.hashCode()
         return r
+    }
+    override fun toString(): String {
+        return "RemoteSttRequest(pcmSamples=${pcm.size}, sampleRate=$sampleRate, languagePolicy=$languagePolicy, utteranceId=$utteranceId, credential=[REDACTED], vocabHints=${personalVocabularyHints.size})"
     }
 }
 

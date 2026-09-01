@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.sprich.app.core.audio.Pcm16Wav
 import com.sprich.app.models.download.DownloadManager
 import com.sprich.app.models.manager.ModelManager
 import com.sprich.app.models.manager.ModelStatus
@@ -20,9 +21,36 @@ import com.sprich.app.speech.api.EngineType
 import com.sprich.app.speech.api.Language
 import com.sprich.app.speech.refinement.RefinementMode
 import com.sprich.app.storage.ApiSecretStore
+import com.sprich.app.storage.LegacyApiCredentialMigrator
 import com.sprich.app.storage.Preferences
-import kotlinx.coroutines.flow.first
+import com.sprich.app.storage.SecretStoreResult
 import kotlinx.coroutines.launch
+
+// Shared validation: production custom endpoints must require https:// (except debug localhost via BuildConfig.DEBUG)
+private fun isValidProductionHttpsUrl(url: String): Boolean {
+    if (url.isBlank()) return false
+    return try {
+        val uri = java.net.URI(url.trim())
+        val scheme = uri.scheme?.lowercase() ?: return false
+        if (scheme != "https") {
+            // Allow http only for debug MockWebServer localhost
+            if (scheme == "http") {
+                val host = uri.host?.lowercase() ?: ""
+                // Strict allow only localhost/127.0.0.1 in debug builds
+                val isDebug = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
+                if (!isDebug) return false
+                if (host != "localhost" && host != "127.0.0.1" && host != "10.0.2.2") return false
+            } else return false
+        }
+        val host = uri.host ?: return false
+        if (host.isBlank()) return false
+        if (uri.userInfo != null) return false // embedded userinfo credentials not allowed
+        // reject query-token URLs? For now allow but don't log
+        true
+    } catch (_: Exception) { false }
+}
+
+private fun sanitizedModelSummary(id: String): String = id.take(64)
 
 @Composable
 fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = {}){
@@ -44,6 +72,11 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
     val nemotron160Status by mm.nemotron160Status.collectAsState()
     // Single derived readiness — Automatic requires BOTH Tiny LID and FastConformer (no Canary)
     val autoReady = lidStatus is ModelStatus.Ready && fastStatus is ModelStatus.Ready
+
+    // One-time migration on entry
+    LaunchedEffect(Unit) {
+        try { LegacyApiCredentialMigrator.migrateIfNeeded(prefs, ApiSecretStore(ctx)) } catch (_: Exception) {}
+    }
 
     Scaffold(
         topBar = {
@@ -314,11 +347,20 @@ private fun TranscriptionSection(prefs: Preferences) {
     val baseUrl by prefs.sttBaseUrl.collectAsState(initial = "")
     val model by prefs.sttModel.collectAsState(initial = "whisper-large-v3")
     val secretStore = remember { ApiSecretStore(ctx) }
+    // Shared pooled client for Settings Test — same pooling semantics as production
+    val sharedClient = remember { okhttp3.OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build() }
     var hasKey by remember { mutableStateOf(false) }
     var keyInput by remember { mutableStateOf("") }
     var showKeyEntry by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) { hasKey = secretStore.hasSecret("stt_default") || prefs.sttApiKey.first().isNotBlank() }
+    var saveError by remember { mutableStateOf<String?>(null) }
+    // hasKey = decryptable secure credential only — migration has already moved legacy if present
+    LaunchedEffect(Unit) {
+        try { LegacyApiCredentialMigrator.migrateIfNeeded(prefs, secretStore) } catch (_: Exception) {}
+        hasKey = try { secretStore.hasSecret("stt_default") } catch (_: Exception) { false }
+    }
+    // Refresh when secret changes
+    LaunchedEffect(hasKey) {}
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Transcription", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -330,69 +372,111 @@ private fun TranscriptionSection(prefs: Preferences) {
             Text("Audio is sent directly from your device to your selected transcription provider using your API key. Sprich does not provide, proxy or receive your API key. Usage is billed directly by your provider.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 FilterChip(selected = providerId == "openai-compatible", onClick = { scope.launch { prefs.setSttProviderId("openai-compatible") } }, label = { Text("OpenAI-compatible", style = MaterialTheme.typography.labelSmall) })
-                FilterChip(selected = providerId == "meta-muse", onClick = { scope.launch { prefs.setSttProviderId("meta-muse") } }, label = { Text("Meta Muse (blocked)", style = MaterialTheme.typography.labelSmall) })
+                // Meta Muse blocked — show as disabled info, not selectable
+                AssistChip(onClick = {}, enabled = false, label = { Text("Meta Muse — Not available yet", style = MaterialTheme.typography.labelSmall) })
                 FilterChip(selected = providerId == "custom", onClick = { scope.launch { prefs.setSttProviderId("custom") } }, label = { Text("Custom", style = MaterialTheme.typography.labelSmall) })
             }
-            // API key: Saved / Replace, never reload plaintext
+            // API key: Saved / Replace, never reload plaintext. Saved only if decryptable.
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("API key", style = MaterialTheme.typography.bodyMedium)
                 if (hasKey) {
-                    AssistChip(onClick = { showKeyEntry = true; keyInput = "" }, label = { Text("Saved — Replace") })
-                    TextButton(onClick = { scope.launch { secretStore.removeSecret("stt_default"); prefs.setSttApiKey(""); hasKey = false; testResult = "Key removed" } }) { Text("Remove") }
+                    AssistChip(onClick = { showKeyEntry = true; keyInput = ""; saveError = null }, label = { Text("Saved — Replace") })
+                    TextButton(onClick = { scope.launch { secretStore.removeSecret("stt_default"); hasKey = false; testResult = "Key removed" } }) { Text("Remove") }
                 } else {
-                    AssistChip(onClick = { showKeyEntry = true }, label = { Text("Add") })
+                    AssistChip(onClick = { showKeyEntry = true; saveError = null }, label = { Text("Add") })
                     Text("Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    if (saveError == null) {
+                        // Check if key needs re-entry due to keystore invalidation — show hint if file existed but decrypt failed recently
+                        // heuristic: if hasKey false after migration, show needs entry
+                    }
                 }
+            }
+            if (!hasKey && !showKeyEntry) {
+                Text("API key needs to be entered again if previously saved but no longer decryptable.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (saveError != null) {
+                Text(saveError!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
             if (showKeyEntry) {
                 var reveal by remember { mutableStateOf(false) }
-                OutlinedTextField(value = keyInput, onValueChange = { keyInput = it }, label = { Text("API key") }, singleLine = true,
+                OutlinedTextField(value = keyInput, onValueChange = { keyInput = it; saveError = null }, label = { Text("API key") }, singleLine = true,
                     visualTransformation = if (reveal) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
                     trailingIcon = {
                         Row {
                             TextButton(onClick = { reveal = !reveal }) { Text(if (reveal) "Hide" else "Show") }
                             TextButton(onClick = {
                                 scope.launch {
-                                    secretStore.saveSecret("stt_default", keyInput.trim())
-                                    // Do NOT store plaintext in DataStore; keep ref only
-                                    prefs.setSttCredentialRef("stt_default")
-                                    keyInput = ""
-                                    showKeyEntry = false
-                                    hasKey = true
-                                    testResult = "Saved"
+                                    val trimmed = keyInput.trim()
+                                    if (trimmed.isBlank()) { saveError = "Key cannot be empty"; return@launch }
+                                    val res = secretStore.saveSecret("stt_default", trimmed)
+                                    when (res) {
+                                        is SecretStoreResult.Success -> {
+                                            prefs.setSttCredentialRef("stt_default")
+                                            keyInput = ""
+                                            showKeyEntry = false
+                                            hasKey = true
+                                            testResult = "Saved"
+                                            saveError = null
+                                        }
+                                        is SecretStoreResult.Failure -> {
+                                            saveError = "Could not securely save API key"
+                                            hasKey = false
+                                        }
+                                    }
                                 }
                             }) { Text("Save") }
                         }
                     }, modifier = Modifier.fillMaxWidth())
+                if (saveError != null) Text("Could not securely save API key — try again, or clear app data if keystore is corrupted.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
             var editBaseUrl by remember { mutableStateOf(baseUrl) }
             var editModel by remember { mutableStateOf(model) }
             LaunchedEffect(baseUrl) { editBaseUrl = baseUrl }
             LaunchedEffect(model) { editModel = model }
-            OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it }, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttBaseUrl(editBaseUrl) } }) { Text("Save") } })
+            OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it; testResult = null }, label = { Text("Base URL (https://)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                supportingText = { if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) Text("Must be https:// (http only allowed for localhost in debug)", color = MaterialTheme.colorScheme.error) },
+                trailingIcon = {
+                    TextButton(onClick = {
+                        scope.launch {
+                            if (!isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
+                            prefs.setSttBaseUrl(editBaseUrl)
+                            testResult = "Saved"
+                        }
+                    }) { Text("Save") }
+                })
             OutlinedTextField(value = editModel, onValueChange = { editModel = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttModel(editModel) } }) { Text("Save") } })
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(onClick = { editBaseUrl = "https://api.x.ai/v1"; scope.launch { prefs.setSttBaseUrl(editBaseUrl) } }, label = { Text("Grok x.ai") })
-                AssistChip(onClick = { editBaseUrl = "https://api.groq.com/openai/v1"; editModel = "whisper-large-v3"; scope.launch { prefs.setSttBaseUrl(editBaseUrl); prefs.setSttModel(editModel) } }, label = { Text("Groq Whisper") })
-            }
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttModel(editModel); testResult = "Saved" } }) { Text("Save") } })
+            // Removed unverified presets (xAI/Grok) — only generic OpenAI-compatible documented. Custom endpoint is expected.
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = {
                     scope.launch {
                         testResult = "Testing…"
                         try {
+                            if (!isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
+                            val cred = secretStore.loadSecret("stt_default")
+                            if (cred.isNullOrBlank()) { testResult = "Missing API key — add key first"; return@launch }
+                            // Use production provider factory + shared client + real fixture
                             val t0 = System.currentTimeMillis()
-                            val cfg = com.sprich.app.speech.remote.RemoteSttConfig(providerId, editBaseUrl, editModel, com.sprich.app.speech.LanguagePolicy.Automatic, 3500L, "stt_default")
-                            val prov = com.sprich.app.speech.remote.OpenAiCompatibleSttProvider(editBaseUrl, editModel, okhttp3.OkHttpClient())
-                            val fakePcm = ShortArray(16000) { 0 }
-                            val cred = secretStore.loadSecret("stt_default") ?: prefs.sttApiKey.first()
-                            if (cred.isBlank()) { testResult = "Missing API key"; return@launch }
-                            val res = prov.transcribe(com.sprich.app.speech.remote.RemoteSttRequest(fakePcm, 16000, com.sprich.app.speech.LanguagePolicy.Automatic, utteranceId = 1, credential = cred))
-                            testResult = "Connected · ${System.currentTimeMillis() - t0} ms · ${res.text.take(24)}"
+                            // Load JFK fixture for valid speech
+                            val pcm = try {
+                                ctx.assets.open("jfk.wav").use { Pcm16Wav.read(it).samples }
+                            } catch (_: Exception) {
+                                // fallback small silence if asset missing (should not happen)
+                                ShortArray(16000) { (kotlin.math.sin(it * 0.01) * 8000).toInt().toShort() }
+                            }
+                            val trimmedPcm = if (pcm.size > 16000*8) pcm.copyOfRange(0, 16000*8) else pcm
+                            val provider = com.sprich.app.speech.remote.OpenAiCompatibleSttProvider(editBaseUrl, editModel, sharedClient)
+                            val req = com.sprich.app.speech.remote.RemoteSttRequest(trimmedPcm, 16000, com.sprich.app.speech.LanguagePolicy.Automatic, utteranceId = System.nanoTime(), credential = cred)
+                            val res = provider.transcribe(req)
+                            val dt = System.currentTimeMillis() - t0
+                            if (res.text.isBlank()) { testResult = "Connected but returned blank — check model/audio"; return@launch }
+                            val preview = res.text.take(40).replace("\n"," ")
+                            testResult = "Connected · ${dt} ms · $preview"
                         } catch (e: Exception) {
                             val failure = com.sprich.app.speech.remote.ApiFailure.fromException(e)
-                            testResult = failure.toDisplay() + " · " + (e.message?.take(60) ?: "")
+                            // Try to map typed failure if RemoteSttException
+                            val typed = (e as? com.sprich.app.speech.remote.RemoteSttException)?.failure ?: failure
+                            testResult = typed.toDisplay() + " · " + (e.message?.take(60) ?: "")
                         }
                     }
                 }) { Text("Test") }
@@ -409,13 +493,17 @@ private fun RefinementSection(prefs: Preferences) {
     val mode by prefs.refinementMode.collectAsState(initial = RefinementMode.OFF)
     val baseUrl by prefs.refinementBaseUrl.collectAsState(initial = "")
     val model by prefs.refinementModel.collectAsState(initial = "")
-    val providerId by prefs.refinementProviderId.collectAsState(initial = "openai-compatible")
     val secretStore = remember { ApiSecretStore(ctx) }
+    val sharedClient = remember { okhttp3.OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build() }
     var hasKey by remember { mutableStateOf(false) }
     var keyInput by remember { mutableStateOf("") }
     var showKeyEntry by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) { hasKey = secretStore.hasSecret("refine_default") || prefs.aiApiKey.first().isNotBlank() }
+    var saveError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        try { LegacyApiCredentialMigrator.migrateIfNeeded(prefs, secretStore) } catch (_: Exception) {}
+        hasKey = try { secretStore.hasSecret("refine_default") } catch (_: Exception) { false }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Improve transcript", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -433,25 +521,36 @@ private fun RefinementSection(prefs: Preferences) {
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("API key", style = MaterialTheme.typography.bodyMedium)
                 if (hasKey) {
-                    AssistChip(onClick = { showKeyEntry = true; keyInput = "" }, label = { Text("Saved — Replace") })
-                    TextButton(onClick = { scope.launch { secretStore.removeSecret("refine_default"); prefs.setAiApiKey(""); hasKey = false; testResult = "Key removed" } }) { Text("Remove") }
+                    AssistChip(onClick = { showKeyEntry = true; keyInput = ""; saveError = null }, label = { Text("Saved — Replace") })
+                    TextButton(onClick = { scope.launch { secretStore.removeSecret("refine_default"); hasKey = false; testResult = "Key removed" } }) { Text("Remove") }
                 } else {
-                    AssistChip(onClick = { showKeyEntry = true }, label = { Text("Add") })
+                    AssistChip(onClick = { showKeyEntry = true; saveError = null }, label = { Text("Add") })
                     Text("Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
             }
+            if (!hasKey && !showKeyEntry) {
+                Text("API key needs to be entered again if previously saved but no longer decryptable.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (saveError != null) Text(saveError!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             if (showKeyEntry) {
                 var reveal by remember { mutableStateOf(false) }
-                OutlinedTextField(value = keyInput, onValueChange = { keyInput = it }, label = { Text("API key") }, singleLine = true,
+                OutlinedTextField(value = keyInput, onValueChange = { keyInput = it; saveError = null }, label = { Text("API key") }, singleLine = true,
                     visualTransformation = if (reveal) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
                     trailingIcon = {
                         Row {
                             TextButton(onClick = { reveal = !reveal }) { Text(if (reveal) "Hide" else "Show") }
                             TextButton(onClick = {
                                 scope.launch {
-                                    secretStore.saveSecret("refine_default", keyInput.trim())
-                                    prefs.setRefinementCredentialRef("refine_default")
-                                    keyInput = ""; showKeyEntry = false; hasKey = true; testResult = "Saved"
+                                    val trimmed = keyInput.trim()
+                                    if (trimmed.isBlank()) { saveError = "Key cannot be empty"; return@launch }
+                                    val res = secretStore.saveSecret("refine_default", trimmed)
+                                    when (res) {
+                                        is SecretStoreResult.Success -> {
+                                            prefs.setRefinementCredentialRef("refine_default")
+                                            keyInput = ""; showKeyEntry = false; hasKey = true; testResult = "Saved"; saveError = null
+                                        }
+                                        is SecretStoreResult.Failure -> { saveError = "Could not securely save API key"; hasKey = false }
+                                    }
                                 }
                             }) { Text("Save") }
                         }
@@ -461,25 +560,32 @@ private fun RefinementSection(prefs: Preferences) {
             var editModel by remember { mutableStateOf(model) }
             LaunchedEffect(baseUrl) { editBaseUrl = baseUrl }
             LaunchedEffect(model) { editModel = model }
-            OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it }, label = { Text("Base URL (OpenAI-compatible)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setRefinementBaseUrl(editBaseUrl) } }) { Text("Save") } })
+            OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it }, label = { Text("Base URL (OpenAI-compatible, https://)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                supportingText = { if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) Text("Must be https://", color = MaterialTheme.colorScheme.error) },
+                trailingIcon = { TextButton(onClick = {
+                    scope.launch {
+                        if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
+                        prefs.setRefinementBaseUrl(editBaseUrl); testResult = "Saved"
+                    }
+                }) { Text("Save") } })
             OutlinedTextField(value = editModel, onValueChange = { editModel = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setRefinementModel(editModel) } }) { Text("Save") } })
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(onClick = { editBaseUrl = "https://generativelanguage.googleapis.com/v1beta/openai"; editModel = "gemini-2.0-flash-lite"; scope.launch { prefs.setRefinementBaseUrl(editBaseUrl); prefs.setRefinementModel(editModel) } }, label = { Text("Gemini fast") })
-                AssistChip(onClick = { editBaseUrl = "https://api.openai.com/v1"; editModel = "gpt-4o-mini"; scope.launch { prefs.setRefinementBaseUrl(editBaseUrl); prefs.setRefinementModel(editModel) } }, label = { Text("GPT mini") })
-            }
+                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setRefinementModel(editModel); testResult = "Saved" } }) { Text("Save") } })
+            // Removed unverified Gemini/GPT presets — user enters verified OpenAI-compatible endpoint/model
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = {
                     scope.launch {
                         testResult = "Testing…"
                         val cannedInput = "tomorrow i think we should meet at nine"
                         try {
+                            if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
+                            val secret = secretStore.loadSecret("refine_default")
+                            if (secret.isNullOrBlank()) { testResult = "Missing API key — add key first"; return@launch }
                             val t0 = System.currentTimeMillis()
-                            val prov = com.sprich.app.speech.refinement.OpenAiCompatibleRefinementProvider(editBaseUrl, editModel, secretStore.loadSecret("refine_default") ?: prefs.aiApiKey.first(), okhttp3.OkHttpClient())
+                            val prov = com.sprich.app.ai.OpenAiCompatibleRefinementProvider(editBaseUrl, editModel, secret, sharedClient)
                             val res = prov.refine(com.sprich.app.speech.refinement.RefinementRequest(cannedInput, "en", mode))
                             val ms = System.currentTimeMillis() - t0
-                            testResult = "Input: $cannedInput → $res · ${ms}ms"
+                            val preview = res.text.take(40).replace("\n"," ")
+                            testResult = "OK · ${ms}ms · $preview"
                         } catch (e: Exception) {
                             testResult = "Failed: ${e.message?.take(80)}"
                         }
@@ -495,6 +601,7 @@ private fun RefinementSection(prefs: Preferences) {
 private fun DynamicPrivacySection(prefs: Preferences) {
     val mode by prefs.transcriptionMode.collectAsState(initial = TranscriptionMode.ON_DEVICE)
     val refine by prefs.refinementMode.collectAsState(initial = RefinementMode.OFF)
+    val debugWav by prefs.debugWavCapture.collectAsState(initial = false)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("Privacy", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         when {
@@ -507,7 +614,11 @@ private fun DynamicPrivacySection(prefs: Preferences) {
             refine != RefinementMode.OFF ->
                 Text("Transcript text is sent directly from your device to your selected refinement provider using your API key. Sprich does not provide, proxy or receive your API key.", style = MaterialTheme.typography.bodySmall)
         }
-        Text("Audio storage: Never", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (debugWav) {
+            Text("Debug capture enabled: test audio is stored locally (WAV). Disable after testing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        } else {
+            Text("Audio storage: Never — audio is not retained after transcription", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         Text("Network use: ${when { mode == TranscriptionMode.ON_DEVICE && refine == RefinementMode.OFF -> "Models only"; mode != TranscriptionMode.ON_DEVICE && refine != RefinementMode.OFF -> "Models + STT + refinement"; mode != TranscriptionMode.ON_DEVICE -> "Models + STT"; else -> "Models + refinement" }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

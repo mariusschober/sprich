@@ -24,13 +24,14 @@ android {
             abiFilters += listOf("arm64-v8a")
         }
         buildConfigField("String", "GIT_COMMIT", "\"$gitHash\"")
+        // PLAY_SIGNING_READY: NO — no private key committed; release will be unsigned until real keystore configured
         buildConfigField("boolean", "ENABLE_BENCHMARK", "true")
     }
     // Signing template — copy keystore.properties.template → keystore.properties (never commit)
     // Note: keystore.properties handling moved to rootProject file check without java.util.Properties to keep script simple
     signingConfigs {
         create("release") {
-            // If keystore.properties exists, it will be loaded via gradle.properties or env; keep unsigned for CI
+            // Unsigned for CI — real release requires external signing (PLAY_SIGNING_READY: NO)
         }
     }
 
@@ -40,13 +41,16 @@ android {
             isDebuggable = true
             applicationIdSuffix = ".debug"
             isJniDebuggable = true
+            buildConfigField("boolean", "ENABLE_BENCHMARK", "true")
         }
         release {
             isMinifyEnabled = false
             isShrinkResources = false
             isDebuggable = false
             isJniDebuggable = false
-            signingConfig = signingConfigs.getByName("debug")
+            // P1-35: Do NOT sign production release with debug key — unsigned until real keystore configured (PLAY_SIGNING_READY: NO)
+            // signingConfig deliberately not set — assembleRelease will be unsigned and require external signing
+            buildConfigField("boolean", "ENABLE_BENCHMARK", "false")
         }
     }
 
@@ -139,6 +143,7 @@ dependencies {
     testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("androidx.arch.core:core-testing:2.2.0")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

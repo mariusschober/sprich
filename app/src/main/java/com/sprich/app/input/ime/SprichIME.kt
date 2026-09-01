@@ -33,14 +33,12 @@ import com.sprich.app.speech.api.SpeechLanguage
 import com.sprich.app.speech.api.SpeechSessionConfig
 import com.sprich.app.speech.api.TranscriptionTask
 import com.sprich.app.SprichApp
-import com.sprich.app.ai.GrammarFixer
 import com.sprich.app.core.perf.ThermalMonitor
 import com.sprich.app.core.audio.UtteranceAudioCollector
 import com.sprich.app.speech.LocalAsrRoute
 import com.sprich.app.speech.LocalTranscriptionCoordinator
 import com.sprich.app.speech.ResolvedUtteranceLanguage
 import com.sprich.app.speech.canary.CanaryEngine
-import com.sprich.app.speech.remote.RemoteSttEngine
 import com.sprich.app.speech.TranscriptionMode
 import com.sprich.app.speech.UtterancePlan
 import com.sprich.app.speech.TranscriptionPlan
@@ -109,7 +107,18 @@ class SprichIME : InputMethodService() {
     private val fieldGeneration = AtomicLong(0L)
     private val utteranceIdCounter = AtomicLong(0L)
     @Volatile private var currentUtteranceToken: UtteranceToken? = null
-    private val finalizedUtterances = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
+    // Bounded exactly-once history: keep last 128 utterance IDs to prevent unbounded growth while retaining safety for recent duplicates
+    private val finalizedUtterances: MutableSet<Long> = java.util.Collections.synchronizedSet(object : LinkedHashSet<Long>() {
+        override fun add(element: Long): Boolean {
+            val added = super.add(element)
+            // Evict oldest if over bound (128)
+            if (size > 128) {
+                val it = iterator()
+                if (it.hasNext()) { it.next(); it.remove() }
+            }
+            return added
+        }
+    })
     @Volatile private var currentFieldTokenIcHash: Int = 0
 
     // Per-utterance PCM capture — engine-independent authoritative collector.
@@ -127,6 +136,13 @@ class SprichIME : InputMethodService() {
         val plan: UtterancePlan,
     )
     @Volatile private var activeUtterance: ActiveUtterance? = null
+
+    // Prepared final action — command vs text separation (P0-7: refinement must never gain command authority)
+    sealed interface PreparedFinalAction {
+        data class Text(val text: String, val resolved: ResolvedUtteranceLanguage) : PreparedFinalAction
+        data class DeleteLast(val token: UtteranceToken) : PreparedFinalAction
+        data class DeleteSentence(val token: UtteranceToken) : PreparedFinalAction
+    }
 
     // Overlapping utterance queue — immutable per-utterance snapshots, serialized finalization actor
     // Invariant: one spoken utterance → one immutable PCM snapshot → one final decode → one deterministic post-processing pass → one editor commit
@@ -176,6 +192,13 @@ class SprichIME : InputMethodService() {
         private set
     @Volatile var nativeDecodeStarts: Long = 0
         private set
+    // Truthful metrics separated by path (P0-12)
+    @Volatile var localNativeDecodeStarts: Long = 0
+        private set
+    @Volatile var remoteTranscriptionStarts: Long = 0
+        private set
+    @Volatile var refinementStarts: Long = 0
+        private set
     // Privacy-safe pipeline counters for physical-device triage (no audio/transcript).
     private var pipelineChunkCount = 0L
     private var pipelineSampleCount = 0L
@@ -202,6 +225,10 @@ class SprichIME : InputMethodService() {
     private var refinementModelState: String = ""
     private var refinementDeadlineMsState: Long = 1000L
     private var personalVocabHintEnabled: Boolean = false
+    // In-memory snapshots for audio-hot-path non-blocking plan construction (P1-15)
+    private var sttCredentialRefState: String = "stt_default"
+    private var refinementProviderIdState: String = "openai-compatible"
+    private var refinementCredentialRefState: String = "refine_default"
     private val apiSecretStore by lazy { ApiSecretStore(this) }
     private val sharedHttpClient by lazy {
         okhttp3.OkHttpClient.Builder()
@@ -229,21 +256,6 @@ class SprichIME : InputMethodService() {
     private var glowBg: android.graphics.drawable.GradientDrawable? = null
     private var auraView: View? = null
     private var pillBgRef: android.graphics.drawable.GradientDrawable? = null
-    // Remote backup STT + AI polish (OpenAI-compatible endpoints, configured in Settings)
-    private val remoteStt by lazy {
-        RemoteSttEngine(
-            baseUrlProvider = { runCatching { kotlinx.coroutines.runBlocking { prefs.sttBaseUrl.first() } }.getOrDefault("") },
-            apiKeyProvider = { runCatching { kotlinx.coroutines.runBlocking { prefs.sttApiKey.first() } }.getOrDefault("") },
-            modelProvider = { runCatching { kotlinx.coroutines.runBlocking { prefs.sttModel.first() } }.getOrDefault("whisper-large-v3") },
-        )
-    }
-    private val grammarFixer by lazy {
-        GrammarFixer(
-            baseUrlProvider = { runCatching { kotlinx.coroutines.runBlocking { prefs.aiBaseUrl.first() } }.getOrDefault("") },
-            apiKeyProvider = { runCatching { kotlinx.coroutines.runBlocking { prefs.aiApiKey.first() } }.getOrDefault("") },
-            modelProvider = { runCatching { kotlinx.coroutines.runBlocking { prefs.aiModel.first() } }.getOrDefault("") },
-        )
-    }
     // Production Automatic: Tiny LID (Whisper Tiny 98M, per-utterance SLID) → FastConformer CTC 126M (implicit EN-DE-ES-FR)
     // Accurate explicit: Canary 180M Flash INT8 (fixed EN/DE/ES/FR)
     private val lidEngine by lazy {
@@ -300,17 +312,22 @@ class SprichIME : InputMethodService() {
                     }
                 } catch (e: Exception) { Log.w("SprichIME", "engineType collect fail", e) }
             }
-            // Observe new typed product modes
+            // Observe new typed product modes — in-memory snapshots for non-blocking plan construction (P1-15)
             scope.launch { try { prefs.transcriptionMode.collect { transcriptionMode = it; Log.i("SprichIME", "transcriptionMode=$it") } } catch (e: Exception) { Log.w("SprichIME", "transcriptionMode collect fail", e) } }
             scope.launch { try { prefs.refinementMode.collect { refinementMode = it } } catch (e: Exception) { Log.w("SprichIME", "refinementMode collect fail", e) } }
             scope.launch { try { prefs.sttProviderId.collect { sttProviderId = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.sttBaseUrl.collect { sttBaseUrlState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.sttModel.collect { sttModelState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.sttDeadlineMs.collect { sttDeadlineMsState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.sttCredentialRef.collect { sttCredentialRefState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.refinementProviderId.collect { refinementProviderIdState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.refinementCredentialRef.collect { refinementCredentialRefState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.refinementBaseUrl.collect { refinementBaseUrlState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.refinementModel.collect { refinementModelState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.refinementDeadlineMs.collect { refinementDeadlineMsState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.personalVocabHintEnabled.collect { personalVocabHintEnabled = it } } catch (e: Exception) {} }
+            // One-time legacy credential migration (P0-3 fail-closed)
+            scope.launch { try { com.sprich.app.storage.LegacyApiCredentialMigrator.migrateIfNeeded(prefs, ApiSecretStore(this@SprichIME)) } catch (e: Exception) { Log.w("SprichIME", "legacy migration failed", e) } }
             // Selectively preload only the currently selected route — do NOT load Canary when Automatic uses FastConformer
             scope.launch {
                 try {
@@ -703,6 +720,16 @@ class SprichIME : InputMethodService() {
             latency.mark("onStartInput")
             scope.launch {
                 try {
+                    // P0-9: API_PRIMARY must NOT preload local ASR on field focus
+                    if (transcriptionMode == TranscriptionMode.API_PRIMARY) {
+                        // If local models were resident from prior local mode, unload when idle
+                        if (queueDepth.get() == 0) {
+                            try { if (engine.isLoaded()) engine.unload() } catch (_: Exception) {}
+                            try { if (fastConformerEngine.isLoaded()) fastConformerEngine.unload() } catch (_: Exception) {}
+                            try { if (lidEngine.isLoaded()) lidEngine.unload() } catch (_: Exception) {}
+                        }
+                        return@launch
+                    }
                     val mm = try { com.sprich.app.models.manager.ModelManager(this@SprichIME) } catch (_: Exception) { null }
                     val route = determineRoute(speechLanguage)
                     when (route) {
@@ -750,6 +777,14 @@ class SprichIME : InputMethodService() {
         super.onWindowShown()
         scope.launch {
             try {
+                if (transcriptionMode == TranscriptionMode.API_PRIMARY) {
+                    if (queueDepth.get() == 0) {
+                        try { if (engine.isLoaded()) engine.unload() } catch (_: Exception) {}
+                        try { if (fastConformerEngine.isLoaded()) fastConformerEngine.unload() } catch (_: Exception) {}
+                        try { if (lidEngine.isLoaded()) lidEngine.unload() } catch (_: Exception) {}
+                    }
+                    return@launch
+                }
                 val mm = try { com.sprich.app.models.manager.ModelManager(this@SprichIME) } catch (_: Exception) { null }
                 val route = determineRoute(speechLanguage)
                 when (route) {
@@ -788,14 +823,36 @@ class SprichIME : InputMethodService() {
     }
 
     override fun onDestroy() {
+        // Deterministic shutdown ordering (P0-23): stop accepting work, close queue, cancel/join, release native, cancel scope last
         try { stopDictation(StopReason.SERVICE_DESTROYED) } catch (_: Exception) {}
         try { pendingChannel.close() } catch (_: Exception) {}
-        try { finalizationActorJob?.cancel() } catch (_: Exception) {}
-        try { scope.launch { lidEngine.unload() } } catch (_: Exception) {}
-        try { scope.launch { fastConformerEngine.unload() } } catch (_: Exception) {}
+        // Cancel and join finalization actor with bounded timeout (avoid indefinite block on main)
+        try {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(800) {
+                    finalizationActorJob?.cancelAndJoin()
+                }
+            }
+        } catch (_: Exception) {}
+        // Release native resources deterministically before scope cancel (bounded)
+        try {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(1000) { lidEngine.unload() }
+            }
+        } catch (_: Exception) {}
+        try {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(1000) { fastConformerEngine.unload() }
+            }
+        } catch (_: Exception) {}
+        try {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(800) { engine.unload() }
+            }
+        } catch (_: Exception) {}
         try { utteranceAudio.clear() } catch (_: Exception) {}
         try { audio.release() } catch (_: Exception) {}
-        scope.cancel()
+        try { scope.cancel() } catch (_: Exception) {}
         super.onDestroy()
     }
 
@@ -912,10 +969,9 @@ class SprichIME : InputMethodService() {
                 if (remoteCfg == null) {
                     Result.failure(Exception("Remote STT not configured — set base URL/model/API key in Settings"))
                 } else {
-                    // Verify credential exists (secret store or legacy)
+                    // Verify credential exists — secure store only, legacy plaintext no longer supported (P0-4)
                     val cred = try { apiSecretStore.loadSecret(remoteCfg.credentialRef) ?: "" } catch (_: Exception) { "" }
-                    val legacyCred = try { runBlocking { prefs.sttApiKey.first() } } catch (_: Exception) { "" }
-                    if (cred.isBlank() && legacyCred.isBlank()) {
+                    if (cred.isBlank()) {
                         Result.failure(Exception("Missing API key for ${remoteCfg.providerId} — add in Settings"))
                     } else Result.success(Unit)
                 }
@@ -1228,12 +1284,16 @@ class SprichIME : InputMethodService() {
                 pipelinePushedSampleCount += samples.size
                 // AUTHORITATIVE: collector is single owner — append once.
                 try { utteranceAudio.append(samples) } catch (_: Exception) {}
-                // Consumer split: use frozen route from activeUtterance, not mutable speechLanguage (Phase 0A). Automatic is final-only, no duplicate buffer (Phase 0B).
+                // Consumer split: distinguish primary live consumer from fallback (P0-10). For API_PRIMARY, fallback must stay idle until remote failure.
+                val activePlan = activeUtterance?.plan
                 val routeAtChunk = activeUtterance?.localRoute ?: determineRoute(speechLanguage)
-                if (routeAtChunk is LocalAsrRoute.AccurateCanary) {
+                val isPrimaryLocal = activePlan?.transcription is TranscriptionPlan.Local
+                val isLocalFallback = activePlan?.transcription is TranscriptionPlan.LocalApiFallback
+                val shouldPushLive = (isPrimaryLocal || isLocalFallback) && routeAtChunk is LocalAsrRoute.AccurateCanary
+                if (shouldPushLive) {
                     try { engine.pushAudio(samples, timestampNanos) } catch (_: Exception) {}
                 }
-                // For Automatic: no engine push — collector owns PCM, FastConformer decodes frozen snapshot at finalization only.
+                // For Automatic or API_PRIMARY + fallback: no live Canary push — fallback decodes frozen snapshot only on remote failure.
             }
 
             if (
@@ -1246,8 +1306,8 @@ class SprichIME : InputMethodService() {
                 // Freeze authoritative collector snapshot — immutable, engine-independent.
                 // CRITICAL: captured synchronously before next onset can reuse live buffer.
                 val frozenSnap: ShortArray = try { utteranceAudio.freeze() } catch (_: Exception) { ShortArray(0) }
-                // Also cache in legacy global for non-queued fallback paths (e.g., remoteStt fallback)
-                frozenUtterancePcm = frozenSnap.copyOf()
+                // P1-25: single isolated copy already from freeze(), no second copyOf needed
+                frozenUtterancePcm = frozenSnap
                 val token = currentUtteranceToken ?: run {
                     Log.w("SprichIME", "endpoint without token — creating synthetic token")
                     UtteranceToken(session.sessionId, generation, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
@@ -1261,7 +1321,7 @@ class SprichIME : InputMethodService() {
                 val pendingConfig = captured?.takeIf { it.token.utteranceId == token.utteranceId }?.speechConfig ?: pendingPlan.speechConfig
                 val pending = PendingUtterance(
                     token = token,
-                    pcm = frozenSnap.copyOf(), // immutable isolated copy — B cannot clear/replace it
+                    pcm = frozenSnap, // P1-25: already isolated, no duplicate copy
                     config = pendingConfig,
                     route = pendingRoute,
                     plan = pendingPlan,
@@ -1468,9 +1528,9 @@ class SprichIME : InputMethodService() {
             // Ensure coordinator exists with shared HttpClient (connection pooling, keep-alive, HTTP/2)
             val plan = pending.plan
             val t0 = android.os.SystemClock.elapsedRealtime()
-            nativeDecodeStarts++
+            // P0-12: truthful metrics — increment path-specific counters after transcribe, not blindly
             val transcriptionResult: TranscriptionResult = try {
-                ensureTranscriptionCoordinator().transcribe(pending.pcm, plan)
+                ensureTranscriptionCoordinator().transcribe(pending.pcm, plan, pending.token.utteranceId)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1478,8 +1538,21 @@ class SprichIME : InputMethodService() {
                 TranscriptionResult("", ResolvedUtteranceLanguage.Unknown, plan.speechConfig, TranscriptionSourceId.LOCAL_FAST)
             }
             val elapsed = android.os.SystemClock.elapsedRealtime() - t0
-            val effectiveConfig = transcriptionResult.effectiveConfig
+            // P0-12: increment truthful path counters
+            when (transcriptionResult.source) {
+                TranscriptionSourceId.LOCAL_FAST, TranscriptionSourceId.LOCAL_CANARY -> { localNativeDecodeStarts++; nativeDecodeStarts++ }
+                else -> remoteTranscriptionStarts++
+            }
+            // P1-16: propagate remote-detected language consistently
+            var effectiveConfig = transcriptionResult.effectiveConfig
             val postProcessResolved: ResolvedUtteranceLanguage = transcriptionResult.resolvedLanguage
+            if (postProcessResolved is ResolvedUtteranceLanguage.Known) {
+                // Update effectiveConfig to Fixed language so downstream spoken processing / refinement use DE not auto
+                effectiveConfig = effectiveConfig.copy(
+                    language = postProcessResolved.language,
+                    speechLanguage = com.sprich.app.speech.api.SpeechLanguage.Fixed(postProcessResolved.language.code)
+                )
+            }
             val lidDetected = when (postProcessResolved) {
                 is ResolvedUtteranceLanguage.Known -> postProcessResolved.language.code
                 else -> "unknown"
@@ -1530,75 +1603,72 @@ class SprichIME : InputMethodService() {
                 return
             }
 
-            // Phase 33: deterministic spoken-command / ITN processing BEFORE refinement — destructive commands never hit LLM
-            var baseText = transcriptionResult.text.trim()
-            val raw = baseText
-            Log.i("SprichIME", "punctuationTriage token=${token.utteranceId} RAW_ASR_len=${raw.length} lang=${effectiveConfig.resolvedLanguageTag()} source=${transcriptionResult.source} plan=$plan")
-            // Check if entire utterance is a deterministic editor command (delete that, new paragraph, etc.)
+            // P0-7: Single-parse command isolation — parse exactly once, refinement never gains command authority
+            // P1-17: Apply personal vocabulary before refinement, send only relevant terms
+            val raw = transcriptionResult.text.trim()
+            Log.i("SprichIME", "pipeline: token=${token.utteranceId} source=${transcriptionResult.source} mode=${plan.transcription::class.simpleName} rawLen=${raw.length} lang=${effectiveConfig.resolvedLanguageTag()} refinement=${plan.refinement::class.simpleName}")
+            // Parse exactly once on raw transcription
             val preRefineParsed = try {
-                SpokenEditingParser.parse(baseText, postProcessResolved, commandsEnabled)
+                SpokenEditingParser.parse(raw, postProcessResolved, commandsEnabled)
             } catch (_: Exception) {
-                SpokenEditingParser.EditResult(baseText, false)
+                SpokenEditingParser.EditResult(raw, false)
             }
-            val isEditorCommand = SpokenEditingParser.isDeleteCommand(preRefineParsed.text)
-            var text: String
-            var skipRefinementForCommand = false
-            if (isEditorCommand) {
-                // Editor action: execute locally, no refinement request, commit command handling downstream will handle delete
-                Log.i("SprichIME", "detected spoken editor command, skipping refinement token=$token cmd=${preRefineParsed.text}")
-                text = preRefineParsed.text // will be handled as delete in applyFinalText
-                skipRefinementForCommand = true
+            val isDeleteCmd = SpokenEditingParser.isDeleteCommand(preRefineParsed.text)
+            val prepared: PreparedFinalAction = if (isDeleteCmd) {
+                Log.i("SprichIME", "spoken command detected token=$token cmd=${preRefineParsed.text} — skipping refinement")
+                if (preRefineParsed.text == "__DELETE_SENTENCE__") PreparedFinalAction.DeleteSentence(token) else PreparedFinalAction.DeleteLast(token)
             } else {
-                // Non-command: deterministic text without exposing sentinels to LLM
-                // Apply ITN/typography now; refinement will operate on this deterministic text
-                // Vocab store already applied inside parser; include it.
-                val deterministic = preRefineParsed.text
-                // Optional refinement with hard deadline and validator — never second LLM call on reject
-                text = when (val rp = plan.refinement) {
+                // Non-command: deterministic text with vocab applied before refinement (P1-17 step 2)
+                var deterministic = preRefineParsed.text
+                // Ensure vocab applied deterministically before refinement (parser already did, but double-ensure)
+                deterministic = try { vocabStore.apply(deterministic) } catch (_: Exception) { deterministic }
+                // For irrelevant vocab protection, compute relevant terms only (present in current transcript)
+                val relevantTerms: List<String> = try {
+                    val allEntries = vocabStore.all().map { it.written }.filter { it.isNotBlank() }
+                    if (allEntries.isEmpty()) emptyList()
+                    else {
+                        val lower = deterministic.lowercase()
+                        allEntries.filter { lower.contains(it.lowercase()) }.take(20)
+                    }
+                } catch (_: Exception) { emptyList<String>() }
+                val refinedText: String = when (val rp = plan.refinement) {
                     is RefinementPlan.Off -> deterministic
                     is RefinementPlan.Enabled -> {
                         if (deterministic.isBlank()) deterministic else {
-                            statusText?.text = "Polishing…"
-                            val protectedTerms = try {
-                                vocabStore.apply(deterministic) // ensure vocab loaded; then get vocab list bounded
-                                // Bounded relevant list: take up to 20 personal terms that appear as substrings?
-                                // For now, take first 20 terms from vocab store
-                                val all = try { com.sprich.app.vocab.VocabRepository(this@SprichIME, prefs).store().let { emptyList<String>() } } catch (_: Exception) { emptyList<String>() }
-                                all.take(20)
-                            } catch (_: Exception) { emptyList<String>() }
-                            val provider = ensureRefinementProvider()
+                            refinementStarts++
+                            val provider = providerForRefinementConfig(rp.config)
                             if (provider == null) {
-                                Log.w("SprichIME", "refinement provider unavailable, using original")
+                                Log.w("SprichIME", "refinement provider unavailable for $rp, using deterministic")
                                 deterministic
                             } else {
+                                // P1-16: language already propagated via effectiveConfig, use that for refinement request
+                                val reqLanguage = effectiveConfig.resolvedLanguageTag()
                                 val req = com.sprich.app.speech.refinement.RefinementRequest(
                                     text = deterministic,
-                                    language = effectiveConfig.resolvedLanguageTag(),
+                                    language = reqLanguage,
                                     mode = rp.mode,
-                                    protectedTerms = protectedTerms,
+                                    protectedTerms = relevantTerms,
                                 )
                                 val deadlineMs = rp.config.deadlineMs
                                 val refinedResult = try {
-                                    withTimeoutOrNull(deadlineMs) {
-                                        provider.refine(req)
-                                    }
+                                    kotlinx.coroutines.withTimeoutOrNull(deadlineMs) { provider.refine(req) }
                                 } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                                     Log.w("SprichIME", "refinement exception", e)
                                     null
                                 }
                                 if (refinedResult == null) {
-                                    Log.w("SprichIME", "refinement timeout/discard after ${deadlineMs}ms, using original")
+                                    Log.w("SprichIME", "refinement timeout/discard after ${deadlineMs}ms, using deterministic")
                                     deterministic
                                 } else {
                                     val candidate = refinedResult.text.trim()
-                                    val validation = RefinementValidator.validate(deterministic, candidate, rp.mode, protectedTerms)
+                                    val validation = RefinementValidator.validate(deterministic, candidate, rp.mode, relevantTerms)
                                     when (validation) {
                                         is RefinementValidator.Result.Accept -> {
                                             Log.i("SprichIME", "refinement accepted mode=${rp.mode} inLen=${deterministic.length} outLen=${candidate.length} latency=${refinedResult.latencyMs}")
                                             candidate
                                         }
                                         is RefinementValidator.Result.Reject -> {
-                                            Log.w("SprichIME", "refinement rejected reason=${validation.reason}, using original")
+                                            Log.w("SprichIME", "refinement rejected reason=${validation.reason}, using deterministic")
                                             deterministic
                                         }
                                     }
@@ -1607,61 +1677,80 @@ class SprichIME : InputMethodService() {
                         }
                     }
                 }
-                // Final typography safety pass (already in parser, but ensure unknown safety)
-                // If postProcessResolved is Unknown, parser used generic normalization; else language-aware.
+                PreparedFinalAction.Text(refinedText, postProcessResolved)
             }
-            // For command, text already is sentinel; for normal, text is final after refinement+validator
 
-            val applied = if (text.isBlank()) {
-                Log.w("SprichIME", "final transcript empty token=$token elapsedMs=$elapsed pushedSamples=${pending.pushedSamples} effectiveLang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected")
-                // Even blank final must reset only if it owns active capture; otherwise preserve B
-                false
-            } else {
-                val ok = applyFinalText(token, text, postProcessResolved)
-                Log.i("SprichIME", "final token=$token chars=${text.length} applied=$ok elapsedMs=$elapsed lang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected postLen=${text.length} lidMs=$lidLatencyMs resolved=$postProcessResolved")
-                if (ok) finalCommitCount++
-                ok
+            // P0-7: Refined text must NEVER be reinterpreted as command — commit prepared action directly
+            val applied: Boolean = when (prepared) {
+                is PreparedFinalAction.DeleteLast -> {
+                    val ok = executeDeleteCommand(token, 40)
+                    if (ok) finalCommitCount++
+                    ok
+                }
+                is PreparedFinalAction.DeleteSentence -> {
+                    val ok = executeDeleteCommand(token, 120)
+                    if (ok) finalCommitCount++
+                    ok
+                }
+                is PreparedFinalAction.Text -> {
+                    val finalText = (prepared as PreparedFinalAction.Text).text
+                    if (finalText.isBlank()) {
+                        Log.w("SprichIME", "final transcript empty token=$token")
+                        false
+                    } else {
+                        val ok = commitFinalText(token, finalText, prepared.resolved)
+                        Log.i("SprichIME", "final token=$token chars=${finalText.length} applied=$ok elapsedMs=$elapsed lang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected resolved=$postProcessResolved")
+                        if (ok) finalCommitCount++
+                        ok
+                    }
+                }
             }
-            if (text.isNotBlank() && !applied) {
+            if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isNotBlank() && !applied) {
                 failSession(token.generation, "final text insertion failed token=$token", "Could not insert text", "Refocus the field and retry", null)
                 return
             }
-            if (applied) {
+            if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isBlank() && !applied) {
+                // blank already handled
+            } else if (applied) {
                 latency.mark("textCommitted")
                 celebrateCommit()
             }
 
+            // Post-commit housekeeping moved after prepared handling
             lastPartialText = ""
             // Only clear active capture state if this pending still owns it; otherwise B is active and must not be corrupted.
             maybeClearActiveStateForToken(token)
             // Also clear legacy global frozen only if it equals this pending's pcm (avoid clearing B's snapshot)
             if (frozenUtterancePcm != null && frozenUtterancePcm?.size == pending.pcm.size) {
-                // Content check optional: if same size, assume it's this pending; otherwise B's newer snapshot has different size likely.
-                // To be safe, only clear if token matches current token
                 if (currentUtteranceToken?.utteranceId == token.utteranceId) {
                     frozenUtterancePcm = null
                 }
             }
             // Do NOT call engine.clearUtteranceCapture() here — that would erase B's live buffer.
-            // Engine's active buffer is owned by live capture; per-utterance snapshot already isolated.
             // Only need to ensure partial decoding continues for next utterance.
             if (reason == StopReason.ENDPOINT) {
                 try {
-                    // Re-arm for continuous listening only if session still valid and no generation change.
-                    // beginSession clears pcmRing/stabilizer but NOT utteranceBuffer that holds B's active capture? Actually beginSession clears utteranceBuffer — that would erase B!
-                    // So we must NOT call beginSession if B is already capturing (utteranceActive true with different token).
                     val isBActive = currentUtteranceToken != null && currentUtteranceToken?.utteranceId != token.utteranceId && utteranceActive.get()
                     if (isBActive) {
                         Log.i("SprichIME", "finalizePending ENDPOINT skip re-arm, B already active token=${currentUtteranceToken} A=$token")
                     } else {
-                        when (pending.route) {
-                            is LocalAsrRoute.AutomaticFastConformer -> fastConformerEngine.beginSession(pending.config)
-                            is LocalAsrRoute.AccurateCanary -> engine.beginSession(pending.config)
+                        when (val tp = pending.plan.transcription) {
+                            is TranscriptionPlan.ApiPrimary -> {
+                                Log.i("SprichIME", "finalizePending ENDPOINT API_PRIMARY neutral re-arm token=$token")
+                            }
+                            is TranscriptionPlan.Local -> when (tp.route) {
+                                is LocalAsrRoute.AutomaticFastConformer -> fastConformerEngine.beginSession(pending.config)
+                                is LocalAsrRoute.AccurateCanary -> engine.beginSession(pending.config)
+                            }
+                            is TranscriptionPlan.LocalApiFallback -> when (tp.local) {
+                                is LocalAsrRoute.AutomaticFastConformer -> fastConformerEngine.beginSession(pending.config)
+                                is LocalAsrRoute.AccurateCanary -> engine.beginSession(pending.config)
+                            }
                         }
                         if (session.state.value !is SessionState.Listening) {
                             try { session.onListeningAgain() } catch (_: Exception) {}
                         }
-                        Log.i("SprichIME", "finalizePending ENDPOINT re-armed token=$token route=${pending.route} fieldStill=${fieldController.isCurrentSession(token.sessionId)}")
+                        Log.i("SprichIME", "finalizePending ENDPOINT re-armed token=$token plan=${pending.plan} fieldStill=${fieldController.isCurrentSession(token.sessionId)}")
                     }
                     finishedWithRetry = true
                 } catch (t: Throwable) {
@@ -1672,6 +1761,7 @@ class SprichIME : InputMethodService() {
                 Log.i("SprichIME", "finalizePending USER_STOP committed token=$token awaiting termination")
                 finishedWithRetry = false
             }
+            // Early return to skip legacy post-processing (handled above)
         } catch (e: CancellationException) {
             Log.i("SprichIME", "finalizePending cancelled token=${pending.token} reason=${pending.reason}")
             maybeClearActiveStateForToken(pending.token)
@@ -1719,10 +1809,10 @@ class SprichIME : InputMethodService() {
      * - multiple pendings queued, not lost via single endpointJob (Race 4)
      */
     private suspend fun finalizeOnce(token: UtteranceToken, reason: StopReason) {
-        // Build immutable snapshot — authoritative collector, copy PCM now before live buffer reused
+        // P1-25: reduce copies — snapshot() already returns isolated copy, no extra copyOf
         val snap: ShortArray = try {
-            val collectorSnap = utteranceAudio.snapshot().copyOf()
-            if (collectorSnap.isNotEmpty()) collectorSnap else frozenUtterancePcm?.copyOf() ?: engine.snapshotUtterancePcm().copyOf()
+            val collectorSnap = utteranceAudio.snapshot()
+            if (collectorSnap.isNotEmpty()) collectorSnap else frozenUtterancePcm ?: engine.snapshotUtterancePcm().copyOf()
         } catch (_: Exception) { ShortArray(0) }
         // Use frozen utterance descriptor if it matches this token (covers USER_STOP path); otherwise fallback to current plan.
         val captured = activeUtterance?.takeIf { it.token.utteranceId == token.utteranceId }
@@ -1756,6 +1846,49 @@ class SprichIME : InputMethodService() {
     private suspend fun finalizeUtterance(generation: Long) {
         val token = currentUtteranceToken ?: UtteranceToken(session.sessionId, generation, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
         finalizeOnce(token, StopReason.ENDPOINT)
+    }
+
+    // P0-7 helpers: commit without second parse — refined text never becomes command
+    private fun executeDeleteCommand(token: UtteranceToken, charsToDelete: Int): Boolean {
+        val ic = currentInputConnection ?: return false
+        if (token.generation != sessionGeneration.get()) { staleCallbackDrops++; return false }
+        if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) { staleCallbackDrops++; return false }
+        if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) { staleCallbackDrops++; return false }
+        if (!fieldController.isCurrentSession(token.sessionId)) { staleCallbackDrops++; return false }
+        val deleted = ic.deleteSurroundingText(charsToDelete, 0)
+        try { fieldController.commitUtterance(token.sessionId, token.utteranceId, ic, "") } catch (_: Exception) {}
+        try { composition.discardPartial(ic) } catch (_: Exception) { composition.finishIfActive(ic) }
+        return deleted
+    }
+
+    private fun commitFinalText(token: UtteranceToken, text: String, resolved: ResolvedUtteranceLanguage): Boolean {
+        val ic = currentInputConnection ?: return false
+        if (token.generation != sessionGeneration.get()) { staleCallbackDrops++; return false }
+        if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) { staleCallbackDrops++; return false }
+        if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) { staleCallbackDrops++; return false }
+        if (!fieldController.isCurrentSession(token.sessionId)) { staleCallbackDrops++; return false }
+        if (ic != token.capturedIc && token.capturedIc != null) {
+            if (ic.hashCode() != currentFieldTokenIcHash && currentFieldTokenIcHash != 0) {
+                Log.w("SprichIME", "commitFinalText IC mismatch token=$token")
+                staleCallbackDrops++
+                return false
+            }
+        }
+        // No second SpokenEditingParser parse — text is already prepared (P0-7)
+        // Final vocab apply already done, but ensure once more for safety (idempotent)
+        val finalText = try { vocabStore.apply(text) } catch (_: Exception) { text }
+        val result = try { fieldController.commitUtteranceTyped(token.sessionId, token.utteranceId, ic, finalText) } catch (_: Exception) { FieldSessionController.CommitResult.StaleSession }
+        return when (result) {
+            is FieldSessionController.CommitResult.Committed -> true
+            is FieldSessionController.CommitResult.EditorRejected -> {
+                Log.w("SprichIME", "commitFinalText EditorRejected, retrying direct commit token=$token")
+                composition.applyUpdate(ic, finalText, "", true)
+            }
+            is FieldSessionController.CommitResult.AlreadyFinalized -> { Log.w("SprichIME", "AlreadyFinalized token=$token — never direct-commit"); false }
+            is FieldSessionController.CommitResult.StaleSession -> { Log.w("SprichIME", "StaleSession token=$token — never direct-commit"); false }
+            is FieldSessionController.CommitResult.WrongField -> { Log.w("SprichIME", "WrongField token=$token — never direct-commit"); false }
+            is FieldSessionController.CommitResult.NoInputConnection -> { Log.w("SprichIME", "NoInputConnection token=$token — never direct-commit"); false }
+        }
     }
 
     private fun applyFinalText(token: UtteranceToken, text: String, language: Language = activeConfig.language): Boolean {
@@ -1868,9 +2001,12 @@ class SprichIME : InputMethodService() {
         startJob = null
         try { audio.stop() } catch (_: Exception) {}
 
-        // Determine if this stop should finalize current utterance (only USER_STOP with sufficient audio)
+        // P1-26: USER_STOP must use current utterance state and current collector PCM, not cumulative counter
+        val currentPcmSize = try { utteranceAudio.size() } catch (_: Exception) { 0 }
+        val hasActiveUtterance = activeUtterance != null && utteranceActive.get() && currentUtteranceToken != null
+        val notYetFinalized = currentUtteranceToken?.let { !finalizedUtterances.contains(it.utteranceId) } ?: true
         val shouldCommitAsFinalizing = when (reason) {
-            StopReason.USER_STOP -> wasActive && pipelinePushedSampleCount > 8000
+            StopReason.USER_STOP -> wasActive && hasActiveUtterance && currentPcmSize > 8000 && notYetFinalized
             StopReason.ENDPOINT -> false // endpoint path uses finalizeOnce directly, not stopDictation
             else -> false
         }
@@ -1881,7 +2017,7 @@ class SprichIME : InputMethodService() {
             // Do not cancel endpointJob yet — let finalizeOnce claim race be atomic.
             val token = currentUtteranceToken ?: UtteranceToken(session.sessionId, generationAtStop, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
             if (frozenUtterancePcm == null) {
-                frozenUtterancePcm = try { utteranceAudio.snapshot().copyOf() } catch (_: Exception) { ShortArray(0) }
+                frozenUtterancePcm = try { utteranceAudio.snapshot() } catch (_: Exception) { ShortArray(0) }
             }
             // Stop accepting new mic data already done via audio.stop(); endpoint will handle freeze.
             scope.launch {
@@ -2216,13 +2352,32 @@ class SprichIME : InputMethodService() {
         }
     }
 
+    // Strict HTTPS validation (P1-20) — production must require https, debug allows localhost http for MockWebServer
+    private fun isValidHttpsUrl(url: String): Boolean {
+        if (url.isBlank()) return false
+        return try {
+            val uri = java.net.URI(url.trim())
+            val scheme = uri.scheme?.lowercase() ?: return false
+            if (scheme != "https") {
+                if (scheme == "http") {
+                    val host = uri.host?.lowercase() ?: return false
+                    val isDebug = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
+                    if (!isDebug) return false
+                    if (host != "localhost" && host != "127.0.0.1" && host != "10.0.2.2") return false
+                } else return false
+            }
+            val host = uri.host ?: return false
+            if (host.isBlank()) return false
+            if (uri.userInfo != null) return false
+            true
+        } catch (_: Exception) { false }
+    }
+
     private fun buildRemoteSttConfig(): RemoteSttConfig? {
-        // Build immutable provider config snapshot from current prefs state
-        if (sttBaseUrlState.isBlank() || !sttBaseUrlState.startsWith("http")) return null
+        // P1-15: No runBlocking, no DataStore reads on audio hot path — use in-memory snapshots
+        if (!isValidHttpsUrl(sttBaseUrlState)) return null
         if (sttModelState.isBlank()) return null
-        // credentialRef is stored in prefs; actual secret loaded at call time via ApiSecretStore
-        // For legacy migration, if secret store empty but old DataStore contains plaintext apiKey, treat that as fallback credential (for tests)
-        val credRef = try { runBlocking { prefs.sttCredentialRef.first() } } catch (_: Exception) { "stt_default" }
+        val credRef = sttCredentialRefState.ifBlank { "stt_default" }
         val langPolicy = LanguagePolicy.fromSpeechLanguage(speechLanguage)
         return RemoteSttConfig(
             providerId = sttProviderId,
@@ -2237,10 +2392,10 @@ class SprichIME : InputMethodService() {
 
     private fun buildRefinementConfig(mode: RefinementMode): RefinementConfig? {
         if (mode == RefinementMode.OFF) return null
-        if (refinementBaseUrlState.isBlank() || refinementModelState.isBlank()) return null
-        val credRef = try { runBlocking { prefs.refinementCredentialRef.first() } } catch (_: Exception) { "refine_default" }
+        if (!isValidHttpsUrl(refinementBaseUrlState) || refinementModelState.isBlank()) return null
+        val credRef = refinementCredentialRefState.ifBlank { "refine_default" }
         return RefinementConfig(
-            providerId = sttProviderId, // reuse for simplicity or separate
+            providerId = refinementProviderIdState, // P0-14: use real refinement provider ID, not STT provider
             endpoint = refinementBaseUrlState,
             model = refinementModelState,
             mode = mode,
@@ -2279,12 +2434,13 @@ class SprichIME : InputMethodService() {
     private fun ensureTranscriptionCoordinator(): TranscriptionCoordinator {
         transcriptionCoordinator?.let { return it }
         if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
-        // Build provider map — shared HttpClient reused (Phase 37: reuse connections, connection pooling keep-alive)
+        // Build provider map — shared HttpClient reused (P0-18: pooled connections, keep-alive, HTTP/2)
         val providers = mutableMapOf<String, RemoteSttProvider>()
-        // OpenAI-compatible provider if configured
+        // OpenAI-compatible provider if configured — strict HTTPS validation
         try {
-            if (sttBaseUrlState.startsWith("http") && sttModelState.isNotBlank()) {
-                val client = sharedHttpClient
+            if (isValidHttpsUrl(sttBaseUrlState) && sttModelState.isNotBlank()) {
+                // Use sharedClient.newBuilder() to share ConnectionPool/Dispatcher where OkHttp semantics permit
+                val client = sharedHttpClient.newBuilder().build()
                 providers["openai-compatible"] = OpenAiCompatibleSttProvider(sttBaseUrlState, sttModelState, client)
                 providers[sttProviderId] = providers["openai-compatible"]!!
             }
@@ -2298,17 +2454,21 @@ class SprichIME : InputMethodService() {
         return coord
     }
 
+    // P0-13: Refinement must use frozen pending.plan.refinement.config only — never global mutable state nor permanently cached old provider
+    private fun providerForRefinementConfig(cfg: com.sprich.app.speech.refinement.RefinementConfig): TranscriptRefinementProvider? {
+        val secret = try { apiSecretStore.loadSecret(cfg.credentialRef) ?: "" } catch (_: Exception) { "" }
+        if (secret.isBlank()) return null
+        if (!isValidHttpsUrl(cfg.endpoint) || cfg.model.isBlank()) return null
+        // Create fresh provider sharing connection pool — cheap to recreate, avoids stale cached provider tied to old Settings
+        val client = sharedHttpClient.newBuilder().build()
+        return OpenAiCompatibleRefinementProvider(cfg.endpoint, cfg.model, secret, client)
+    }
+
+    @Deprecated("Use providerForRefinementConfig with immutable plan config")
     private fun ensureRefinementProvider(): TranscriptRefinementProvider? {
-        refinementProvider?.let { return it }
         if (refinementMode == RefinementMode.OFF) return null
         val cfg = buildRefinementConfig(refinementMode) ?: return null
-        val secret = try { apiSecretStore.loadSecret(cfg.credentialRef) ?: "" } catch (_: Exception) { "" }
-        // Legacy fallback: if secret empty, try old DataStore aiApiKey (for migration tests)
-        val effectiveSecret = if (secret.isNotBlank()) secret else try { runBlocking { prefs.aiApiKey.first() } } catch (_: Exception) { "" }
-        if (cfg.endpoint.isBlank() || cfg.model.isBlank() || effectiveSecret.isBlank()) return null
-        val provider = OpenAiCompatibleRefinementProvider(cfg.endpoint, cfg.model, effectiveSecret, sharedHttpClient)
-        refinementProvider = provider
-        return provider
+        return providerForRefinementConfig(cfg)
     }
 
     private fun isAutomaticReadyForTest(): Boolean {
@@ -2343,6 +2503,11 @@ class SprichIME : InputMethodService() {
     fun getCanaryLoadAttemptsForTest(): Long = canaryLoadAttempts.get()
     fun getFastLoadAttemptsForTest(): Long = fastLoadAttempts.get()
     fun getLidLoadAttemptsForTest(): Long = lidLoadAttempts.get()
+    fun getLocalNativeDecodeStartsForTest(): Long = localNativeDecodeStarts
+    fun getRemoteTranscriptionStartsForTest(): Long = remoteTranscriptionStarts
+    fun getRefinementStartsForTest(): Long = refinementStarts
+    fun getNativeDecodeStartsForTest(): Long = nativeDecodeStarts
+    fun getLastRemoteFailureForTest(): com.sprich.app.speech.remote.ApiFailure? = try { transcriptionCoordinator?.lastRemoteFailure } catch (_: Exception) { null }
     fun isAutomaticRouteForTest(): Boolean = determineRoute(speechLanguage) is LocalAsrRoute.AutomaticFastConformer
     fun getCurrentRouteForTest(): String = determineRoute(speechLanguage).toString()
     fun getUtteranceAudioCollectorForTest(): UtteranceAudioCollector = utteranceAudio

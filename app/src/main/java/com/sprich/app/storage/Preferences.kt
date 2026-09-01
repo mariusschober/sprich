@@ -124,6 +124,7 @@ class Preferences(context: Context) {
 
     suspend fun setSttMode(v: SttMode){ context.ds.edit{it[KEY_STT_MODE]= when(v){ SttMode.LOCAL->"local"; SttMode.FALLBACK->"fallback"; SttMode.REMOTE->"remote" }}}
     suspend fun setSttBaseUrl(v: String){ context.ds.edit{it[KEY_STT_BASE_URL]=v.trim().trimEnd('/')} }
+    @Deprecated("Legacy plaintext — use ApiSecretStore; migration-only")
     suspend fun setSttApiKey(v: String){ context.ds.edit{it[KEY_STT_API_KEY]=v.trim()} }
     suspend fun setSttModel(v: String){ context.ds.edit{it[KEY_STT_MODEL]=v.trim()} }
     suspend fun setTranscriptionMode(v: com.sprich.app.speech.TranscriptionMode){ context.ds.edit{it[KEY_TRANSCRIPTION_MODE]= v.name; it[KEY_STT_MODE]= com.sprich.app.speech.TranscriptionMode.toRaw(v)} }
@@ -132,6 +133,7 @@ class Preferences(context: Context) {
     suspend fun setSttDeadlineMs(v: Long){ context.ds.edit{it[KEY_STT_DEADLINE_MS]= v} }
     suspend fun setAiEnabled(v: Boolean){ context.ds.edit{it[KEY_AI_ENABLED]=v} }
     suspend fun setAiBaseUrl(v: String){ context.ds.edit{it[KEY_AI_BASE_URL]=v.trim().trimEnd('/')} }
+    @Deprecated("Legacy plaintext — use ApiSecretStore; migration-only")
     suspend fun setAiApiKey(v: String){ context.ds.edit{it[KEY_AI_API_KEY]=v.trim()} }
     suspend fun setAiModel(v: String){ context.ds.edit{it[KEY_AI_MODEL]=v.trim()} }
     suspend fun setRefinementMode(v: com.sprich.app.speech.refinement.RefinementMode){ context.ds.edit{it[KEY_REFINEMENT_MODE]= v.name; it[KEY_AI_ENABLED]= (v != com.sprich.app.speech.refinement.RefinementMode.OFF)} }
@@ -144,6 +146,7 @@ class Preferences(context: Context) {
     suspend fun setDebugWavCapture(v: Boolean){ context.ds.edit{it[KEY_DEBUG_WAV_CAPTURE]=v} }
     suspend fun setDebugTranscriptTrace(v: Boolean){ context.ds.edit{it[KEY_DEBUG_TRANSCRIPT_TRACE]=v} }
 
+    suspend fun clearLegacyApiKeys(){ context.ds.edit{ it.remove(KEY_STT_API_KEY); it.remove(KEY_AI_API_KEY) } }
     suspend fun setOnboardingDone(v: Boolean){ context.ds.edit{it[KEY_ONBOARDING_DONE]=v} }
     suspend fun setInstantMode(v: Boolean){ context.ds.edit{it[KEY_INSTANT_MODE]=v} }
     suspend fun setLanguage(v: Language){ context.ds.edit{it[KEY_LANGUAGE]=v.code} }

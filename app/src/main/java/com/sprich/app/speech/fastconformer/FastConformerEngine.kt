@@ -139,19 +139,21 @@ class FastConformerEngine(
         nativeDecodeStarts++; nativeDecodeCurrent++; if (nativeDecodeCurrent > nativeDecodeMaxConcurrency) nativeDecodeMaxConcurrency = nativeDecodeCurrent
         try {
             val rec = recognizer ?: return ""
-            return try {
+            var stream: Any? = null
+            try {
                 val floats = FloatArray(pcm.size) { pcm[it]/32768f }
                 val streamClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineStream")
-                val stream = rec.javaClass.getMethod("createStream").invoke(rec)
+                stream = rec.javaClass.getMethod("createStream").invoke(rec)
                 stream.javaClass.getMethod("acceptWaveform", FloatArray::class.java, Int::class.javaPrimitiveType).invoke(stream, floats, 16000)
                 rec.javaClass.getMethod("decode", streamClass).invoke(rec, stream)
                 val result = rec.javaClass.getMethod("getResult", streamClass).invoke(rec, stream)
-                try { stream.javaClass.getMethod("release").invoke(stream) } catch (_: Exception) {}
                 val txt = try { result.javaClass.getMethod("getText").invoke(result) as String } catch (_: Throwable) { result.javaClass.getDeclaredField("text").apply { isAccessible = true }.get(result) as String }
-                txt.trim()
+                return txt.trim()
             } catch (e: Throwable) {
                 Log.w("FastConformer", "decode error", e)
-                ""
+                return ""
+            } finally {
+                if (stream != null) try { stream.javaClass.getMethod("release").invoke(stream) } catch (_: Exception) {}
             }
         } finally { nativeDecodeCurrent-- }
     }

@@ -46,10 +46,10 @@
             </intent-filter>
         </activity>
 
-        <!-- Diagnostics / Benchmark deep link (hidden) -->
+        <!-- Diagnostics / Benchmark — not externally exported (P1-35) -->
         <activity
             android:name=".ui.benchmark.BenchmarkActivity"
-            android:exported="true"
+            android:exported="false"
             android:theme="@style/Theme.Sprich" />
 
         <!-- Primary IME -->
