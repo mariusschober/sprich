@@ -1,4 +1,4 @@
-name: Codex source snapshot
+name: Codex production review CI
 
 on:
   push:
@@ -9,36 +9,48 @@ permissions:
   contents: read
 
 jobs:
-  snapshot:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Check out exact branch state
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Fetch repository refs
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Show repository state
         run: |
-          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
           git status --short --branch
           git rev-parse HEAD
-      - name: Create repository artifacts
-        run: |
-          tar --exclude=.git -czf "$RUNNER_TEMP/sprich-source.tgz" .
-          git bundle create "$RUNNER_TEMP/sprich.bundle" --all
-          git bundle verify "$RUNNER_TEMP/sprich.bundle"
-      - name: Upload source archive
+          java -version
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+      - name: Android lint
+        run: ./gradlew :app:lintDebug --stacktrace
+      - name: Assemble debug and instrumentation APKs
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
+      - name: Assemble release
+        run: ./gradlew :app:assembleRelease --stacktrace
+      - name: Verify model manifest
+        run: ./scripts/verify-models.sh
+      - name: Inspect APK
+        run: ./scripts/check-apk.sh
+      - name: Archive reports and APKs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sprich-source
-          path: ${{ runner.temp }}/sprich-source.tgz
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-      - name: Upload git bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: sprich-git-bundle
-          path: ${{ runner.temp }}/sprich.bundle
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+          name: review-ci-output
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+            app/build/reports/lint-results-debug.html
+            app/build/outputs/apk/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 3
