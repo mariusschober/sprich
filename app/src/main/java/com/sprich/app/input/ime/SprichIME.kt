@@ -98,12 +98,15 @@ class SprichIME : InputMethodService() {
         val reason: StopReason,
         val endpointTimestampNanos: Long,
     )
-    // Single authoritative long-lived finalization actor — exactly one consumer, FIFO, no worker start/stop race
-    private val pendingChannel = Channel<PendingUtterance>(capacity = Channel.UNLIMITED)
+    // Single authoritative long-lived finalization actor — exactly one consumer, FIFO, no worker start/stop race, genuinely bounded.
+    // Bounded capacity 4 ensures PCM retention bounded (max ~4 utterances). Overload is explicit via rejected/suppressed counters, not silent loss.
+    private val maxPendingQueueDepth = 4
+    private val pendingChannel = Channel<PendingUtterance>(capacity = maxPendingQueueDepth)
     private val queueDepth = AtomicInteger(0)
     private val pendingQueuePeak = AtomicLong(0)
     private val finalizationQueueOverflows = AtomicLong(0)
-    private val maxPendingQueueDepth = 4
+    private val catchingUpSuppressedOnsets = AtomicLong(0)
+    private val catchingUpRejectedOnsets = AtomicLong(0)
     @Volatile var catchingUp = false
         private set
     private var finalizationActorJob: Job? = null
@@ -813,6 +816,11 @@ class SprichIME : InputMethodService() {
                         val activeField = currentFieldId
                         if (activeField == null) { staleCallbackDrops++; return@collect }
                         if (update.isFinal) return@collect // finalizeOnce owns final commit; prevents duplication loop
+                        // Backpressure: while catching up, degrade speculative partials first to preserve final path CPU and memory
+                        if (catchingUp) {
+                            Log.i("SprichIME", "partial degraded due to CatchingUp depth=${queueDepth.get()} suppressed=${catchingUpSuppressedOnsets.get()}")
+                            return@collect
+                        }
                         // Phase 3: Auto live partial semantics — suppress wrong-language Canary partials
                         // Canary has no native Auto (decodes Auto as en), so German Auto speech would show English partial.
                         // Wrong-language partials are worse than no partials. For Auto, suppress field partials while language unresolved.
@@ -961,9 +969,12 @@ class SprichIME : InputMethodService() {
             }
 
             if (catchingUp && result.state == Vad.State.SPEECH) {
-                Log.w("SprichIME", "CatchingUp suppressing new utterance onset depth=${queueDepth.get()} max=$maxPendingQueueDepth")
-                // Do not start new utterance until queue recovers; keep utteranceActive false
-                // Also degrade speculative partial work: we could cancel partial job, but at least we don't start new capture
+                catchingUpSuppressedOnsets.incrementAndGet()
+                Log.w("SprichIME", "CatchingUp suppressing new utterance onset depth=${queueDepth.get()} max=$maxPendingQueueDepth suppressed=${catchingUpSuppressedOnsets.get()} rejected=${catchingUpRejectedOnsets.get()}")
+                updateCatchUpUi(true)
+                // Explicit backpressure: do not start new utterance until queue recovers; count as suppressed onset, surface Catching up UI.
+                // Degrade speculative partials while catching up — Finals only.
+                return
             }
             if (
                 result.state == Vad.State.SPEECH &&
@@ -1086,13 +1097,16 @@ class SprichIME : InputMethodService() {
                 } finally {
                     val newDepth = queueDepth.decrementAndGet()
                     lastQueueDepth = newDepth
-                    // Exit CatchingUp when recovered
+                    // Exit CatchingUp when recovered — must clear UI as well
                     if (catchingUp && newDepth < maxPendingQueueDepth - 1) {
                         catchingUp = false
-                        Log.i("SprichIME", "CatchingUp recovered depth=$newDepth")
+                        Log.i("SprichIME", "CatchingUp recovered depth=$newDepth suppressed=${catchingUpSuppressedOnsets.get()} rejected=${catchingUpRejectedOnsets.get()}")
+                        updateCatchUpUi(false)
                     }
                     if (newDepth == 0) {
                         endpointPending.set(false)
+                        // Ensure UI cleared when fully drained
+                        if (!catchingUp) updateCatchUpUi(false)
                     }
                     Log.i("SprichIME", "actor processed pending=${pending.token.utteranceId} depthBefore=$depthBefore newDepth=$newDepth catchingUp=$catchingUp")
                 }
@@ -1102,34 +1116,73 @@ class SprichIME : InputMethodService() {
     }
 
     private fun enqueuePending(pending: PendingUtterance) {
-        // Enforce genuine bound: at capacity, preserve every frozen utterance, degrade partials, enter CatchingUp
         val depthBefore = queueDepth.get()
         if (depthBefore >= maxPendingQueueDepth) {
+            // Genuinely bounded: reject new frozen utterance rather than growing memory unbounded. Preserve already queued FIFO, reject newest, count explicitly.
             finalizationQueueOverflows.incrementAndGet()
+            catchingUpRejectedOnsets.incrementAndGet()
             if (!catchingUp) {
                 catchingUp = true
-                Log.w("SprichIME", "finalization queue at capacity depth=$depthBefore pending=${pending.token.utteranceId} peak=${pendingQueuePeak.get()} overflows=${finalizationQueueOverflows.get()} — entering CatchingUp, degrading partials, preventing new utterances until depth recovers")
+                Log.w("SprichIME", "finalization queue at capacity depth=$depthBefore pending=${pending.token.utteranceId} peak=${pendingQueuePeak.get()} overflows=${finalizationQueueOverflows.get()} rejected=${catchingUpRejectedOnsets.get()} — entering CatchingUp, rejecting new utterance (bounded)")
+                updateCatchUpUi(true)
             } else {
-                Log.w("SprichIME", "queue still at capacity depth=$depthBefore pending=${pending.token.utteranceId} overflows=${finalizationQueueOverflows.get()}")
+                Log.w("SprichIME", "queue at capacity depth=$depthBefore pending=${pending.token.utteranceId} overflows=${finalizationQueueOverflows.get()} rejected=${catchingUpRejectedOnsets.get()} — rejecting (bounded)")
+                updateCatchUpUi(true)
             }
-            // Degrade speculative partial work first: we could cancel partial job, but we at least log and keep final.
-            // Do NOT discard pending — speech must never be silently discarded.
+            // Bounded memory, explicit rejection counted. Do not pretend speech was captured.
+            return
+        }
+        // Proactive backpressure one before capacity: enter CatchingUp early to degrade partials and prevent new onset
+        if (depthBefore >= maxPendingQueueDepth - 1 && !catchingUp) {
+            catchingUp = true
+            Log.w("SprichIME", "finalization queue near capacity depth=$depthBefore pending=${pending.token.utteranceId} — entering CatchingUp early, degrading partials")
+            updateCatchUpUi(true)
         }
         val newDepth = queueDepth.incrementAndGet()
         lastQueueDepth = newDepth
         if (newDepth.toLong() > pendingQueuePeak.get()) pendingQueuePeak.set(newDepth.toLong())
         Log.i("SprichIME", "enqueuePending token=${pending.token} pcm=${pending.pcm.size} queueDepth=$newDepth peak=${pendingQueuePeak.get()} reason=${pending.reason} catchingUp=$catchingUp")
-        // UNLIMITED channel guarantees no suspend and no丢弃; backpressure is via catchingUp flag, not channel suspension (avoids unbounded suspended coroutines holding PCM)
+        // Bounded channel (capacity=4) — trySend without suspension avoids unbounded PCM retention via parked coroutines
         val result = pendingChannel.trySend(pending)
         if (!result.isSuccess) {
-            // Should not happen with UNLIMITED, but handle for bounded case
-            Log.e("SprichIME", "pendingChannel trySend failed depth=$newDepth pending=${pending.token.utteranceId} result=$result")
+            // Race where two endpoints concurrent exceed bound — reject explicitly
+            Log.e("SprichIME", "pendingChannel trySend failed depth=$newDepth pending=${pending.token.utteranceId} result=$result — rejecting (bounded race)")
             queueDepth.decrementAndGet()
-            // As last resort, preserve frozen utterance by re-enqueueing via direct channel send in separate coroutine (bounded but must not lose)
-            scope.launch { pendingChannel.send(pending) }
+            catchingUpRejectedOnsets.incrementAndGet()
+            finalizationQueueOverflows.incrementAndGet()
+            updateCatchUpUi(true)
+            return
         }
         endpointPending.set(true)
     }
+
+    private fun updateCatchUpUi(isCatchingUp: Boolean) {
+        // Surface explicit Catching Up state — truthful, not silent drop. Shows "Catching up…" instead of pretending all speech captured.
+        scope.launch(Dispatchers.Main) {
+            try {
+                if (isCatchingUp) {
+                    statusText?.text = "Catching up…"
+                    (statusText?.tag as? TextView)?.text = "Please pause briefly — processing ${queueDepth.get()} utterances"
+                    Log.w("SprichIME", "UI Catching up — suppressed=${catchingUpSuppressedOnsets.get()} rejected=${catchingUpRejectedOnsets.get()} depth=${queueDepth.get()}")
+                } else {
+                    // Recovery: restore listening hint if still active, otherwise normal idle will be set by state collector
+                    if (session.state.value is SessionState.Listening || session.state.value is com.sprich.app.input.lifecycle.SessionState.Speech || session.state.value is com.sprich.app.input.lifecycle.SessionState.Finalizing) {
+                        statusText?.text = "Listening…"
+                        (statusText?.tag as? TextView)?.text = "Words will appear at the cursor"
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    // Visibility for tests and diagnostics — truthful backpressure instrumentation
+    fun getCatchingUpSuppressedOnsets(): Long = catchingUpSuppressedOnsets.get()
+    fun getCatchingUpRejectedOnsets(): Long = catchingUpRejectedOnsets.get()
+    fun getQueueDepthForTest(): Int = queueDepth.get()
+    fun getPendingQueuePeakForTest(): Long = pendingQueuePeak.get()
+    fun getQueueOverflowsForTest(): Long = finalizationQueueOverflows.get()
+    fun getMaxQueueDepthForTest(): Int = maxPendingQueueDepth
+    fun isCatchingUpForTest(): Boolean = catchingUp
 
     @Deprecated("Use pendingChannel actor") private fun ensureFinalizationWorkerRunning() {
         // No-op: actor is long-lived, started once in onCreate. Kept for backward compat.
