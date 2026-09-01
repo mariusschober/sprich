@@ -1,37 +1,44 @@
-# KNOWN LIMITATIONS — reliability build
+# KNOWN LIMITATIONS — reliability build (2026-09-01)
 
 ## Release scope
 
-- Fast Whisper Base Q5_1 is the only supported speech engine.
-- The APK is arm64-v8a only.
-- Canary is disabled and its runtime is not packaged.
-- Nemotron is not implemented and its former dummy native library is removed.
-- The current artifact is a debug build, not a signed Play release.
+- Primary engine: Canary 180M Flash INT8 (`sherpa-onnx` INT8) via `files/canary` device-side download, not bundled.
+- The APK is arm64-v8a only, includes `libonnxruntime.so` + `libsherpa-onnx-*.so` (16KB aligned).
+- Whisper Q5_1 deleted per user request; `fastEngine` alias points to Canary for benchmark compatibility.
+- Nemotron not implemented; former dummy native library removed.
+- Remote STT (`speech/remote`) and AI polish (`ai/GrammarFixer`) exist as opt-in OpenAI-compatible endpoints (Grok x.ai, Groq, fal Wizper, etc.) but default to `local` (no network).
+- The current artifact is a debug build, not yet a signed Play release.
 
 ## Validation still required on a physical phone
 
 - End-to-end IME dictation using the real microphone and a normal text field.
-- Immediate speech, quiet speech, pauses, repeated utterances, tap-to-stop, and field/app switching.
-- Password-field guard and microphone permission revoke/regrant.
-- Chrome/WebView, Compose, and messaging-editor interoperability.
-- Airplane mode plus a network-stat audit.
-- Five- and fifteen-minute thermal, memory, and latency runs on a representative mid-range arm64 device.
-
-The software ARM emulator is a correctness gate only. Its inference time is not evidence of phone performance.
+- Immediate speech first-phoneme retention (99/100), whisper vs normal voice, far-field/car/café/music/TV/fan/Bluetooth/wired headset.
+- Pauses, corrections (“actually”), 30-second utterance, punctuation/names/numbers, one-word, immediate-speech-after-focus.
+- Password/numeric/non-editable/secure-app field guard, WebView/contenteditable, Compose TextField, Chrome/Gmail/WhatsApp-like editors.
+- Permission denied/revoked, incoming call, audio focus conflict, screen off/on, rotation, app/service killed, model load failure, low memory/storage, offline, rapid field switching (1,000 randomized sequences already unit-tested), repeated start/stop, keyboard change.
+- Airplane mode plus a network-stat audit (`local` mode must show zero).
+- Five- and fifteen-minute thermal, memory, and latency runs on representative low/mid/high Android hardware with P50/P95, RTF, peak RAM, battery.
 
 ## Product limitations
 
-- Energy VAD is deliberately simple; thresholds may still need physical-device tuning for very noisy rooms or unusually quiet microphones.
-- Fast is not a true streaming model. Partial results are speculative; committed text is finalized after the endpoint silence and a final decode.
-- Cursor movement/manual typing while a composing hypothesis is visible still needs cross-editor physical testing; editor behavior is not uniform.
-- Personal vocabulary management and “Learn my corrections” remain incomplete UI/product features.
-- Fast-model and local-diagnostic backup exclusions need an explicit release-policy review before store distribution.
+- Energy VAD is simple; thresholds (onset 45ms, hesitation 400ms, endpoint 650ms) tuned for normal/whisper but may need device-specific tuning for very noisy rooms or unusually quiet mics.
+- Canary is non-streaming: partials are windowed (350ms speculative decode) and stabilized via LCP N=2; true streaming only if Nemotron returns with real RNNT.
+- Cursor movement/manual typing while composing is handled via `finishIfActive` but still needs cross-editor physical testing.
+- Personal vocabulary management and “Learn my corrections” remain incomplete UI features.
+- Model diagnostics backup exclusions need an explicit release-policy review before store distribution.
 - Spoken deletion uses bounded character deletion rather than semantic sentence boundaries.
-- The accessibility companion remains experimental. The primary supported integration is the Sprich IME.
 
 ## What is intentionally no longer claimed
 
-- No mock or placeholder inference.
-- No working Canary or Nemotron path.
-- No measured budget-phone latency, thermal, or battery result until a physical run is recorded.
+- No mock or placeholder inference (Canary mock only when sherpa not available in emulation).
+- No working Nemotron path.
+- No measured budget-phone latency until a physical run is recorded (budgets defined per tier in ARCHITECTURE.md, P95 reported honestly).
 - No release-readiness claim based only on unit tests or emulator transcription.
+
+## Hardware-tier latency budgets (defined, to be measured physically)
+
+- **Mid (6GB RAM, Snapdragon 730 tier)**: focus→capturing p95 <150ms, endpoint→final p95 <800ms, RTF <0.5, first phoneme loss <1/100.
+- **High (8GB+, flagship SoC)**: focus→capturing p95 <100ms, endpoint→final p95 <500ms, RTF <0.3.
+- **Low (3GB RAM)**: focus→capturing p95 <250ms, endpoint→final p95 <1200ms (streaming not recommended).
+
+Benchmark screen (7× tap version) reports load time, inference time, RTF, peak RSS, backend, and exports `files/benchmark/export.json` locally.

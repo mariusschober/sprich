@@ -26,7 +26,9 @@ import com.sprich.app.input.lifecycle.DictationSession
 import com.sprich.app.input.lifecycle.SessionState
 import com.sprich.app.speech.api.EngineType
 import com.sprich.app.speech.api.Language
+import com.sprich.app.speech.api.SpeechLanguage
 import com.sprich.app.speech.api.SpeechSessionConfig
+import com.sprich.app.speech.api.TranscriptionTask
 import com.sprich.app.SprichApp
 import com.sprich.app.ai.GrammarFixer
 import com.sprich.app.core.perf.ThermalMonitor
@@ -67,6 +69,7 @@ class SprichIME : InputMethodService() {
     private var pipelineStartElapsed = 0L
     private var instantMode: Boolean = false
     private var language: Language = Language.AUTO
+    private var speechLanguage: SpeechLanguage = SpeechLanguage.Auto
     private var commandsEnabled: Boolean = true
     private var isPasswordField: Boolean = false
     private lateinit var vocabRepo: com.sprich.app.vocab.VocabRepository
@@ -134,6 +137,9 @@ class SprichIME : InputMethodService() {
             }
             scope.launch {
                 try { prefs.language.collect { language = it } } catch (e: Exception) { Log.w("SprichIME", "language collect fail", e) }
+            }
+            scope.launch {
+                try { prefs.speechLanguage.collect { speechLanguage = it } } catch (e: Exception) { Log.w("SprichIME", "speechLanguage collect fail", e) }
             }
             scope.launch {
                 try { prefs.commands.collect { commandsEnabled = it } } catch (e: Exception) { Log.w("SprichIME", "commands collect fail", e) }
@@ -632,13 +638,17 @@ class SprichIME : InputMethodService() {
             utteranceActive.set(false)
             endpointPending.set(false)
             lastPartialText = ""
-            Log.i("SprichIME", "vad reset ${vad.calibrationInfo()} activeConfig=$activeConfig prefsLang=$language")
+            Log.i("SprichIME", "vad reset ${vad.calibrationInfo()} activeConfig=$activeConfig prefsLang=$language speechLang=$speechLanguage")
             // Respect user language preference; Canary handles EN/DE/ES/FR, AUTO falls back to EN inside engine.
+            // Resolved once per session and observable in diagnostics; Locale.getDefault() is never used here.
             activeConfig = SpeechSessionConfig(
                 language = language,
+                speechLanguage = speechLanguage,
+                task = TranscriptionTask.TRANSCRIBE,
                 enablePunctuation = true,
                 enableCommands = commandsEnabled,
             )
+            Log.i("SprichIME", "session language resolved=${activeConfig.resolvedLanguageTag()} task=${activeConfig.resolvedTask()}")
 
             engine.cancelSession()
             try {
@@ -934,8 +944,10 @@ class SprichIME : InputMethodService() {
 
     private fun applyFinalText(text: String): Boolean {
         val inputConnection = currentInputConnection ?: return false
+        // Use activeConfig language (resolved once per session) — never Locale.getDefault()
+        val langForParser = activeConfig.language
         val parsed = try {
-            SpokenEditingParser.parse(text, language, commandsEnabled)
+            SpokenEditingParser.parse(text, langForParser, commandsEnabled)
         } catch (_: Exception) {
             SpokenEditingParser.EditResult(text, false)
         }
@@ -1043,10 +1055,10 @@ class SprichIME : InputMethodService() {
     }
 
     private fun writeDiagnostics(event: String) {
-        val text = Diagnostics.collect(this, engine.engineId) +
+        val text = Diagnostics.collect(this, engine.engineId, languageTag = activeConfig.resolvedLanguageTag(), task = activeConfig.resolvedTask().name, sessionId = session.sessionId) +
             event + "\n" +
             latency.report() + "\n" +
-            "audioActive=${audio.isActive()} vad=${vad.currentState()} engineLoaded=${engine.isLoaded()}\n"
+            "audioActive=${audio.isActive()} vad=${vad.currentState()} engineLoaded=${engine.isLoaded()} sessionId=${session.sessionId}\n"
         scope.launch(Dispatchers.IO) {
             try { Diagnostics.write(this@SprichIME, text) } catch (_: Exception) {}
         }

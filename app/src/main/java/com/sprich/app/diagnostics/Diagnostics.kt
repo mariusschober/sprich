@@ -7,13 +7,16 @@ import android.os.Build
 import java.io.File
 
 object Diagnostics {
-    fun collect(context: Context, engineId: String, rtf: Double? = null): String {
+    fun collect(context: Context, engineId: String, rtf: Double? = null, languageTag: String? = null, task: String? = null, sessionId: Long? = null): String {
         return buildString {
-            appendLine("Sprich diagnostics (local only, no transcript)")
+            appendLine("Sprich diagnostics (local only, no transcript, no raw audio)")
             appendLine("timestamp=${System.currentTimeMillis()}")
             appendLine("device=${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}")
             appendLine("engine=$engineId")
+            if (languageTag != null) appendLine("resolvedLanguage=$languageTag")
+            if (task != null) appendLine("task=$task")
+            if (sessionId != null) appendLine("sessionId=$sessionId")
             if (rtf != null) appendLine("rtf=$rtf")
             appendLine("availableMem=${Runtime.getRuntime().freeMemory()}")
             appendLine("totalMem=${Runtime.getRuntime().totalMemory()}")

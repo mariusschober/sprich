@@ -32,13 +32,19 @@ See [PLAN.md](PLAN.md) for full product thesis and latency targets.
 
 ## Architecture
 
-- `core/audio` — 16k mono PCM, ring buffer 4s, zero-first-phoneme clipping, timestamps monotonic.
+- `core/audio` — 16k mono PCM, ring buffer 30s, circular pre-roll 250ms (zero first-phoneme loss), linear resampler (48k→16k), RMS/clipping telemetry, timestamps monotonic.
 - `core/vad` — tiny energy VAD, calibrated noise floor, configurable onset/hesitation/endpoint.
 - `speech/api` — `SpeechEngine` contract and language/session configuration.
 - `speech/whisper` — one process-wide whisper.cpp context, verified Q5_1 model, serialized JNI, cancellable inference.
-- `speech/canary` / `speech/nemotron` — dormant prototypes; not packaged, selectable, or supported in this build.
-- `input/ime` — SprichIME, Instant/Tap modes, password guard, explicit preparing/error states.
-- `input/composition` — `setComposingText`/`commitText` delta with single-final fallback for editors that reject composing spans.
+- `speech/canary` — Canary 180M Flash INT8 via sherpa-onnx INT8 (primary, device-side `files/canary`, src==tgt transcribe only)
+- `speech/remote` — OpenAI-compatible backup STT (`/audio/transcriptions`, Grok/Groq/Wizper) — opt-in only, isolated, `stt_mode=local` by default
+- `speech/nemotron` — dormant prototype; not packaged, selectable, or supported in this build.
+- `input/ime` — SprichIME, Instant/Tap modes, password guard, explicit preparing/error states, `sessionGeneration` + `DictationSession.sessionId` ownership (late callbacks discarded)
+- `input/composition` — `setComposingText`/`commitText` delta with single-final fallback for editors that reject composing spans
+- `input/lifecycle` — `DictationSession` reducer (Idle→Preparing→Listening→Speech→Finalizing→Inserting→Ending→Idle, Suspended/Paused/Error) + `FieldSessionController` cross-field guard
+- `input/commands` — deterministic EN/DE/ES punctuation & delete, no LLM
+- `core/audio/Resampler` + `AudioDiagnostics` — tested resampler + developer-only WAV capture
+- `speech/api` — `TranscriptionTask.TRANSCRIBE` typed, `SpeechLanguage.Auto|Fixed(BCP-47)` typed, persisted, observable in diagnostics
 - `input/commands` — deterministic EN/DE/ES punctuation & delete, no LLM.
 - Fast model install — exact byte count + SHA-256, staged copy, atomic replacement.
 - `vocab` — local trie for names, deterministic post-recognition.
@@ -49,18 +55,18 @@ Full: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 | Model | Size | Delivery | Runtime | Status |
 |-------|------|----------|---------|--------|
-| **Fast** Whisper Base Q5_1 multilingual | 59,707,625 bytes | bundled | whisper.cpp NDK | Supported |
-| **Accurate** Canary 180M Flash INT8 | — | not shipped | none packaged | Disabled |
-| **Streaming** Nemotron 0.6B | — | not shipped | not implemented | Disabled |
+| **Accurate** Canary 180M Flash INT8 | 147 MB | device-side `files/canary` | sherpa-onnx INT8 NDK (CPU, 2 threads) | Supported (primary) |
+| **Fast** Whisper Base Q5_1 multilingual | 59,707,625 bytes | formerly bundled | whisper.cpp (deleted 2026-08-24) | Removed — `fastEngine` aliases Canary |
+| **Streaming** Nemotron 0.6B Q4_K | — | not shipped | not implemented | Disabled |
 
-The reliability build deliberately exposes only Fast. A model cannot return to Settings until its native lifecycle, cancellation, memory use, and real-audio instrumentation gates pass. See [docs/MODELS.md](docs/MODELS.md).
+The reliability build now exposes Accurate (Canary) as primary; Fast (Whisper) was deleted per user request and aliases Canary for benchmark compatibility. A model cannot return to Settings until its native lifecycle, cancellation, memory use, and real-audio instrumentation gates pass. See [docs/MODELS.md](docs/MODELS.md).
 
 ## Privacy
 
-- No cloud ASR, no telemetry, no analytics SDK, no crash SDK, no AD_ID.
-- Audio in RAM ring buffer, never written to storage, discarded on session end.
-- `speech:*` never imports `okhttp`/`java.net` (lint-enforced).
-- The reliability build requests no Internet permission and packages no HTTP client dependency.
+- No cloud ASR by default, no telemetry, no analytics SDK, no crash SDK, no AD_ID.
+- Audio in RAM ring buffer (30s, circular pre-roll), never written to storage by default, discarded on session end; diagnostic WAV capture is developer-only and disabled by default.
+- `speech:*` except `speech/remote` never imports `okhttp`/`java.net` (lint-enforced via `check-apk.sh`).
+- The remote STT/AI polish path (`stt_mode=local` by default) is opt-in only and isolated in `speech/remote` / `ai`; normal dictation is offline and airplane mode works identically.
 
 See [docs/PRIVACY.md](docs/PRIVACY.md).
 

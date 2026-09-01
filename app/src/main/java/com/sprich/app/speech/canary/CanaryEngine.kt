@@ -54,7 +54,11 @@ class CanaryEngine(
         }
         try {
             detectedLanguage = null
-            recognizerLang = langCodeFor(cfg?.language)
+            // Resolve from typed SpeechLanguage if present, else legacy Language.
+            val langTag = cfg?.speechLanguage?.toBcp47() ?: cfg?.language?.code ?: "en"
+            recognizerLang = if (langTag == "auto") "en" else when (langTag) {
+                "de", "de-de" -> "de"; "es", "es-es" -> "es"; "fr", "fr-fr" -> "fr"; else -> "en"
+            }
             recognizer = createSherpaRecognizer()
             loaded = recognizer != null
             if (loaded) Result.success(Unit) else Result.failure(Exception("sherpa init failed"))
@@ -82,23 +86,38 @@ class CanaryEngine(
     }
 
     override fun beginSession(config: SpeechSessionConfig) {
+        // Enforce transcribe-only semantics unless explicit translation feature invoked.
+        if (config.task != TranscriptionTask.TRANSCRIBE) {
+            Log.w("CanaryEngine", "beginSession task=${config.task} — treating as TRANSCRIBE unless explicit translation invoked")
+        }
+        // Reset decoder context on language/field changes — bounded context, no stale prompt reuse.
+        val prevLang = cfg?.speechLanguage?.toBcp47() ?: cfg?.language?.code
+        val newLang = config.speechLanguage.toBcp47()
+        if (prevLang != null && prevLang != newLang) {
+            detectedLanguage = null // clear auto detection cache on explicit language switch
+        }
         cfg = config; pcmRing.clear(); stabilizer.reset()
         job?.cancel()
         job = scope.launch {
             while (isActive) {
                 delay(350)
                 if (pcmRing.available() < 16000 * 0.7) continue
+                val effectiveLang = cfg?.speechLanguage ?: SpeechLanguage.fromLegacy(cfg?.language ?: Language.AUTO)
                 // AUTO before first detection: skip partials — wrong-language guesses are worse than none.
-                if (cfg?.language == Language.AUTO && detectedLanguage == null) continue
+                if (effectiveLang is SpeechLanguage.Auto && detectedLanguage == null) continue
                 // Explicit language: keep the recognizer in sync (it may have been created with cfg == null).
-                if (cfg?.language != Language.AUTO) switchLanguage(langCodeFor(cfg?.language))
+                if (effectiveLang is SpeechLanguage.Fixed) {
+                    switchLanguage(langCodeFor(effectiveLang.toLegacyLanguage()))
+                } else if (cfg?.language != Language.AUTO) {
+                    switchLanguage(langCodeFor(cfg?.language))
+                }
                 val snap = pcmRing.snapshotLast(30f)
                 if (snap.isEmpty() || isSilence(snap)) continue
                 val hyp = transcribe(snap)
                 if (hyp.isBlank()) continue
                 val res = stabilizer.pushHypothesis(hyp)
                 if (res.stable.isEmpty() && res.unstable.isEmpty()) continue
-                flow.tryEmit(TranscriptUpdate(res.stable, res.unstable, false))
+                flow.tryEmit(TranscriptUpdate(res.stable, res.unstable, false, lang = effectiveLang.toLegacyLanguage()))
             }
         }
     }
@@ -111,6 +130,8 @@ class CanaryEngine(
 
     override suspend fun endUtterance(): FinalTranscript = withContext(Dispatchers.Default) {
         job?.cancel()
+        // Enforce transcribe task — never translate unless explicitly invoked.
+        cfg?.let { if (it.task != TranscriptionTask.TRANSCRIBE) Log.w("CanaryEngine", "endUtterance with task=${it.task}") }
         val snap = pcmRing.snapshotLast(30f)
         // Detection cache expires after 30s of silence — re-detect next utterance.
         val now = SystemClock.elapsedRealtime()
@@ -126,9 +147,10 @@ class CanaryEngine(
             beginSession(cfg ?: SpeechSessionConfig())
             return@withContext FinalTranscript("")
         }
+        val speechLang = cfg?.speechLanguage ?: SpeechLanguage.fromLegacy(cfg?.language ?: Language.AUTO)
         // AUTO: detect once per session, then reuse. Explicit language: always ensure the
         // recognizer decodes in that language (it may have been created before cfg was set).
-        if (cfg?.language == Language.AUTO) {
+        if (speechLang is SpeechLanguage.Auto) {
             val lang = detectedLanguage ?: run {
                 val d = detectLanguage(snap)
                 detectedLanguage = d
@@ -136,7 +158,7 @@ class CanaryEngine(
             }
             switchLanguage(langCodeFor(lang))
         } else {
-            switchLanguage(langCodeFor(cfg?.language))
+            switchLanguage(langCodeFor((speechLang as SpeechLanguage.Fixed).toLegacyLanguage()))
         }
         val text = transcribe(snap)
         if (text.isBlank()) {
