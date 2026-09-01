@@ -97,8 +97,17 @@ class WhisperLidEngine(
                 try { lidConfigClass.getDeclaredField("provider").apply { isAccessible = true; set(lidConfig, "cpu") } } catch (_: Exception) {}
 
                 val slidClass = Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentification")
-                val ctor = slidClass.getConstructor(lidConfigClass)
-                lid = ctor.newInstance(lidConfig)
+                // Correct signature per sherpa 1.13.6: (AssetManager, SpokenLanguageIdentificationConfig)
+                val ctor = try {
+                    slidClass.getConstructor(android.content.res.AssetManager::class.java, lidConfigClass)
+                } catch (_: Throwable) {
+                    slidClass.getConstructor(lidConfigClass)
+                }
+                lid = if (ctor.parameterCount == 2) {
+                    ctor.newInstance(null, lidConfig)
+                } else {
+                    ctor.newInstance(lidConfig)
+                }
                 loaded = lid != null
                 if (loaded) Result.success(Unit) else Result.failure(Exception("SLID create failed"))
             } catch (e: Throwable) {
