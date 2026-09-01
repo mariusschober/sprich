@@ -67,9 +67,11 @@ class CompositionManager {
                 }.trim()
                 if (finalText.isEmpty()) {
                     if (composingActive) {
-                        val finishOk = try { ic.finishComposingText() } catch (_: Exception) { false }
+                        // Empty final should discard composing, not commit it. Use setComposingText("") to clear.
+                        try { ic.setComposingText("", 1) } catch (_: Exception) {}
+                        try { ic.finishComposingText() } catch (_: Exception) {}
                         composingActive = false
-                        Log.i("Composition", "finish empty composing finishOk=$finishOk")
+                        Log.i("Composition", "finish empty composing discarded")
                     }
                     lastStable = ""; lastUnstable = ""; lastComposing = null
                     leadingSpaceNeeded = null
@@ -118,12 +120,52 @@ class CompositionManager {
             // Some editors reject composing spans. Do not commit every partial as a fallback;
             // doing so duplicates the growing hypothesis. The final update will commit once.
             if (compositionRejected) return false
+            // Detect editors that silently commit composing text while returning success.
+            // Such editors duplicate the hypothesis: "Hello" -> "Hello world" becomes "HelloHello world"
+            if (composingActive && lastComposing != null) {
+                try {
+                    val before = ic.getTextBeforeCursor(400, 0)?.toString().orEmpty()
+                    if (before.isNotEmpty() && lastComposing!!.isNotEmpty()) {
+                        val firstWord = lastComposing!!.trim().split(Regex("\\s+")).firstOrNull() ?: lastComposing!!
+                        if (firstWord.length >= 2) {
+                            val countFirst = before.windowed(firstWord.length, 1, false).count { it == firstWord }
+                            if (countFirst >= 2 && before.contains(lastComposing!!)) {
+                                Log.w("Composition", "silent-commit detected firstWord=$firstWord count=$countFirst beforeLen=${before.length} lastComposing=$lastComposing")
+                                compositionRejected = true
+                                try { ic.finishComposingText() } catch (_: Exception) {}
+                                try {
+                                    val toDelete = lastComposing!!.length + if (leadingSpaceNeeded == true) 1 else 0
+                                    ic.deleteSurroundingText(toDelete, 0)
+                                    Log.i("Composition", "silent-commit cleanup deleted $toDelete")
+                                } catch (_: Exception) {}
+                                composingActive = false
+                                return false
+                            }
+                        }
+                        // Also check exact duplicate of lastComposing
+                        val countExact = before.windowed(lastComposing!!.length, 1, false).count { it == lastComposing }
+                        if (countExact >= 2) {
+                            Log.w("Composition", "silent-commit detected countExact=$countExact beforeLen=${before.length} lastComposing=$lastComposing")
+                            compositionRejected = true
+                            try { ic.finishComposingText() } catch (_: Exception) {}
+                            try {
+                                val toDelete = lastComposing!!.length + if (leadingSpaceNeeded == true) 1 else 0
+                                ic.deleteSurroundingText(toDelete, 0)
+                                Log.i("Composition", "silent-commit cleanup deleted $toDelete")
+                            } catch (_: Exception) {}
+                            composingActive = false
+                            return false
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
             // Dedupe: don't re-set same composing text nonstop (HelloHello spam)
             if (composing == lastComposing) return true
             if (leadingSpaceNeeded == null) {
                 leadingSpaceNeeded = needsSpaceBeforeCursor(ic, composing)
             }
             val visibleComposing = if (leadingSpaceNeeded == true) " $composing" else composing
+            val beforeLen = try { ic.getTextBeforeCursor(500, 0)?.length ?: -1 } catch (_: Exception) { -1 }
             val ok = ic.setComposingText(visibleComposing, 1)
             if (!ok) {
                 compositionRejected = true
@@ -132,6 +174,42 @@ class CompositionManager {
                 lastComposing = null
                 return false
             } else {
+                // Verify editor didn't silently commit despite returning true: check if committed length exploded
+                try {
+                    val after = ic.getTextBeforeCursor(500, 0)?.toString().orEmpty()
+                    if (beforeLen >= 0 && lastComposing != null) {
+                        val expectedGrowth = visibleComposing.length - lastComposing!!.length
+                        val actualGrowth = after.length - beforeLen
+                        // Silent commit: actual growth is close to visibleComposing.length, not expected delta
+                        if (actualGrowth > expectedGrowth + 1 && visibleComposing.isNotEmpty()) {
+                            if (after.contains(lastComposing!!) && after.contains(visibleComposing) && after.length >= visibleComposing.length + lastComposing!!.length) {
+                                Log.w("Composition", "silent-commit post-check actualGrowth=$actualGrowth expected=$expectedGrowth before=$beforeLen after=${after.length}")
+                                compositionRejected = true
+                                try { ic.finishComposingText() } catch (_: Exception) {}
+                                try {
+                                    val toDelete = lastComposing!!.length + if (leadingSpaceNeeded == true) 1 else 0
+                                    ic.deleteSurroundingText(toDelete, 0)
+                                } catch (_: Exception) {}
+                                composingActive = false
+                                return false
+                            }
+                        }
+                        // Also check firstWord duplicate in after — independent of growth
+                        val firstWord = visibleComposing.trim().split(Regex("\\s+")).firstOrNull() ?: ""
+                        if (firstWord.length >= 2) {
+                            val cnt = after.windowed(firstWord.length, 1, false).count { it == firstWord }
+                            if (cnt >= 2) {
+                                Log.w("Composition", "silent-commit post firstWord duplicate cnt=$cnt afterLen=${after.length}")
+                                compositionRejected = true
+                                try { ic.finishComposingText() } catch (_: Exception) {}
+                                // Try to clean duplicated first word
+                                try { ic.deleteSurroundingText(firstWord.length, 0) } catch (_: Exception) {}
+                                composingActive = false
+                                return false
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
                 composingActive = true
             }
             lastStable = stable; lastUnstable = unstable; lastComposing = composing
