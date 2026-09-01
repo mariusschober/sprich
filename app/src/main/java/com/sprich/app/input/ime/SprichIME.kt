@@ -161,6 +161,10 @@ class SprichIME : InputMethodService() {
             modelProvider = { runCatching { kotlinx.coroutines.runBlocking { prefs.aiModel.first() } }.getOrDefault("") },
         )
     }
+    // Candidate A: Whisper Tiny per-utterance LID + Canary (lowest-risk Auto)
+    private val lidEngine by lazy {
+        com.sprich.app.speech.lid.WhisperLidEngine(this, (application as SprichApp).let { com.sprich.app.models.manager.ModelManager(it) })
+    }
 
     // Views — native View IME, full-bar tappable magical
     private var statusText: TextView? = null
@@ -214,6 +218,14 @@ class SprichIME : InputMethodService() {
                 val result = engine.load()
                 if (result.isFailure) Log.e("SprichIME", "Canary preload failed", result.exceptionOrNull())
                 else Log.i("SprichIME", "Canary preload success")
+            }
+            // Preload Tiny LID if Auto may be used (warm, no block)
+            scope.launch {
+                try {
+                    val lidRes = lidEngine.load()
+                    if (lidRes.isSuccess) Log.i("SprichIME", "Tiny LID preload success")
+                    else Log.i("SprichIME", "Tiny LID preload not ready: ${lidRes.exceptionOrNull()?.message}")
+                } catch (e: Exception) { Log.w("SprichIME", "LID preload failed", e) }
             }
 
             // Observe session for UI — update dot/text without Compose
@@ -675,18 +687,27 @@ class SprichIME : InputMethodService() {
                 (statusText?.tag as? TextView)?.text = "Dictation disabled here"
                 return
             }
-            // Language default migration: Canary has no native Auto. Never start dictation silently in Auto.
-            // Require explicit user language pick; show clear message and abort.
-            if (speechLanguage is SpeechLanguage.Auto || language == Language.AUTO) {
-                Log.w("SprichIME", "Auto language not supported for Canary — explicit selection required. Showing prompt.")
-                try { session.error("language auto not supported") } catch (_: Exception) {}
-                statusText?.text = "Tap to choose language"
-                (statusText?.tag as? TextView)?.text = "Open Sprich app → Settings → Language (EN/DE/ES/FR)"
-                // Vibrate error to signal blocked start
-                try { vibrateTick() } catch (_: Exception) {}
-                // Diagnostics must show actual explicit language being used — here it's Auto, so we log it.
-                writeDiagnostics("blocked Auto language — explicit selection required. resolved=${activeConfig.resolvedLanguageTag()} speechLanguage=$speechLanguage language=$language")
-                return
+            // Language handling: Canary explicit baseline vs Auto via Tiny LID
+            // If Auto requested, check if Tiny LID model is available (Candidate A). If yes, allow Auto with per-utterance detection.
+            // Otherwise require explicit selection.
+            if (speechLanguage is SpeechLanguage.Auto) {
+                val lidReady = try {
+                    val d = java.io.File(filesDir, "whisper-tiny")
+                    java.io.File(d, "tiny-encoder.int8.onnx").exists() && java.io.File(d, "tiny-decoder.int8.onnx").exists()
+                } catch (_: Exception) { false }
+                if (!lidReady) {
+                    Log.w("SprichIME", "Auto language requested but Tiny LID not downloaded — explicit selection required.")
+                    try { session.error("language auto not supported without LID") } catch (_: Exception) {}
+                    statusText?.text = "Tap to choose language"
+                    (statusText?.tag as? TextView)?.text = "Open Sprich app → Settings → Language (EN/DE/ES/FR) or download Tiny LID"
+                    try { vibrateTick() } catch (_: Exception) {}
+                    writeDiagnostics("blocked Auto (no LID) resolved=${activeConfig.resolvedLanguageTag()} speechLanguage=$speechLanguage")
+                    return
+                } else {
+                    Log.i("SprichIME", "Auto language via Tiny LID per-utterance — proceeding, LID will detect EN/DE/ES/FR before Canary")
+                    // Pre-warm LID if not loaded
+                    try { lidEngine.load() } catch (_: Exception) {}
+                }
             }
             if (session.state.value is SessionState.Listening || session.state.value is SessionState.Speech) return
             val permissionGranted = ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -1109,10 +1130,37 @@ class SprichIME : InputMethodService() {
                     ReplayHarness.saveWavIfEnabled(this@SprichIME, true, token.utteranceId, pending.pcm, pending.config)
                 }
             } catch (_: Exception) {}
+            // Per-utterance LID for Auto: run Whisper Tiny before Canary if config is Auto
+            var effectiveConfig = pending.config
+            var lidLatencyMs: Long = 0
+            var lidDetected: String = pending.config.resolvedLanguageTag()
+            if (pending.config.speechLanguage is SpeechLanguage.Auto) {
+                try {
+                    if (!lidEngine.isLoaded()) {
+                        val lidLoad = lidEngine.load()
+                        Log.i("SprichIME", "LID auto-load utt=${token.utteranceId} success=${lidLoad.isSuccess} err=${lidLoad.exceptionOrNull()?.message}")
+                    }
+                    val lidStart = android.os.SystemClock.elapsedRealtime()
+                    val lidResult = lidEngine.identify(pending.pcm)
+                    lidLatencyMs = lidResult.latencyMs
+                    lidDetected = lidResult.rawCode
+                    // If LID returns AUTO (uncertain/low confidence), fallback to en to avoid blank
+                    val detectedLang = if (lidResult.language == Language.AUTO) Language.EN else lidResult.language
+                    effectiveConfig = pending.config.copy(
+                        language = detectedLang,
+                        speechLanguage = SpeechLanguage.Fixed(detectedLang.code)
+                    )
+                    Log.i("SprichIME", "LID per-utterance utt=${token.utteranceId} raw=${lidResult.rawCode} detected=${lidResult.language} conf=${lidResult.confidence} latencyMs=${lidResult.latencyMs} effective=${effectiveConfig.resolvedLanguageTag()} pcmSamples=${pending.pcm.size} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)}")
+                } catch (e: Exception) {
+                    Log.w("SprichIME", "LID failed utt=${token.utteranceId}, fallback to en", e)
+                    effectiveConfig = pending.config.copy(language = Language.EN, speechLanguage = SpeechLanguage.Fixed("en"))
+                    lidDetected = "lid-error"
+                }
+            }
             val t0 = android.os.SystemClock.elapsedRealtime()
             nativeDecodeStarts++
-            // Use immutable snapshot and its immutable config — never mutate live buffer, never read global frozenUtterancePcm that B may have replaced.
-            val finalTranscript = engine.transcribeSnapshot(pending.pcm, pending.config)
+            // Use immutable snapshot and its immutable effectiveConfig — never mutate live buffer
+            val finalTranscript = engine.transcribeSnapshot(pending.pcm, effectiveConfig)
             val elapsed = android.os.SystemClock.elapsedRealtime() - t0
             // Raw vs post triage: raw is finalTranscript.text, post will be after parser
             val debugTraceEnabled = try { prefs.debugTranscriptTrace.first() } catch (_: Exception) { false }
@@ -1160,15 +1208,15 @@ class SprichIME : InputMethodService() {
             val raw = finalTranscript.text
             // POST_PROCESS stage: after spoken command parsing and typography normalization, before editor
             // For debug tracing: log RAW_ASR vs POST_PROCESS vs EDITOR_FINAL lengths only (no content by default)
-            Log.i("SprichIME", "punctuationTriage token=${token.utteranceId} RAW_ASR_len=${raw.length} POST_len=${text.length} lang=${pending.config.resolvedLanguageTag()}")
+            Log.i("SprichIME", "punctuationTriage token=${token.utteranceId} RAW_ASR_len=${raw.length} POST_len=${text.length} lang=${effectiveConfig.resolvedLanguageTag()} lidDetected=$lidDetected lidMs=$lidLatencyMs")
             // Typography normalization already applied via SpokenEditingParser (POST_PROCESS)
-            // Remote fallback uses pending.pcm isolated, not global
+            // Remote fallback uses pending.pcm isolated, not global — use effective language
             val sttModeRaw = try { prefs.sttModeRaw.first() } catch (_: Exception) { "local" }
             if (sttModeRaw == "remote" || (sttModeRaw == "fallback" && text.isBlank() && pending.pushedSamples > 8000)) {
                 statusText?.text = "Transcribing (cloud)…"
                 val fallbackSnap = pending.pcm // immutable isolated, never B's audio
-                Log.i("SprichIME", "remoteStt fallback token=$token snapshotSamples=${fallbackSnap.size} pendingPushed=${pending.pushedSamples}")
-                val result = remoteStt.transcribe(fallbackSnap, SAMPLE_RATE.toInt(), pending.config.language)
+                Log.i("SprichIME", "remoteStt fallback token=$token snapshotSamples=${fallbackSnap.size} pendingPushed=${pending.pushedSamples} effectiveLang=${effectiveConfig.resolvedLanguageTag()}")
+                val result = remoteStt.transcribe(fallbackSnap, SAMPLE_RATE.toInt(), effectiveConfig.language)
                 val remoteText = result.getOrNull()?.trim().orEmpty()
                 Log.i("SprichIME", "remoteStt mode=$sttModeRaw ok=${result.isSuccess} chars=${remoteText.length}")
                 if (remoteText.isNotBlank()) text = remoteText
@@ -1177,19 +1225,19 @@ class SprichIME : InputMethodService() {
             val aiEnabled = try { prefs.aiEnabled.first() } catch (_: Exception) { false }
             if (aiEnabled && text.isNotBlank()) {
                 statusText?.text = "Polishing…"
-                val polished = grammarFixer.fix(text, pending.config.language)
+                val polished = grammarFixer.fix(text, effectiveConfig.language)
                 val fixed = polished.getOrNull()?.trim().orEmpty()
                 Log.i("SprichIME", "aiPolish ok=${polished.isSuccess} inChars=${text.length} outChars=${fixed.length}")
                 if (fixed.isNotBlank()) text = fixed
             }
 
             val applied = if (text.isBlank()) {
-                Log.w("SprichIME", "final transcript empty token=$token elapsedMs=$elapsed pushedSamples=${pending.pushedSamples}")
+                Log.w("SprichIME", "final transcript empty token=$token elapsedMs=$elapsed pushedSamples=${pending.pushedSamples} effectiveLang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected")
                 // Even blank final must reset only if it owns active capture; otherwise preserve B
                 false
             } else {
-                val ok = applyFinalText(token, text)
-                Log.i("SprichIME", "final token=$token chars=${text.length} applied=$ok elapsedMs=$elapsed lang=${pending.config.resolvedLanguageTag()} postLen=${text.length}")
+                val ok = applyFinalText(token, text, effectiveConfig.language)
+                Log.i("SprichIME", "final token=$token chars=${text.length} applied=$ok elapsedMs=$elapsed lang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected postLen=${text.length} lidMs=$lidLatencyMs")
                 if (ok) finalCommitCount++
                 ok
             }
@@ -1315,7 +1363,7 @@ class SprichIME : InputMethodService() {
         finalizeOnce(token, StopReason.ENDPOINT)
     }
 
-    private fun applyFinalText(token: UtteranceToken, text: String): Boolean {
+    private fun applyFinalText(token: UtteranceToken, text: String, language: Language = activeConfig.language): Boolean {
         val inputConnection = currentInputConnection ?: return false
         // Validate token still owns this insertion immediately before commit
         if (token.generation != sessionGeneration.get()) { staleCallbackDrops++; return false }
@@ -1331,7 +1379,7 @@ class SprichIME : InputMethodService() {
                 return false
             }
         }
-        val langForParser = activeConfig.language
+        val langForParser = language
         val parsed = try {
             SpokenEditingParser.parse(text, langForParser, commandsEnabled)
         } catch (_: Exception) {
