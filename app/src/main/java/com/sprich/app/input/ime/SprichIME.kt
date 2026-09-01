@@ -35,6 +35,10 @@ import com.sprich.app.speech.api.TranscriptionTask
 import com.sprich.app.SprichApp
 import com.sprich.app.ai.GrammarFixer
 import com.sprich.app.core.perf.ThermalMonitor
+import com.sprich.app.core.audio.UtteranceAudioCollector
+import com.sprich.app.speech.LocalAsrRoute
+import com.sprich.app.speech.LocalTranscriptionCoordinator
+import com.sprich.app.speech.ResolvedUtteranceLanguage
 import com.sprich.app.speech.canary.CanaryEngine
 import com.sprich.app.speech.remote.RemoteSttEngine
 import com.sprich.app.storage.Preferences
@@ -62,6 +66,13 @@ class SprichIME : InputMethodService() {
     private lateinit var vad: Vad
 
     private lateinit var engine: CanaryEngine
+    // Neutral authoritative PCM collector — single canonical source, independent of ASR engine.
+    private val utteranceAudio = UtteranceAudioCollector(maxSamples = 16000 * 30)
+    private var localCoordinator: LocalTranscriptionCoordinator? = null
+    // Diagnostics for Auto-without-Canary gate
+    private val canaryLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
+    private val fastLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
+    private val lidLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
     private var startJob: Job? = null
     private var engineJob: Job? = null
     @Volatile private var endpointJob: Job? = null
@@ -81,10 +92,10 @@ class SprichIME : InputMethodService() {
     private val finalizedUtterances = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
     @Volatile private var currentFieldTokenIcHash: Int = 0
 
-    // Per-utterance PCM capture — primitive bounded buffer, single ownership via engine.
-    // IME no longer maintains a second authoritative MutableList<Short>; it queries engine's frozen snapshot.
-    // Keeping a lightweight local reference only for freeze-check before engine freeze is visible.
-    // Using UtterancePcmBuffer would duplicate engine buffer — so IME now delegates.
+    // Per-utterance PCM capture — engine-independent authoritative collector.
+    // AudioCapture -> UtteranceAudioCollector -> immutable PendingUtterance.pcm -> transcription route
+    // One utterance has one canonical frozen PCM snapshot independent of chosen ASR engine.
+    // Kept for legacy fallback isolation checks; primary source is utteranceAudio.
     @Volatile private var frozenUtterancePcm: ShortArray? = null
 
     // Overlapping utterance queue — immutable per-utterance snapshots, serialized finalization actor
@@ -94,6 +105,7 @@ class SprichIME : InputMethodService() {
         val token: UtteranceToken,
         val pcm: ShortArray,
         val config: SpeechSessionConfig,
+        val route: LocalAsrRoute,
         val pushedSamples: Long,
         val reason: StopReason,
         val endpointTimestampNanos: Long,
@@ -169,11 +181,12 @@ class SprichIME : InputMethodService() {
             modelProvider = { runCatching { kotlinx.coroutines.runBlocking { prefs.aiModel.first() } }.getOrDefault("") },
         )
     }
-    // Candidate A: Whisper Tiny per-utterance LID + Canary (lowest-risk Auto)
+    // Production Automatic: Tiny LID (Whisper Tiny 98M, per-utterance SLID) → FastConformer CTC 126M (implicit EN-DE-ES-FR)
+    // Accurate explicit: Canary 180M Flash INT8 (fixed EN/DE/ES/FR)
     private val lidEngine by lazy {
         com.sprich.app.speech.lid.WhisperLidEngine(this, (application as SprichApp).let { com.sprich.app.models.manager.ModelManager(it) })
     }
-    // Fallback for LID failure: validated multilingual FastConformer (126M) — does not require language flag
+    // FastConformer CTC EN-DE-ES-FR 14288 INT8 — primary for Automatic, not fallback
     private val fastConformerEngine by lazy {
         com.sprich.app.speech.fastconformer.FastConformerEngine(this)
     }
@@ -200,6 +213,7 @@ class SprichIME : InputMethodService() {
             audio = AudioCapture(ringSeconds = 30)
             vad = Vad()
             engine = (application as SprichApp).fastEngine
+            // Neutral collector requires no engine ownership; coordinator will be created after engines lazy init
             scope.launch { try { vocabRepo.load() } catch (_: Exception) {} }
 
             // Observe prefs — catch DataStore IOException via prefs flows already handle it
@@ -219,25 +233,38 @@ class SprichIME : InputMethodService() {
             scope.launch {
                 try {
                     prefs.engineType.collect { requested ->
-                        if (requested != EngineType.ACCURATE) {
-                            Log.w("SprichIME", "forcing engine to ACCURATE (Canary) requested=$requested")
-                            prefs.setEngine(EngineType.ACCURATE)
-                        }
+                        Log.i("SprichIME", "engineType observed requested=$requested (no force, route determined by speechLanguage)")
                     }
                 } catch (e: Exception) { Log.w("SprichIME", "engineType collect fail", e) }
             }
-            scope.launch {
-                val result = engine.load()
-                if (result.isFailure) Log.e("SprichIME", "Canary preload failed", result.exceptionOrNull())
-                else Log.i("SprichIME", "Canary preload success")
-            }
-            // Preload Tiny LID if Auto may be used (warm, no block)
+            // Selectively preload only the currently selected route — do NOT load Canary when Automatic uses FastConformer
             scope.launch {
                 try {
-                    val lidRes = lidEngine.load()
-                    if (lidRes.isSuccess) Log.i("SprichIME", "Tiny LID preload success")
-                    else Log.i("SprichIME", "Tiny LID preload not ready: ${lidRes.exceptionOrNull()?.message}")
-                } catch (e: Exception) { Log.w("SprichIME", "LID preload failed", e) }
+                    val mm = try { com.sprich.app.models.manager.ModelManager(this@SprichIME) } catch (_: Exception) { null }
+                    val st = try { prefs.speechLanguage.first() } catch (_: Exception) { com.sprich.app.speech.api.SpeechLanguage.Auto }
+                    val route = determineRoute(st)
+                    when (route) {
+                        is LocalAsrRoute.AutomaticFastConformer -> {
+                            if (mm?.isAutomaticReady() == true) {
+                                val lidRes = lidEngine.load().also { lidLoadAttempts.incrementAndGet() }
+                                if (lidRes.isSuccess) Log.i("SprichIME", "Auto preload: Tiny LID success")
+                                val fastRes = fastConformerEngine.load().also { fastLoadAttempts.incrementAndGet() }
+                                if (fastRes.isSuccess) Log.i("SprichIME", "Auto preload: FastConformer success")
+                            } else {
+                                Log.i("SprichIME", "Auto preload skipped — Automatic not ready (needs Tiny LID + FastConformer)")
+                            }
+                        }
+                        is LocalAsrRoute.AccurateCanary -> {
+                            val res = engine.load().also { canaryLoadAttempts.incrementAndGet() }
+                            if (res.isSuccess) Log.i("SprichIME", "Accurate preload: Canary success for ${route.language}")
+                            else Log.i("SprichIME", "Accurate preload not ready for ${route.language}")
+                        }
+                    }
+                    // Init coordinator (lazy engines already available)
+                    if (localCoordinator == null) {
+                        localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+                    }
+                } catch (e: Exception) { Log.w("SprichIME", "selective preload failed", e) }
             }
             // Start single long-lived finalization actor (no lost-wakeup race)
             startFinalizationActor()
@@ -601,8 +628,21 @@ class SprichIME : InputMethodService() {
             isPasswordField = isPassword(info)
             latency.mark("onStartInput")
             scope.launch {
-                val result = engine.load()
-                if (result.isFailure) Log.e("SprichIME", "preload on input failed", result.exceptionOrNull())
+                try {
+                    val mm = try { com.sprich.app.models.manager.ModelManager(this@SprichIME) } catch (_: Exception) { null }
+                    val route = determineRoute(speechLanguage)
+                    when (route) {
+                        is LocalAsrRoute.AutomaticFastConformer -> {
+                            if (mm?.isAutomaticReady() == true) {
+                                lidEngine.load()
+                                fastConformerEngine.load()
+                            }
+                        }
+                        is LocalAsrRoute.AccurateCanary -> {
+                            val r = engine.load(); if (r.isSuccess) canaryLoadAttempts.incrementAndGet()
+                        }
+                    }
+                } catch (_: Exception) {}
             }
             if (isPasswordField) {
                 Log.i("SprichIME", "password field, silent")
@@ -611,7 +651,10 @@ class SprichIME : InputMethodService() {
             }
             composition.reset()
             frozenUtterancePcm = null
+            try { utteranceAudio.clear() } catch (_: Exception) {}
             try { engine.clearUtteranceCapture() } catch (_: Exception) {}
+            // Keep engine ring clear for partials when in Accurate mode, but collector is authoritative
+            try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
             currentUtteranceToken = null
             utteranceActive.set(false)
             endpointPending.set(false)
@@ -631,8 +674,21 @@ class SprichIME : InputMethodService() {
     override fun onWindowShown() {
         super.onWindowShown()
         scope.launch {
-            val result = engine.load()
-            if (result.isFailure) Log.e("SprichIME", "preload on window failed", result.exceptionOrNull())
+            try {
+                val mm = try { com.sprich.app.models.manager.ModelManager(this@SprichIME) } catch (_: Exception) { null }
+                val route = determineRoute(speechLanguage)
+                when (route) {
+                    is LocalAsrRoute.AutomaticFastConformer -> {
+                        if (mm?.isAutomaticReady() == true) {
+                            lidEngine.load()
+                            fastConformerEngine.load()
+                        }
+                    }
+                    is LocalAsrRoute.AccurateCanary -> {
+                        engine.load().also { if (it.isSuccess) canaryLoadAttempts.incrementAndGet() }
+                    }
+                }
+            } catch (_: Exception) {}
         }
     }
 
@@ -661,6 +717,8 @@ class SprichIME : InputMethodService() {
         try { pendingChannel.close() } catch (_: Exception) {}
         try { finalizationActorJob?.cancel() } catch (_: Exception) {}
         try { scope.launch { lidEngine.unload() } } catch (_: Exception) {}
+        try { scope.launch { fastConformerEngine.unload() } } catch (_: Exception) {}
+        try { utteranceAudio.clear() } catch (_: Exception) {}
         try { audio.release() } catch (_: Exception) {}
         scope.cancel()
         super.onDestroy()
@@ -704,9 +762,8 @@ class SprichIME : InputMethodService() {
                 (statusText?.tag as? TextView)?.text = "Dictation disabled here"
                 return
             }
-            // Language handling: Canary explicit baseline vs Auto via Tiny LID
-            // If Auto requested, check if Tiny LID model is available (Candidate A). If yes, allow Auto with per-utterance detection.
-            // Otherwise require explicit selection.
+            // Language handling: Automatic = Tiny LID + FastConformer (no Canary), Accurate = Canary explicit
+            // Automatic requires BOTH Tiny LID and FastConformer (isAutomaticReady), fail-closed otherwise.
             if (speechLanguage is SpeechLanguage.Auto) {
                 // Winner 2026-09-02: Automatic = Tiny LID (98M) + FastConformer 126M (Architecture B). Both required.
                 val mmForCheck = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
@@ -765,18 +822,35 @@ class SprichIME : InputMethodService() {
             statusText?.text = "Loading speech model…"
             (statusText?.tag as? TextView)?.text = "First start can take a moment"
 
-            val loadResult = engine.load()
+            // Route-aware loading — only load required engines, do NOT load Canary for Automatic
+            val routeForSession = determineRoute(speechLanguage)
+            val mmForLoad = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
+            val loadResult: Result<Unit> = when (routeForSession) {
+                is LocalAsrRoute.AutomaticFastConformer -> {
+                    // Automatic already validated LID+Fast ready above; now load them, never Canary
+                    val lidR = try { lidEngine.load().also { lidLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
+                    val fastR = try { fastConformerEngine.load().also { fastLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
+                    if (lidR.isFailure) lidR else fastR
+                }
+                is LocalAsrRoute.AccurateCanary -> {
+                    try { engine.load().also { canaryLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
+                }
+            }
             if (generation != sessionGeneration.get()) return
             if (loadResult.isFailure) {
                 failSession(
                     generation,
-                    "engine load failed",
+                    "engine load failed route=$routeForSession",
                     "Speech model unavailable",
                     "Restart Sprich or reinstall the APK",
                     loadResult.exceptionOrNull(),
                 )
                 return
             }
+            // Ensure coordinator exists
+            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+            // Housekeeping: unload unused resident engines if queue drained
+            maybeUnloadUnused(routeForSession)
 
             latency.mark("audioStartRequested")
             vibrateTick()
@@ -787,7 +861,9 @@ class SprichIME : InputMethodService() {
             endpointPending.set(false)
             lastPartialText = ""
             frozenUtterancePcm = null
+            try { utteranceAudio.clear() } catch (_: Exception) {}
             try { engine.clearUtteranceCapture() } catch (_: Exception) {}
+            try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
             currentUtteranceToken = null
             Log.i("SprichIME", "vad reset ${vad.calibrationInfo()} activeConfig=$activeConfig prefsLang=$language speechLang=$speechLanguage")
             // Respect user language preference; Canary handles EN/DE/ES/FR, AUTO falls back to EN inside engine.
@@ -801,13 +877,22 @@ class SprichIME : InputMethodService() {
             )
             Log.i("SprichIME", "session language resolved=${activeConfig.resolvedLanguageTag()} task=${activeConfig.resolvedTask()}")
 
-            engine.cancelSession()
+            // Start session on required engine(s) only; Accurate uses Canary, Automatic does not need Canary session
+            try { engine.cancelSession() } catch (_: Exception) {}
+            try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
             try {
-                engine.beginSession(activeConfig)
+                when (routeForSession) {
+                    is LocalAsrRoute.AccurateCanary -> engine.beginSession(activeConfig)
+                    is LocalAsrRoute.AutomaticFastConformer -> {
+                        // Automatic is final-only offline — FastConformer session holds pcmBuffer but collector is authoritative
+                        fastConformerEngine.beginSession(activeConfig)
+                        // Do NOT start Canary session for Automatic — no Canary decode, no wrong-language partials
+                    }
+                }
             } catch (t: Throwable) {
                 failSession(
                     generation,
-                    "begin session failed",
+                    "begin session failed route=$routeForSession",
                     "Speech engine failed",
                     "Tap to retry",
                     t,
@@ -818,6 +903,12 @@ class SprichIME : InputMethodService() {
             engineJob?.cancelAndJoin()
             engineJob = scope.launch {
                 try {
+                    // Only collect Canary partials when explicitly in Accurate mode — Automatic is final-only, no Canary decode
+                    val shouldCollectPartials = routeForSession is LocalAsrRoute.AccurateCanary
+                    if (!shouldCollectPartials) {
+                        Log.i("SprichIME", "partial collection skipped for Automatic (final-only FastConformer, no wrong-lang partials)")
+                        return@launch
+                    }
                     engine.partialTranscript().collect { update ->
                         if (generation != sessionGeneration.get()) { staleCallbackDrops++; return@collect }
                         // Validate field/session ownership via controller — stale field callbacks dropped
@@ -827,21 +918,6 @@ class SprichIME : InputMethodService() {
                         // Backpressure: while catching up, degrade speculative partials first to preserve final path CPU and memory
                         if (catchingUp) {
                             Log.i("SprichIME", "partial degraded due to CatchingUp depth=${queueDepth.get()} suppressed=${catchingUpSuppressedOnsets.get()}")
-                            return@collect
-                        }
-                        // Phase 3: Auto live partial semantics — suppress wrong-language Canary partials
-                        // Canary has no native Auto (decodes Auto as en), so German Auto speech would show English partial.
-                        // Wrong-language partials are worse than no partials. For Auto, suppress field partials while language unresolved.
-                        // Show listening state in Sprich UI, run LID at endpoint, commit one correct-language final.
-                        if (activeConfig.speechLanguage is SpeechLanguage.Auto) {
-                            // Do not insert wrong-language hypothesis into target field
-                            // Keep latency tracking but don't apply to InputConnection
-                            val hasTextForLatency = update.stable.isNotBlank() || update.unstable.isNotBlank()
-                            if (hasTextForLatency && latency.delta("speechOnset", "firstHypothesis") == null) {
-                                latency.mark("firstHypothesis")
-                            }
-                            // Optionally keep IME UI as listening, not hypothesis
-                            Log.i("SprichIME", "partial suppressed for Auto unresolved (no wrong-lang) stableLen=${update.stable.length} unstableLen=${update.unstable.length}")
                             return@collect
                         }
                         val hasText = update.stable.isNotBlank() || update.unstable.isNotBlank()
@@ -993,12 +1069,17 @@ class SprichIME : InputMethodService() {
                 // Prevents losing first words of next sentence when user speaks immediately.
                 val preRoll = audio.snapshotPrebufferMs(PRE_ROLL_MS)
                 pipelinePushedSampleCount += preRoll.size
-                // Per-utterance PCM ownership: engine owns seeding preRoll exactly once — no duplicate IME buffer.
+                // AUTHORITATIVE: UtteranceAudioCollector owns seeding preRoll exactly once — engine-independent.
                 frozenUtterancePcm = null
-                // Do NOT maintain a parallel IME PCM buffer; engine is single authoritative owner.
-                // Ownership contract: beginUtteranceCapture owns seeding preRoll exactly once.
-                // pushAudio must NOT be called again for the same preRoll — prevents [preRoll][preRoll] duplication.
-                try { engine.beginUtteranceCapture(preRoll) } catch (_: Exception) {}
+                try { utteranceAudio.begin(preRoll) } catch (_: Exception) {}
+                // Explicit Accurate mode: feed Canary as consumer for live partials, but NOT authoritative.
+                val routeAtOnset = determineRoute(speechLanguage)
+                if (routeAtOnset is LocalAsrRoute.AccurateCanary) {
+                    try { engine.beginUtteranceCapture(preRoll) } catch (_: Exception) {}
+                } else {
+                    // Automatic: do NOT feed Canary; FastConformer is final-only, collector is authoritative.
+                    try { fastConformerEngine.beginUtteranceCapture(preRoll) } catch (_: Exception) { /* fast buffer optional */ }
+                }
                 // Create immutable token for this utterance — monotonically increasing utteranceId
                 val utteranceId = utteranceIdCounter.incrementAndGet()
                 val token = UtteranceToken(
@@ -1036,8 +1117,16 @@ class SprichIME : InputMethodService() {
                 (result.state == Vad.State.SPEECH || result.state == Vad.State.HESITATION)
             ) {
                 pipelinePushedSampleCount += samples.size
-                // Engine is single authoritative PCM owner — no duplicate IME buffer.
-                engine.pushAudio(samples, timestampNanos)
+                // AUTHORITATIVE: collector is single owner — append once.
+                try { utteranceAudio.append(samples) } catch (_: Exception) {}
+                // Consumer split: Accurate feeds Canary for partials, Automatic captures only (FastConformer final)
+                val routeAtChunk = determineRoute(speechLanguage)
+                if (routeAtChunk is LocalAsrRoute.AccurateCanary) {
+                    try { engine.pushAudio(samples, timestampNanos) } catch (_: Exception) {}
+                } else {
+                    // Automatic final-only — no live Canary push; optionally feed Fast buffer for symmetry but collector remains authoritative
+                    try { fastConformerEngine.pushAudio(samples, timestampNanos) } catch (_: Exception) {}
+                }
             }
 
             if (
@@ -1047,22 +1136,25 @@ class SprichIME : InputMethodService() {
                 latency.mark("endpointDetected")
                 // Mark pending for observability; do not block next onset — queue handles continuous speech.
                 endpointPending.set(true)
-                // Freeze per-utterance PCM at endpoint so fallback cannot include next utterance.
-                // CRITICAL: immutable snapshot — captured synchronously before next onset can reuse live buffer.
-                // This prevents Race 1 (A reading B's snapshot) by copying to isolated PendingUtterance.pcm.
-                val frozenSnap: ShortArray = try { engine.snapshotUtterancePcm() } catch (_: Exception) { ShortArray(0) }
+                // Freeze authoritative collector snapshot — immutable, engine-independent.
+                // CRITICAL: captured synchronously before next onset can reuse live buffer.
+                val frozenSnap: ShortArray = try { utteranceAudio.freeze() } catch (_: Exception) { ShortArray(0) }
                 // Also cache in legacy global for non-queued fallback paths (e.g., remoteStt fallback)
-                frozenUtterancePcm = frozenSnap
+                frozenUtterancePcm = frozenSnap.copyOf()
                 val token = currentUtteranceToken ?: run {
                     Log.w("SprichIME", "endpoint without token — creating synthetic token")
                     UtteranceToken(session.sessionId, generation, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
                 }
                 // Create immutable PendingUtterance containing ALL state required to finalize that utterance.
-                // Once created, nothing in the active capture path may mutate it.
+                // Once created, nothing in the active capture path may mutate it. Route snapshot ensures Settings change cannot mis-route.
+                val pendingRoute = determineRoute(speechLanguage).also { currentRouteSnapshot ->
+                    Log.i("SprichIME", "endpoint route snapshot token=$token route=$currentRouteSnapshot configLang=${activeConfig.resolvedLanguageTag()}")
+                }
                 val pending = PendingUtterance(
                     token = token,
                     pcm = frozenSnap.copyOf(), // immutable isolated copy — B cannot clear/replace it
                     config = activeConfig.copy(),
+                    route = pendingRoute,
                     pushedSamples = pipelinePushedSampleCount,
                     reason = StopReason.ENDPOINT,
                     endpointTimestampNanos = System.nanoTime(),
@@ -1264,114 +1356,36 @@ class SprichIME : InputMethodService() {
             var lidLatencyMs: Long = 0
             var lidDetected: String = pending.config.resolvedLanguageTag()
             var lidOutcomeForLog: String = "explicit"
-            var useFastConformerFallback = false
-            // Winner selection — check if FastConformer is ready for Auto (primary). If not, fallback to Canary logic.
-            val isWinnerFastConformerReady = try { com.sprich.app.models.manager.ModelManager(this@SprichIME).isFastConformerReady() } catch (_: Exception) { false }
-            var useWinnerFastConformerForAuto = false
-            if (pending.config.speechLanguage is SpeechLanguage.Auto) {
-                try {
-                    if (!lidEngine.isLoaded()) {
-                        val lidLoad = lidEngine.load()
-                        Log.i("SprichIME", "LID auto-load utt=${token.utteranceId} success=${lidLoad.isSuccess} err=${lidLoad.exceptionOrNull()?.message}")
-                    }
-                    val lidOutcome = lidEngine.identify(pending.pcm)
-                    when (lidOutcome) {
-                        is com.sprich.app.speech.lid.WhisperLidEngine.LidOutcome.Detected -> {
-                            lidLatencyMs = lidOutcome.latencyMs
-                            lidDetected = lidOutcome.rawCode
-                            lidOutcomeForLog = "Detected"
-                            effectiveConfig = pending.config.copy(
-                                language = lidOutcome.language,
-                                speechLanguage = SpeechLanguage.Fixed(lidOutcome.language.code)
-                            )
-                            Log.i("SprichIME", "LID per-utterance utt=${token.utteranceId} raw=${lidOutcome.rawCode} detected=${lidOutcome.language} latencyMs=${lidOutcome.latencyMs} effective=${effectiveConfig.resolvedLanguageTag()} pcmSamples=${pending.pcm.size} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)}")
-                            // Winner: if FastConformer ready, use it as primary for Auto (not Canary). This is Architecture B.
-                            if (isWinnerFastConformerReady) {
-                                useWinnerFastConformerForAuto = true
-                                Log.i("SprichIME", "Winner FastConformer for Auto utt=${token.utteranceId} — will use FastConformer 126M (RTF 0.038) not Canary")
-                            }
-                        }
-                        is com.sprich.app.speech.lid.WhisperLidEngine.LidOutcome.Unsupported -> {
-                            lidLatencyMs = lidOutcome.latencyMs
-                            lidDetected = lidOutcome.rawCode
-                            lidOutcomeForLog = "Unsupported"
-                            Log.w("SprichIME", "LID unsupported raw=${lidOutcome.rawCode} utt=${token.utteranceId} — trying FastConformer fallback if available, not EN")
-                            // Winner FastConformer is implicit multilingual, so unsupported still goes to FastConformer (primary for Auto)
-                            val mm = com.sprich.app.models.manager.ModelManager(this@SprichIME)
-                            if (mm.isFastConformerReady()) {
-                                useFastConformerFallback = true
-                                if (isWinnerFastConformerReady) useWinnerFastConformerForAuto = true
-                                Log.i("SprichIME", "LID unsupported, FastConformer will be used utt=${token.utteranceId} winner=${isWinnerFastConformerReady}")
-                            } else {
-                                Log.w("SprichIME", "LID unsupported and no FastConformer — failing Auto utterance utt=${token.utteranceId} (no EN fallback)")
-                                maybeClearActiveStateForToken(token)
-                                return
-                            }
-                        }
-                        is com.sprich.app.speech.lid.WhisperLidEngine.LidOutcome.Failed -> {
-                            lidLatencyMs = lidOutcome.latencyMs
-                            lidDetected = "failed:${lidOutcome.reason}"
-                            lidOutcomeForLog = "Failed"
-                            Log.w("SprichIME", "LID failed utt=${token.utteranceId} reason=${lidOutcome.reason} — trying FastConformer fallback, not EN")
-                            val mm = com.sprich.app.models.manager.ModelManager(this@SprichIME)
-                            if (mm.isFastConformerReady()) {
-                                useFastConformerFallback = true
-                                if (isWinnerFastConformerReady) useWinnerFastConformerForAuto = true
-                            } else {
-                                Log.w("SprichIME", "LID failed and no fallback — failing Auto utterance")
-                                maybeClearActiveStateForToken(token)
-                                return
-                            }
-                        }
-                        is com.sprich.app.speech.lid.WhisperLidEngine.LidOutcome.Unavailable -> {
-                            lidDetected = "unavailable:${lidOutcome.reason}"
-                            lidOutcomeForLog = "Unavailable"
-                            Log.w("SprichIME", "LID unavailable utt=${token.utteranceId} reason=${lidOutcome.reason} — trying FastConformer fallback, not EN")
-                            val mm = com.sprich.app.models.manager.ModelManager(this@SprichIME)
-                            if (mm.isFastConformerReady()) {
-                                useFastConformerFallback = true
-                                if (isWinnerFastConformerReady) useWinnerFastConformerForAuto = true
-                            } else {
-                                Log.w("SprichIME", "LID unavailable and no fallback — failing Auto utterance")
-                                maybeClearActiveStateForToken(token)
-                                return
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w("SprichIME", "LID exception utt=${token.utteranceId}", e)
-                    // Fail closed, try fallback
-                    val mm = try { com.sprich.app.models.manager.ModelManager(this@SprichIME) } catch (_: Exception) { null }
-                    if (mm != null && mm.isFastConformerReady()) {
-                        useFastConformerFallback = true
-                        if (isWinnerFastConformerReady) useWinnerFastConformerForAuto = true
-                        lidDetected = "exception-fallback"
-                        lidOutcomeForLog = "Failed"
-                    } else {
-                        Log.w("SprichIME", "LID exception and no fallback — failing Auto utterance")
-                        maybeClearActiveStateForToken(token)
-                        return
-                    }
-                }
-            }
+            // Use immutable pending route — never look at mutable global Settings after endpoint.
+            // Route + LID handled by LocalTranscriptionCoordinator (Automatic = Tiny LID + FastConformer, Accurate = Canary)
+            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
             val t0 = android.os.SystemClock.elapsedRealtime()
             nativeDecodeStarts++
-            // Use immutable snapshot and its immutable effectiveConfig — never mutate live buffer
-            // Winner FastConformer for Auto: use FastConformer as primary (not just fallback), with LID for metadata. Otherwise Canary.
-            val finalTranscript = if (useWinnerFastConformerForAuto || useFastConformerFallback) {
-                try {
-                    if (!fastConformerEngine.isLoaded()) {
-                        val fLoad = fastConformerEngine.load()
-                        Log.i("SprichIME", "FastConformer fallback load utt=${token.utteranceId} success=${fLoad.isSuccess}")
+            val coordResult = try {
+                localCoordinator!!.transcribe(pending.pcm, pending.route, pending.config)
+            } catch (e: Exception) {
+                Log.w("SprichIME", "coordinator transcribe failed utt=${token.utteranceId}", e)
+                com.sprich.app.speech.LocalTranscriptionResult(
+                    text = "",
+                    resolvedLanguage = ResolvedUtteranceLanguage.Unknown,
+                    effectiveConfig = pending.config,
+                    engineId = when (pending.route) {
+                        is LocalAsrRoute.AutomaticFastConformer -> fastConformerEngine.engineId
+                        is LocalAsrRoute.AccurateCanary -> engine.engineId
                     }
-                    fastConformerEngine.transcribeSnapshot(pending.pcm, effectiveConfig)
-                } catch (e: Exception) {
-                    Log.w("SprichIME", "FastConformer fallback failed utt=${token.utteranceId}", e)
-                    com.sprich.app.speech.api.FinalTranscript("")
-                }
-            } else {
-                engine.transcribeSnapshot(pending.pcm, effectiveConfig)
+                )
             }
+            val finalTranscript = com.sprich.app.speech.api.FinalTranscript(coordResult.text)
+            effectiveConfig = coordResult.effectiveConfig
+            // Map coordinator's resolved language to diagnostics
+            lidOutcomeForLog = when (coordResult.resolvedLanguage) {
+                is ResolvedUtteranceLanguage.Known -> "Detected"
+                is ResolvedUtteranceLanguage.Unknown -> if (pending.route is LocalAsrRoute.AutomaticFastConformer) "Unknown" else "Explicit"
+            }
+            lidDetected = coordResult.lidRaw.ifEmpty { pending.config.resolvedLanguageTag() }
+            lidLatencyMs = coordResult.lidLatencyMs
+            // Keep resolved for safe post-processing
+            val resolvedUtteranceLang: ResolvedUtteranceLanguage = coordResult.resolvedLanguage
             val elapsed = android.os.SystemClock.elapsedRealtime() - t0
             // Raw vs post triage: raw is finalTranscript.text, post will be after parser
             val debugTraceEnabled = try { prefs.debugTranscriptTrace.first() } catch (_: Exception) { false }
@@ -1415,6 +1429,8 @@ class SprichIME : InputMethodService() {
             }
 
             var text = finalTranscript.text.trim()
+            // Resolved language for safe post-processing (Unknown => generic only)
+            val postProcessResolved: ResolvedUtteranceLanguage = coordResult.resolvedLanguage
             // Punctuation triage: capture three stages for debug
             val raw = finalTranscript.text
             // POST_PROCESS stage: after spoken command parsing and typography normalization, before editor
@@ -1447,8 +1463,8 @@ class SprichIME : InputMethodService() {
                 // Even blank final must reset only if it owns active capture; otherwise preserve B
                 false
             } else {
-                val ok = applyFinalText(token, text, effectiveConfig.language)
-                Log.i("SprichIME", "final token=$token chars=${text.length} applied=$ok elapsedMs=$elapsed lang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected postLen=${text.length} lidMs=$lidLatencyMs")
+                val ok = applyFinalText(token, text, postProcessResolved)
+                Log.i("SprichIME", "final token=$token chars=${text.length} applied=$ok elapsedMs=$elapsed lang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected postLen=${text.length} lidMs=$lidLatencyMs resolved=$postProcessResolved")
                 if (ok) finalCommitCount++
                 ok
             }
@@ -1484,11 +1500,14 @@ class SprichIME : InputMethodService() {
                     if (isBActive) {
                         Log.i("SprichIME", "finalizePending ENDPOINT skip re-arm, B already active token=${currentUtteranceToken} A=$token")
                     } else {
-                        engine.beginSession(pending.config)
+                        when (pending.route) {
+                            is LocalAsrRoute.AutomaticFastConformer -> fastConformerEngine.beginSession(pending.config)
+                            is LocalAsrRoute.AccurateCanary -> engine.beginSession(pending.config)
+                        }
                         if (session.state.value !is SessionState.Listening) {
                             try { session.onListeningAgain() } catch (_: Exception) {}
                         }
-                        Log.i("SprichIME", "finalizePending ENDPOINT re-armed token=$token fieldStill=${fieldController.isCurrentSession(token.sessionId)}")
+                        Log.i("SprichIME", "finalizePending ENDPOINT re-armed token=$token route=${pending.route} fieldStill=${fieldController.isCurrentSession(token.sessionId)}")
                     }
                     finishedWithRetry = true
                 } catch (t: Throwable) {
@@ -1516,6 +1535,8 @@ class SprichIME : InputMethodService() {
             Log.i("SprichIME", "maybeClearActiveState skipping — B active current=$current vs finished $token")
             return
         }
+        // Collector may be cleared for next utterance only when no B active — handled by begin()
+        
         // This token is still active (or no active), safe to clear.
         // But also check if queue still has pending — keep endpointPending true if pending remains.
         val hasPending = queueDepth.get() > 0
@@ -1540,14 +1561,17 @@ class SprichIME : InputMethodService() {
      * - multiple pendings queued, not lost via single endpointJob (Race 4)
      */
     private suspend fun finalizeOnce(token: UtteranceToken, reason: StopReason) {
-        // Build immutable snapshot — copy PCM now before live buffer reused for next utterance
+        // Build immutable snapshot — authoritative collector, copy PCM now before live buffer reused
         val snap: ShortArray = try {
-            frozenUtterancePcm?.copyOf() ?: engine.snapshotUtterancePcm().copyOf()
+            val collectorSnap = utteranceAudio.snapshot().copyOf()
+            if (collectorSnap.isNotEmpty()) collectorSnap else frozenUtterancePcm?.copyOf() ?: engine.snapshotUtterancePcm().copyOf()
         } catch (_: Exception) { ShortArray(0) }
+        val pendingRoute = determineRoute(speechLanguage)
         val pending = PendingUtterance(
             token = token,
             pcm = snap,
             config = activeConfig.copy(),
+            route = pendingRoute,
             pushedSamples = pipelinePushedSampleCount,
             reason = reason,
             endpointTimestampNanos = System.nanoTime(),
@@ -1659,7 +1683,9 @@ class SprichIME : InputMethodService() {
         endpointPending.set(false)
         lastPartialText = ""
         frozenUtterancePcm = null
+        try { utteranceAudio.clear() } catch (_: Exception) {}
         try { engine.clearUtteranceCapture() } catch (_: Exception) {}
+        try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
         session.error(reason)
         statusText?.text = userStatus
         (statusText?.tag as? TextView)?.text = userHint
@@ -1687,7 +1713,7 @@ class SprichIME : InputMethodService() {
             // Do not cancel endpointJob yet — let finalizeOnce claim race be atomic.
             val token = currentUtteranceToken ?: UtteranceToken(session.sessionId, generationAtStop, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
             if (frozenUtterancePcm == null) {
-                frozenUtterancePcm = try { engine.snapshotUtterancePcm() } catch (_: Exception) { ShortArray(0) }
+                frozenUtterancePcm = try { utteranceAudio.snapshot().copyOf() } catch (_: Exception) { ShortArray(0) }
             }
             // Stop accepting new mic data already done via audio.stop(); endpoint will handle freeze.
             scope.launch {
@@ -1744,7 +1770,10 @@ class SprichIME : InputMethodService() {
         try { engineJob?.cancel() } catch (_: Exception) {}
         engineJob = null
         try { engine.cancelSession() } catch (_: Exception) {}
+        try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
         try { engine.clearUtteranceCapture() } catch (_: Exception) {}
+        try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
+        try { utteranceAudio.clear() } catch (_: Exception) {}
         utteranceActive.set(false)
         endpointPending.set(false)
         lastPartialText = ""
@@ -1764,10 +1793,12 @@ class SprichIME : InputMethodService() {
     }
 
     private fun writeDiagnostics(event: String) {
+        val routeStr = try { determineRoute(speechLanguage).toString() } catch (_: Exception) { "unknown" }
+        val collectorState = "collectorSamples=${utteranceAudio.size()} frozen=${utteranceAudio.isFrozen()} canaryLoads=${canaryLoadAttempts.get()} fastLoads=${fastLoadAttempts.get()}"
         val text = Diagnostics.collect(this, engine.engineId, languageTag = activeConfig.resolvedLanguageTag(), task = activeConfig.resolvedTask().name, sessionId = session.sessionId) +
-            event + "\n" +
+            event + " route=$routeStr $collectorState\n" +
             latency.report() + "\n" +
-            "audioActive=${audio.isActive()} vad=${vad.currentState()} engineLoaded=${engine.isLoaded()} sessionId=${session.sessionId}\n"
+            "audioActive=${audio.isActive()} vad=${vad.currentState()} engineLoaded=${engine.isLoaded()} fastLoaded=${fastConformerEngine.isLoaded()} lidLoaded=${lidEngine.isLoaded()} sessionId=${session.sessionId}\n"
         scope.launch(Dispatchers.IO) {
             try { Diagnostics.write(this@SprichIME, text) } catch (_: Exception) {}
         }
@@ -2001,6 +2032,112 @@ class SprichIME : InputMethodService() {
         }
     }
 
+
+    // ---------- Route determination (single source, based on speechLanguage) ----------
+    private fun determineRoute(speechLang: com.sprich.app.speech.api.SpeechLanguage): LocalAsrRoute {
+        return when (speechLang) {
+            is com.sprich.app.speech.api.SpeechLanguage.Auto -> LocalAsrRoute.AutomaticFastConformer
+            is com.sprich.app.speech.api.SpeechLanguage.Fixed -> {
+                val legacy = speechLang.toLegacyLanguage()
+                // Explicit AUTO from legacy (should not happen when Fixed, but guard)
+                if (legacy == com.sprich.app.speech.api.Language.AUTO) LocalAsrRoute.AutomaticFastConformer
+                else LocalAsrRoute.AccurateCanary(legacy)
+            }
+        }
+    }
+
+    private fun isAutomaticReadyForTest(): Boolean {
+        return try { com.sprich.app.models.manager.ModelManager(this).isAutomaticReady() } catch (_: Exception) { false }
+    }
+
+    private fun maybeUnloadUnused(activeRoute: LocalAsrRoute) {
+        // Avoid keeping both heavy stacks resident — unload unused when queue drained.
+        if (queueDepth.get() != 0) return // pending work — do not unload while finalizing
+        when (activeRoute) {
+            is LocalAsrRoute.AutomaticFastConformer -> {
+                // Automatic keeps LID+Fast, unload Canary if idle
+                if (engine.isLoaded()) {
+                    scope.launch { try { engine.unload() } catch (_: Exception) {} }
+                    Log.i("SprichIME", "maybeUnload: Automatic active — unloading Canary to save memory")
+                }
+            }
+            is LocalAsrRoute.AccurateCanary -> {
+                // Accurate keeps Canary, may unload LID/Fast after safe transition
+                if (lidEngine.isLoaded() || fastConformerEngine.isLoaded()) {
+                    scope.launch {
+                        try { lidEngine.unload() } catch (_: Exception) {}
+                        try { fastConformerEngine.unload() } catch (_: Exception) {}
+                    }
+                    Log.i("SprichIME", "maybeUnload: Accurate active — unloading LID/Fast")
+                }
+            }
+        }
+    }
+
+    // Visibility for tests — gate assertions
+    fun getCanaryLoadAttemptsForTest(): Long = canaryLoadAttempts.get()
+    fun getFastLoadAttemptsForTest(): Long = fastLoadAttempts.get()
+    fun getLidLoadAttemptsForTest(): Long = lidLoadAttempts.get()
+    fun isAutomaticRouteForTest(): Boolean = determineRoute(speechLanguage) is LocalAsrRoute.AutomaticFastConformer
+    fun getCurrentRouteForTest(): String = determineRoute(speechLanguage).toString()
+    fun getUtteranceAudioCollectorForTest(): UtteranceAudioCollector = utteranceAudio
+    fun isCanaryLoadedForTest(): Boolean = try { engine.isLoaded() } catch (_: Exception) { false }
+    fun isFastLoadedForTest(): Boolean = try { fastConformerEngine.isLoaded() } catch (_: Exception) { false }
+    fun isLidLoadedForTest(): Boolean = try { lidEngine.isLoaded() } catch (_: Exception) { false }
+
+    // Overload for ResolvedUtteranceLanguage post-processing
+    private fun applyFinalText(token: UtteranceToken, text: String, resolved: ResolvedUtteranceLanguage): Boolean {
+        val inputConnection = currentInputConnection ?: return false
+        if (token.generation != sessionGeneration.get()) { staleCallbackDrops++; return false }
+        if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) { staleCallbackDrops++; return false }
+        if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) { staleCallbackDrops++; return false }
+        if (!fieldController.isCurrentSession(token.sessionId)) { staleCallbackDrops++; return false }
+        if (inputConnection != token.capturedIc && token.capturedIc != null) {
+            if (inputConnection.hashCode() != currentFieldTokenIcHash && currentFieldTokenIcHash != 0) {
+                Log.w("SprichIME", "applyFinalText IC mismatch token=$token")
+                staleCallbackDrops++
+                return false
+            }
+        }
+        val parsed = try {
+            com.sprich.app.input.commands.SpokenEditingParser.parse(text, resolved, commandsEnabled)
+        } catch (_: Exception) {
+            com.sprich.app.input.commands.SpokenEditingParser.EditResult(text, false)
+        }
+        return if (com.sprich.app.input.commands.SpokenEditingParser.isDeleteCommand(parsed.text)) {
+            val toDelete = if (parsed.text == "__DELETE_SENTENCE__") 120 else 40
+            val deleted = inputConnection.deleteSurroundingText(toDelete, 0)
+            try { fieldController.commitUtterance(token.sessionId, token.utteranceId, inputConnection, "") } catch (_: Exception) {}
+            try { composition.discardPartial(inputConnection) } catch (_: Exception) { composition.finishIfActive(inputConnection) }
+            deleted
+        } else {
+            val finalText = try { vocabStore.apply(parsed.text) } catch (_: Exception) { parsed.text }
+            val result = try { fieldController.commitUtteranceTyped(token.sessionId, token.utteranceId, inputConnection, finalText) } catch (_: Exception) { FieldSessionController.CommitResult.StaleSession }
+            return when (result) {
+                is FieldSessionController.CommitResult.Committed -> true
+                is FieldSessionController.CommitResult.EditorRejected -> {
+                    Log.w("SprichIME", "controller EditorRejected, retrying direct commit token=$token")
+                    composition.applyUpdate(inputConnection, finalText, "", true)
+                }
+                is FieldSessionController.CommitResult.AlreadyFinalized -> {
+                    Log.w("SprichIME", "AlreadyFinalized token=$token — never direct-commit")
+                    false
+                }
+                is FieldSessionController.CommitResult.StaleSession -> {
+                    Log.w("SprichIME", "StaleSession token=$token — never direct-commit")
+                    false
+                }
+                is FieldSessionController.CommitResult.WrongField -> {
+                    Log.w("SprichIME", "WrongField token=$token — never direct-commit")
+                    false
+                }
+                is FieldSessionController.CommitResult.NoInputConnection -> {
+                    Log.w("SprichIME", "NoInputConnection token=$token — never direct-commit")
+                    false
+                }
+            }
+        }
+    }
 
     companion object {
         private const val SAMPLE_RATE = 16_000L

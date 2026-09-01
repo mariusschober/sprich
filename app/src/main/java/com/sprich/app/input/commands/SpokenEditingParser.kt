@@ -1,6 +1,7 @@
 package com.sprich.app.input.commands
 
 import com.sprich.app.input.typography.TypographyNormalizer
+import com.sprich.app.speech.ResolvedUtteranceLanguage
 import com.sprich.app.speech.api.Language
 
 /**
@@ -54,7 +55,31 @@ object SpokenEditingParser {
     // Removed correctionTriggers — implicit backtracking was unsafe (substring "no" in "not" etc.)
     // Only explicit whole-utterance delete commands remain. See mission: false positives worse than misses.
 
+    /**
+     * Language-aware parse — when language is known (EN/DE/ES/FR), normal behavior.
+     * For backwards compat, Language.AUTO here is treated as EN (legacy) — prefer parseWithResolved for new code.
+     */
     fun parse(text: String, lang: Language, enableCommands: Boolean): EditResult {
+        // Preserve legacy contract but delegate to resolved path for safety
+        val resolved: ResolvedUtteranceLanguage = when (lang) {
+            Language.AUTO -> ResolvedUtteranceLanguage.Unknown
+            else -> ResolvedUtteranceLanguage.Known(lang)
+        }
+        // Legacy callers that passed AUTO previously got English commands — now they get Unknown (safe, generic only).
+        // If that legacy behavior is required, caller should pass Known(Language.EN) explicitly.
+        // We treat Unknown as no language-specific commands/ITN to avoid wrong-language damage.
+        return parse(text, resolved, enableCommands)
+    }
+
+    /** Preferred: distinguish Known vs Unknown — Unknown uses generic-only processing. */
+    fun parse(text: String, resolved: ResolvedUtteranceLanguage, enableCommands: Boolean): EditResult {
+        if (resolved is ResolvedUtteranceLanguage.Unknown) {
+            // Safe generic only — no language-specific spoken commands, no English email ITN.
+            // Only generic typography normalization (removes space before . , etc., but not : ; ? !)
+            val normalized = TypographyNormalizer.normalizeForUnknown(text)
+            return EditResult(normalized, false)
+        }
+        val lang = (resolved as ResolvedUtteranceLanguage.Known).language
         if (!enableCommands) {
             val raw = applyITN(text, lang)
             val normalized = TypographyNormalizer.normalize(raw, lang)

@@ -36,10 +36,10 @@ class SprichApp : Application() {
             runCatching {
                 mm.checkIntegrity()
             }
-            Preferences(this@SprichApp).setEngine(EngineType.ACCURATE)
-            val result = canaryEngine.load()
-            if (result.isFailure) Log.e("SprichApp", "Canary preload failed (model not yet downloaded)", result.exceptionOrNull())
-            else Log.i("SprichApp", "Canary preload success")
+            // Do NOT unconditionally preload Canary — Automatic winner is Tiny LID + FastConformer (224 MB), not Canary (198 MB).
+            // Preload is delegated to SprichIME selective logic based on speechLanguage and isAutomaticReady().
+            // Keeps memory target: LID+Fast resident for Automatic, not LID+Fast+Canary.
+            Log.i("SprichApp", "CanaryEngine initialized, selective preload deferred to SprichIME (Automatic = FastConformer, Accurate = Canary)")
         }
         // Global crash breadcrumb — local only, no network
         val prev = Thread.getDefaultUncaughtExceptionHandler()

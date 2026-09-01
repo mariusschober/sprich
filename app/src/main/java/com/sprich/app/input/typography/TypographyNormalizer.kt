@@ -1,5 +1,6 @@
 package com.sprich.app.input.typography
 
+import com.sprich.app.speech.ResolvedUtteranceLanguage
 import com.sprich.app.speech.api.Language
 
 /**
@@ -36,6 +37,21 @@ object TypographyNormalizer {
         // EN, DE, ES, AUTO: full set . , ; : ? ! ) ] }
         // Using [ \t] not \s to preserve newlines
         return closingPunctEN.replace(text) { it.groupValues[1] }
+    }
+
+    /** Generic, language-neutral normalization for Unknown LID — safe even when language unresolved. */
+    fun normalizeForUnknown(text: String): String {
+        if (text.isEmpty()) return text
+        // Conservative: only fix obvious "hello ." -> "hello." and "word ," -> "word," etc.
+        // Do NOT force French ? ! : ; spacing according to English rules if language is unknown.
+        // Use FR pattern (., ) ] }) — subset of EN that is universally safe.
+        return closingPunctFR.replace(text) { it.groupValues[1] }
+    }
+
+    /** Preferred overload — Known uses language-aware, Unknown uses generic. */
+    fun normalize(text: String, resolved: ResolvedUtteranceLanguage): String = when (resolved) {
+        is ResolvedUtteranceLanguage.Known -> normalize(text, resolved.language)
+        is ResolvedUtteranceLanguage.Unknown -> normalizeForUnknown(text)
     }
 
     /**
