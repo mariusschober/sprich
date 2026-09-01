@@ -122,8 +122,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.apache.commons:commons-compress:1.26.2")
 
-    // Sherpa-ONNX for Canary 180M Flash INT8 (local AAR, speech isolation preserved)
-    implementation(files("libs/sherpa-onnx-1.12.11.aar"))
+    // Sherpa-ONNX for Canary 180M Flash INT8 + Nemotron 3.5 Auto (local AAR, speech isolation preserved)
+    // Baseline 1.12.11 retained for fallback verification; production now 1.13.6 (multilingual prompt_index)
+    implementation(files("libs/sherpa-onnx-1.13.6.aar"))
 
     // Coroutines & serialization
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
