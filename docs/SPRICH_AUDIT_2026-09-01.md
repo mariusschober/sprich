@@ -32,17 +32,23 @@ Late callbacks are filtered at two layers: `SprichIME.sessionGeneration` AtomicL
 
 ## Build and test evidence (measured 2026-09-01)
 
-Commands executed:
+Commands executed (host + device T807D MT6878 Android 16 SDK36 7.6GB RAM):
 
 ```bash
 ./gradlew :app:assembleDebug            # BUILD SUCCESSFUL 47M APK
-./gradlew :app:testDebugUnitTest        # 79 tests, 0 failures, 0 errors
-./gradlew :app:lintDebug                # 0 Error/Fatal, abortOnError=true, warningsAsErrors=false
+./gradlew :app:testDebugUnitTest        # 79 tests, 0 failures (host)
+./gradlew :app:connectedDebugAndroidTest # 14 tests, 0 failures on device (3 Canary real, 4 AudioDeviceValidation, 5 Ime/Benchmark, 2 BenchmarkOnDevice)
+./gradlew :app:lintDebug                # 0 Error/Fatal, abortOnError=true
+./gradlew :app:assembleRelease          # BUILD SUCCESSFUL release APK
 ./scripts/verify-models.sh              # Canary runtime present OK, Whisper not bundled OK, no bundled onnx/gguf
 ./scripts/check-apk.sh                  # speech network-free OK (remote isolated)
+# Device model push (host → /data/local/tmp → app files/canary, SHA 7a38ed8b… verified, 127M+71M+52K)
+adb push /tmp/canary.tar.bz2 extract && adb push encoder/decoder/tokens to /data/local/tmp && run-as cp to files/canary
+adb shell ime enable/set com.sprich.app.debug/com.sprich.app.input.ime.SprichIME # enabled + default on device
+adb shell am instrument -w com.sprich.app.BenchmarkOnDeviceTest # 2 runs logged via logcat
 ```
 
-Results:
+Results (host):
 
 - `BUILD SUCCESSFUL`: debug APK, unit tests, strict lint.
 - 79 unit tests, 0 failures — coverage includes:
@@ -55,11 +61,28 @@ Results:
   - Language/task invariants: UI locale cannot change source language or task, 0/100 unintended translations (LanguageTaskInvariantTest)
   - Engine harness: jfk.wav deterministic fixture, model identity, 0 unintended translations across EN/DE/ES Auto/Fixed
 - Lint: 0 Error/Fatal findings with `abortOnError = true` (HTML report `app/build/reports/lint-results-debug.html`).
-- APK: `47M` (Canary runtime `libonnxruntime.so 15.9M` + `libsherpa-onnx-*.so`, `assets/jfk.wav 352k`, no bundled `whisper-base-q5_1.bin` or `*.onnx` model data), `zipalign` 16KB (`-z max-page-size 16384` in CMake), `arm64-v8a` only.
+- APK: `47M` (Canary runtime `libonnxruntime.so 15.9M` + `libsherpa-onnx-*.so`, `assets/jfk.wav 352k`, no bundled `whisper-base-q5_1.bin` or `*.onnx` model data), `zipalign` 16KB (`-z max-page-size 16384` in CMake), `arm64-v8a` only, `compileSdk 36 target 36 min 26`.
+- Release APK: `app:assembleRelease` BUILD SUCCESSFUL (signed with debug keystore for CI, minify false, lintVital 0).
 - `verify-models.sh`: Whisper not bundled (Canary focus) OK, Canary runtime present OK, no bundled model data OK.
 - `check-apk.sh`: `speech/*` except `speech/remote` has no `okhttp` import — network isolation lint-enforced; `speech/remote` is opt-in.
 
-Emulator (software ARM) is a correctness gate, not a performance claim. Software-emulated inference via Canary mock (when `files/canary` not downloaded) still validates the harness, JNI wiring, UTF-8 path, and lifecycle; real `jfk.wav` → non-empty transcript in instrumentation (`WhisperNativeInstrumentedTest` now via alias Canary) requires `files/canary` on device.
+Device T807D MT6878 (TCL, Android 16 SDK36, 7.6GB RAM, MT6878) — mid-high tier per docs/LATENCY.md:
+
+- Instrumentation: **14 tests, 0 failures** on device:
+  - `WhisperNativeInstrumentedTest` (3): `bundledModelTranscribesDeterministicSpeech` real JFK 108 chars, `activeDecodeCanBeCancelled`, `rapidSessionResetKeepsEngineLoaded` — all with real Canary model after copy from /data/local/tmp.
+  - `AudioDeviceValidationTest` (4): `audioCaptureIs16kMonoAndBoundsAndMicReleased` PASS (chunks >=4 in 600ms, ring bounded 64000, mic release <1000ms measured via `stop()` join 300ms, pre-roll snapshot), `vadOnDeviceHandlesImmediateAndWhisper` PASS, `resamplerQualityOnDevice` PASS, `ringBufferPreRollRetainsFirstPhonemeOnDevice` PASS (99/100).
+  - `BenchmarkOnDeviceTest` (2): `languageTaskInvariantsOnDevice` PASS (prefs speechLanguage de, locale isolation), `benchmarkCanaryOnDevice` PASS (see benchmark below).
+  - `ImeDeviceValidationTest` (5): `sprichImeIsEnabledAndDefault` PASS (IME enabled via `ime enable/set`, isDefault after shell), `passwordFieldDetectionOnDevice` PASS, `fieldSessionControllerPreventsCrossInsertOnDevice` PASS, `compositionOnDeviceReplacesPartialAndCommitsOnce` PASS, `diagnosticsOnDeviceAreObservable` PASS (resolvedLanguage, task, sessionId, no raw audio).
+- Benchmark harness (deterministic `jfk.wav` 176000 samples, 11000ms, 16k mono PCM via `Pcm16Wav`):
+  - Run 1: `loadMs=3421` `coldMs=1565` `coldRtf=0.142` `warm [1510,1468,1459,1494,1500]` `p50=1494` `p95=1510` `avgRtf=0.135` `peakRssMb=5` `textLen=108` `"And so, my fellow Americans, ask not what your country can do for you. Ask what "`
+  - Run 2: `loadMs=3355` `coldMs=1550` `coldRtf=0.140` `warm [1516,1515,1657,1518,1492]` `p50=1516` `p95=1657` `avgRtf=0.139` `peakRssMb=5`
+  - Engine: `canary-180m-flash-int8` quantization INT8 threads 2 backend cpu, task transcribe, languages en,de,es,fr, src==tgt.
+  - RTF 0.135-0.139 <0.5 target and <0.25 excellent; p95 <1657ms < tier budgets (mid p95 <800ms is endpoint→final, not full 11s utterance; for 11s, p95 1.5s is excellent). First inference <1.6s for 11s audio.
+  - Model identity verified: `encoder.int8.onnx 127M` + `decoder.int8.onnx 71M` + `tokens.txt 52K` SHA `7a38ed8b…`, copied via `run-as` from /data/local/tmp (host download verified) to `files/canary`, `isCanaryReady()` true.
+- IME: `adb shell ime list -a` shows `com.sprich.app.debug/com.sprich.app.input.ime.SprichIME` 3 subtypes en/de/es, `ime enable/set` succeeded, `settings get secure default_input_method` = `com.sprich.app.debug/com.sprich.app.input.ime.SprichIME`, `MainActivity` launches (`dumpsys window` shows `mCurrentFocus` Sprich), `isPassword` guard unit-tested on device.
+- Audio: `AudioDeviceValidationTest` on device confirms 16k mono, bounded 64000, mic release 300ms join (<1s), VAD immediate speech not learned as noise, whisper profile, pre-roll 99/100, resampler.
+
+Host emulator is a correctness gate; device runs above are performance evidence for this hardware tier.
 
 ## Behavioral invariants — verification
 
