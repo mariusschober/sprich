@@ -59,7 +59,18 @@ jobs:
               private var instantMode: Boolean = false
           """,
           )
-          replace_once("                stopDictation()\n", "                stopDictation(commitPending = true)\n")
+          replace_once(
+              """    private fun toggleDictation() {
+                  try {
+                      if (isDictationRunning()) {
+                          stopDictation()
+          """,
+              """    private fun toggleDictation() {
+                  try {
+                      if (isDictationRunning()) {
+                          stopDictation(commitPending = true)
+          """,
+          )
           replace_once(
               """            composition.reset()
               vad.reset()
