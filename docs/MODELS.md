@@ -1,21 +1,21 @@
-# MODELS — reliability build (2026-09-01)
+# MODELS — reliability build (2026-09-02)
 
-## Supported: Accurate (Canary 180M Flash INT8) — primary
+## Supported: Accurate (Canary 180M Flash INT8) — primary (explicit languages)
 
 | Property | Value |
 |---|---|
 | Engine | `Canary 180M Flash INT8` via `sherpa-onnx` OfflineRecognizer |
 | Delivery | Device-side, not bundled in APK — downloaded to `files/canary/` on first use |
-| Files | `encoder.int8.onnx`, `decoder.int8.onnx`, `tokens.txt` |
+| Files | `encoder.int8.onnx 127 MB`, `decoder.int8.onnx 71 MB`, `tokens.txt 52 KB` = **198 MB** on-device |
 | Download | `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8.tar.bz2` |
-| Size | `147 MB` (manifest `sizeBytes=154140672`) |
+| Size | `198 MB` (manifest `sizeBytes=207618048` = 198 * 1024 * 1024) |
 | SHA-256 | `7a38ed8b13f014ad632b09ff8d22e0c6f1359dd046af9235d281dfae841b9ab9` |
-| Runtime | `libsherpa-onnx-1.12.11.aar` → `libonnxruntime.so` + `libsherpa-onnx-*.so`, arm64-v8a only, CPU, 2 threads |
+| Runtime | `libsherpa-onnx-1.12.11.aar` → `libonnxruntime.so` + `libsherpa-onnx-*.so`, arm64-v8a only, CPU, 2 threads, `inferenceDispatcher + Mutex` serialized |
 | Sample rate | `16000 Hz` mono PCM16 (engine-required, verified via `AudioCapture` + `Pcm16Wav`) |
 | Quantization | `INT8` |
-| Languages exposed | Automatic, English, German, Spanish, French (EN/DE/ES first-class, FR via same runtime) |
+| Languages exposed | **Explicit only**: English, German, Spanish, French (FR now via explicit `fr`). **Automatic not natively supported** — `capabilities.languageDetection=false`, `supportedLanguages` does not contain `AUTO`; when `Auto` pref is present, engine falls back single-decode to `en` with diagnostic. Previous stopword multi-decode (EN/DE/ES 4s window + 30s cache) removed as architecturally invalid. See `docs/MODEL_BAKEOFF.md`. |
 | Task | `transcribe` only (`srcLang == tgtLang` on every decode, never `translate`) |
-| Decoder options | beam=5 (default), serialized create/decode/release, cancellable speculative decode, LCP N=2 stabilizer |
+| Decoder options | beam=5 (default), serialized create/decode/release via Mutex, per-utterance PCM frozen at endpoint, cancellable speculative decode, LCP N=2 stabilizer, `UtteranceToken` + `finalizeOnce` exactly-once |
 | License | `CC-BY-4.0` (model) + `Apache-2.0` (sherpa-onnx) — attribution in Settings → Licenses |
 
 At runtime, Sprich verifies `files/canary` integrity (size >50 MB per file, SHA-256 after download, atomic rename from `*.tmp`). Missing files are an explicit load error; there is no cloud fallback unless the user has explicitly configured Remote STT (opt-in).
