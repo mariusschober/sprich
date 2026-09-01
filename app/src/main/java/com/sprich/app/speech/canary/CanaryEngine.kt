@@ -25,7 +25,9 @@ class CanaryEngine(
     private var loaded = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1))
     private val stabilizer = TranscriptStabilizer(2)
-    private val flow = MutableSharedFlow<TranscriptUpdate>(replay = 1, extraBufferCapacity = 16)
+    // Transcript updates are per-session events, not durable state. Replaying the previous
+    // partial into a newly attached IME collector can duplicate an earlier utterance.
+    private val flow = MutableSharedFlow<TranscriptUpdate>(replay = 0, extraBufferCapacity = 16)
     private val pcmRing = com.sprich.app.core.audio.AudioRingBuffer(16000*30)
     private var cfg: SpeechSessionConfig? = null
     private var job: Job? = null
@@ -144,7 +146,6 @@ class CanaryEngine(
             flow.tryEmit(TranscriptUpdate("", "", isFinal = true))
             pcmRing.clear()
             stabilizer.reset()
-            beginSession(cfg ?: SpeechSessionConfig())
             return@withContext FinalTranscript("")
         }
         val speechLang = cfg?.speechLanguage ?: SpeechLanguage.fromLegacy(cfg?.language ?: Language.AUTO)
@@ -165,18 +166,23 @@ class CanaryEngine(
             flow.tryEmit(TranscriptUpdate("", "", isFinal = true))
             pcmRing.clear()
             stabilizer.reset()
-            beginSession(cfg ?: SpeechSessionConfig())
             return@withContext FinalTranscript("")
         }
         val res = stabilizer.pushHypothesis(text)
         stabilizer.commitStable()
         flow.tryEmit(TranscriptUpdate(res.stable, res.unstable, true))
         pcmRing.clear()
-        beginSession(cfg ?: SpeechSessionConfig())
         FinalTranscript(text.trim())
     }
 
-    override fun cancelSession() { job?.cancel(); pcmRing.clear(); stabilizer.reset(); scope.launch { flow.emit(TranscriptUpdate("","",true)) } }
+    override fun cancelSession() {
+        job?.cancel()
+        pcmRing.clear()
+        stabilizer.reset()
+        // Clear any current collector synchronously. With replay=0 this can never seed the
+        // next session with an earlier non-final hypothesis.
+        flow.tryEmit(TranscriptUpdate("", "", true))
+    }
     override fun reset() = cancelSession()
 
     private fun isSherpaAvailable(): Boolean = try { Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer"); true } catch (_: Throwable){ false }
