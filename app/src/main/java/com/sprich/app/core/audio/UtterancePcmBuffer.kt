@@ -42,12 +42,19 @@ class UtterancePcmBuffer(
     }
 
     private fun appendInternal(samples: ShortArray) {
-        // Bounded: drop oldest while overflow would happen
+        // Strict bound including oversized single chunk (> maxSamples): keep final maxSamples.
+        if (samples.size >= maxSamples) {
+            chunks.clear()
+            size = 0
+            val tail = samples.copyOfRange(samples.size - maxSamples, samples.size)
+            chunks.addLast(tail)
+            size = maxSamples
+            return
+        }
         if (size + samples.size > maxSamples) {
             val overflow = size + samples.size - maxSamples
             dropOldest(overflow)
         }
-        // Copy to avoid external mutation; store as chunk
         chunks.addLast(samples.copyOf())
         size += samples.size
     }

@@ -50,6 +50,17 @@ class UtteranceAudioCollector(
     }
 
     private fun appendInternal(samples: ShortArray) {
+        // Strict bound: collector.size() <= maxSamples after EVERY operation, including oversized chunk > maxSamples.
+        // Policy: keep final maxSamples portion deterministically.
+        if (samples.size >= maxSamples) {
+            // Oversized chunk — keep only its final maxSamples portion, drop everything else.
+            chunks.clear()
+            size = 0
+            val tail = samples.copyOfRange(samples.size - maxSamples, samples.size)
+            chunks.addLast(tail)
+            size = maxSamples
+            return
+        }
         if (size + samples.size > maxSamples) {
             val overflow = size + samples.size - maxSamples
             dropOldest(overflow)

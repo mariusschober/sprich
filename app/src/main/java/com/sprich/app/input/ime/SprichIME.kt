@@ -98,6 +98,15 @@ class SprichIME : InputMethodService() {
     // Kept for legacy fallback isolation checks; primary source is utteranceAudio.
     @Volatile private var frozenUtterancePcm: ShortArray? = null
 
+    // --- Phase 0A: immutable active utterance descriptor — frozen at onset, Settings changes apply to NEXT utterance only.
+    // Once speech onset occurs, route / language configuration / transcription mode / provider config revision / refinement mode must not change for that utterance.
+    data class ActiveUtterance(
+        val token: UtteranceToken,
+        val localRoute: LocalAsrRoute,
+        val speechConfig: SpeechSessionConfig,
+    )
+    @Volatile private var activeUtterance: ActiveUtterance? = null
+
     // Overlapping utterance queue — immutable per-utterance snapshots, serialized finalization actor
     // Invariant: one spoken utterance → one immutable PCM snapshot → one final decode → one deterministic post-processing pass → one editor commit
     // Active capture and pending finalizations are distinct: utterance N+1 can be captured while N decodes without mutation.
@@ -656,6 +665,7 @@ class SprichIME : InputMethodService() {
             // Keep engine ring clear for partials when in Accurate mode, but collector is authoritative
             try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
             currentUtteranceToken = null
+            activeUtterance = null
             utteranceActive.set(false)
             endpointPending.set(false)
             undoStack.clear()
@@ -865,6 +875,7 @@ class SprichIME : InputMethodService() {
             try { engine.clearUtteranceCapture() } catch (_: Exception) {}
             try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
             currentUtteranceToken = null
+            activeUtterance = null
             Log.i("SprichIME", "vad reset ${vad.calibrationInfo()} activeConfig=$activeConfig prefsLang=$language speechLang=$speechLanguage")
             // Respect user language preference; Canary handles EN/DE/ES/FR, AUTO falls back to EN inside engine.
             // Resolved once per session and observable in diagnostics; Locale.getDefault() is never used here.
@@ -1072,14 +1083,14 @@ class SprichIME : InputMethodService() {
                 // AUTHORITATIVE: UtteranceAudioCollector owns seeding preRoll exactly once — engine-independent.
                 frozenUtterancePcm = null
                 try { utteranceAudio.begin(preRoll) } catch (_: Exception) {}
-                // Explicit Accurate mode: feed Canary as consumer for live partials, but NOT authoritative.
+                // Freeze route & config at onset — Settings changes after this apply to NEXT utterance only (Phase 0A).
                 val routeAtOnset = determineRoute(speechLanguage)
+                // Explicit Accurate mode: Canary is live consumer for partials, but NOT authoritative.
+                // Automatic is final-only FastConformer via collector — no second full PCM duplication (Phase 0B).
                 if (routeAtOnset is LocalAsrRoute.AccurateCanary) {
                     try { engine.beginUtteranceCapture(preRoll) } catch (_: Exception) {}
-                } else {
-                    // Automatic: do NOT feed Canary; FastConformer is final-only, collector is authoritative.
-                    try { fastConformerEngine.beginUtteranceCapture(preRoll) } catch (_: Exception) { /* fast buffer optional */ }
                 }
+                // For Automatic: do NOT maintain duplicate FastConformer live buffer; collector is sole owner.
                 // Create immutable token for this utterance — monotonically increasing utteranceId
                 val utteranceId = utteranceIdCounter.incrementAndGet()
                 val token = UtteranceToken(
@@ -1091,7 +1102,9 @@ class SprichIME : InputMethodService() {
                     capturedIc = try { currentInputConnection } catch (_: Exception) { null },
                 )
                 currentUtteranceToken = token
-                Log.i("SprichIME", "utterance onset token=$token preRollSamples=${preRoll.size} pushedTotal=$pipelinePushedSampleCount")
+                // Single immutable descriptor for the entire utterance lifetime — later chunks/endpoint must not re-read mutable speechLanguage.
+                activeUtterance = ActiveUtterance(token, routeAtOnset, activeConfig.copy())
+                Log.i("SprichIME", "utterance onset token=$token routeAtOnset=$routeAtOnset preRollSamples=${preRoll.size} pushedTotal=$pipelinePushedSampleCount")
                 scope.launch {
                     if (generation == sessionGeneration.get() && session.state.value is SessionState.Listening) {
                         session.onSpeechOnset()
@@ -1119,14 +1132,12 @@ class SprichIME : InputMethodService() {
                 pipelinePushedSampleCount += samples.size
                 // AUTHORITATIVE: collector is single owner — append once.
                 try { utteranceAudio.append(samples) } catch (_: Exception) {}
-                // Consumer split: Accurate feeds Canary for partials, Automatic captures only (FastConformer final)
-                val routeAtChunk = determineRoute(speechLanguage)
+                // Consumer split: use frozen route from activeUtterance, not mutable speechLanguage (Phase 0A). Automatic is final-only, no duplicate buffer (Phase 0B).
+                val routeAtChunk = activeUtterance?.localRoute ?: determineRoute(speechLanguage)
                 if (routeAtChunk is LocalAsrRoute.AccurateCanary) {
                     try { engine.pushAudio(samples, timestampNanos) } catch (_: Exception) {}
-                } else {
-                    // Automatic final-only — no live Canary push; optionally feed Fast buffer for symmetry but collector remains authoritative
-                    try { fastConformerEngine.pushAudio(samples, timestampNanos) } catch (_: Exception) {}
                 }
+                // For Automatic: no engine push — collector owns PCM, FastConformer decodes frozen snapshot at finalization only.
             }
 
             if (
@@ -1145,20 +1156,24 @@ class SprichIME : InputMethodService() {
                     Log.w("SprichIME", "endpoint without token — creating synthetic token")
                     UtteranceToken(session.sessionId, generation, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
                 }
-                // Create immutable PendingUtterance containing ALL state required to finalize that utterance.
-                // Once created, nothing in the active capture path may mutate it. Route snapshot ensures Settings change cannot mis-route.
-                val pendingRoute = determineRoute(speechLanguage).also { currentRouteSnapshot ->
-                    Log.i("SprichIME", "endpoint route snapshot token=$token route=$currentRouteSnapshot configLang=${activeConfig.resolvedLanguageTag()}")
+                // Use frozen route/config from activeUtterance — never re-read mutable speechLanguage (Phase 0A).
+                val captured = activeUtterance
+                val pendingRoute = (captured?.takeIf { it.token.utteranceId == token.utteranceId }?.localRoute ?: determineRoute(speechLanguage)).also { currentRouteSnapshot ->
+                    Log.i("SprichIME", "endpoint route frozen token=$token route=$currentRouteSnapshot capturedWas=${captured?.localRoute} configLang=${(captured?.speechConfig ?: activeConfig).resolvedLanguageTag()}")
                 }
+                val pendingConfig = captured?.takeIf { it.token.utteranceId == token.utteranceId }?.speechConfig ?: activeConfig.copy()
                 val pending = PendingUtterance(
                     token = token,
                     pcm = frozenSnap.copyOf(), // immutable isolated copy — B cannot clear/replace it
-                    config = activeConfig.copy(),
+                    config = pendingConfig,
                     route = pendingRoute,
                     pushedSamples = pipelinePushedSampleCount,
                     reason = StopReason.ENDPOINT,
                     endpointTimestampNanos = System.nanoTime(),
                 )
+                // Active utterance completed — clear descriptor so next onset creates fresh one; but retain until next onset for overlapping queue isolation.
+                // Keep nulling after enqueue so chunks cannot reuse stale route.
+                activeUtterance = null
                 Log.i("SprichIME", "endpoint detected token=$token pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount frozenSamples=${frozenSnap.size} queueDepthBefore=${queueDepth.get()}")
                 enqueuePending(pending)
             }
@@ -1535,6 +1550,10 @@ class SprichIME : InputMethodService() {
             Log.i("SprichIME", "maybeClearActiveState skipping — B active current=$current vs finished $token")
             return
         }
+        // Clear frozen descriptor if it belongs to this token (phase 0A)
+        if (activeUtterance?.token?.utteranceId == token.utteranceId) {
+            activeUtterance = null
+        }
         // Collector may be cleared for next utterance only when no B active — handled by begin()
         
         // This token is still active (or no active), safe to clear.
@@ -1566,11 +1585,14 @@ class SprichIME : InputMethodService() {
             val collectorSnap = utteranceAudio.snapshot().copyOf()
             if (collectorSnap.isNotEmpty()) collectorSnap else frozenUtterancePcm?.copyOf() ?: engine.snapshotUtterancePcm().copyOf()
         } catch (_: Exception) { ShortArray(0) }
-        val pendingRoute = determineRoute(speechLanguage)
+        // Use frozen utterance descriptor if it matches this token (covers USER_STOP path); otherwise fallback to current speechLanguage.
+        val captured = activeUtterance?.takeIf { it.token.utteranceId == token.utteranceId }
+        val pendingRoute = captured?.localRoute ?: determineRoute(speechLanguage)
+        val pendingConfig = captured?.speechConfig ?: activeConfig.copy()
         val pending = PendingUtterance(
             token = token,
             pcm = snap,
-            config = activeConfig.copy(),
+            config = pendingConfig,
             route = pendingRoute,
             pushedSamples = pipelinePushedSampleCount,
             reason = reason,
@@ -1672,6 +1694,7 @@ class SprichIME : InputMethodService() {
         fieldGeneration.incrementAndGet()
         currentFieldId = null
         currentUtteranceToken = null
+        activeUtterance = null
         synchronized(finalizedUtterances) { /* keep claimed ids to prevent reuse, but clear old if needed */ }
         try { audio.stop() } catch (_: Exception) {}
         try { engineJob?.cancel() } catch (_: Exception) {}
@@ -1736,6 +1759,7 @@ class SprichIME : InputMethodService() {
                     lastPartialText = ""
                     frozenUtterancePcm = null
                     currentUtteranceToken = null
+                    activeUtterance = null
                     pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
                     vad.reset()
                     lastVadState = Vad.State.SILENCE
@@ -1767,6 +1791,7 @@ class SprichIME : InputMethodService() {
             else -> currentFieldId
         }
         currentUtteranceToken = null
+        activeUtterance = null
         try { engineJob?.cancel() } catch (_: Exception) {}
         engineJob = null
         try { engine.cancelSession() } catch (_: Exception) {}
