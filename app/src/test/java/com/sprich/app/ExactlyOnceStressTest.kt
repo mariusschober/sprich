@@ -361,9 +361,43 @@ class ExactlyOnceStressTest {
     @Test
     fun editorSilentlyCommitsIsDetectedAndFallbackPreventsDuplication() {
         val comp = CompositionManager()
+        // New policy: transcript-content-based silent-commit detection removed per P1.
+        // Only explicit rejection via setComposingText returning false triggers FINAL_ONLY.
+        // This fake returns false on second call to simulate explicit rejection (reliable signal).
         val ic = object : FakeIc() {
+            var calls = 0
             override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                // Adversarial: silently commit while returning success
+                calls++
+                if (calls == 1) {
+                    // First call succeeds (compliant)
+                    composing = text?.toString()
+                    setComposingCalls++
+                    return true
+                }
+                // Second call explicitly rejects — manager must fallback to IME preview + final-only
+                setComposingCalls++
+                return false
+            }
+            override fun finishComposingText(): Boolean { composing = null; return true }
+        }
+        // First partial succeeds
+        comp.applyUpdate(ic, "Hello", "", false)
+        assertEquals("Hello", ic.composing)
+        // Second partial — explicit rejection triggers fallback
+        val second = comp.applyUpdate(ic, "Hello world", "", false)
+        assertFalse(second) // rejected due to explicit false, fallback to IME bar
+        // After fallback, further partials should stay rejected until reset
+        assertFalse(comp.applyUpdate(ic, "Hello world again", "", false))
+        // Final must still commit exactly once via fallback path after reset or via compositionRejected logic
+        ic.composing = null
+        comp.reset()
+        assertTrue(comp.applyUpdate(ic, "final", "", true))
+        assertEquals("final", ic.committed.toString())
+        // Also verify that a silently-committing editor that returns true (content-based) is NO LONGER detected via heuristic —
+        // intentional repetitions like "very very good" must survive without false fallback. See CompositionTypographyTest.
+        val comp2 = CompositionManager()
+        val silentIc = object : FakeIc() {
+            override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
                 composing = null
                 committed.append(text)
                 setComposingCalls++
@@ -371,22 +405,10 @@ class ExactlyOnceStressTest {
             }
             override fun finishComposingText(): Boolean { composing = null; return true }
         }
-        // First partial silently committed
-        comp.applyUpdate(ic, "Hello", "", false)
-        assertTrue(ic.committed.toString().contains("Hello"))
-        // Second partial — manager should detect silent-commit and fallback to preview-only
-        val second = comp.applyUpdate(ic, "Hello world", "", false)
-        // Second should be rejected (fallback) — not produce additional committed duplication beyond first
-        // Even if first duplication occurred, second must not create "HelloHello" loop
-        assertFalse(second) // should be rejected and fallback to IME bar
-        // After fallback, composing must not be active and further partials should stay rejected
-        assertFalse(comp.hasComposing())
-        // Final must still commit exactly once and not duplicate
-        ic.committed.clear()
-        ic.composing = null
-        comp.reset()
-        assertTrue(comp.applyUpdate(ic, "final", "", true))
-        assertEquals("final", ic.committed.toString())
+        // With heuristic removed, this will NOT be rejected (content inspection removed)
+        assertTrue(comp2.applyUpdate(silentIc, "Hello", "", false))
+        assertTrue(comp2.applyUpdate(silentIc, "Hello world", "", false))
+        // Manager now trusts explicit return value only; duplication risk accepted to preserve intentional repetitions.
     }
 
     @Test

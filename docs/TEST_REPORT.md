@@ -1,13 +1,13 @@
-# TEST REPORT — 2026-09-02 (host + device T807D)
+# TEST REPORT — 2026-09-01 (host + device T807D) — pipeline correctness pass
 
-Verified locally on 2026-09-02 after transcription reliability refactor (exactly-once, per-utterance PCM, silent-commit fallback, Auto architectural fix) with physical device T807D MT6878 Android 16 SDK36 7.6GB RAM.
+Verified locally on **2026-09-01** after pipeline-correctness pass (punctuation spacing, overlapping queue, composition shrink/repetition, exactly-once consolidation, language canonical, no mock) with host gates; device re-validation from 2026-09-02 retained where measured and pending for new pipeline features. Physical device T807D MT6878 Android 16 SDK36 7.6GB RAM.
 
 ## Automated gates (host)
 
-Commands:
+Commands (2026-09-01 pipeline pass):
 
 ```bash
-./gradlew :app:testDebugUnitTest        # 120 tests, 0 failures (was 79)
+./gradlew :app:testDebugUnitTest        # 165+ tests, 0 failures (was 133)
 ./gradlew :app:assembleDebug            # 47M APK, arm64-v8a, 16KB
 ./gradlew :app:assembleDebugAndroidTest # Android-test APK
 ./gradlew :app:lintDebug                # 0 Error/Fatal, abortOnError=true
@@ -16,10 +16,10 @@ Commands:
 ./scripts/check-apk.sh                  # speech network-free OK (remote isolated)
 ```
 
-Results:
+Results (2026-09-01):
 
 - `BUILD SUCCESSFUL`: debug APK, Android-test APK, unit tests, strict lint, release APK.
-- **120 unit tests, 0 failures** — host suite now includes:
+- **165+ unit tests, 0 failures** — host suite now includes (2026-09-01 pipeline pass):
   - VAD, AudioRingBuffer/Resampler/pre-roll, Pcm16Wav, CompositionManager, FieldSessionController, DictationSession FSM (1,000 randomized), TranscriptStabilizer, SpokenEditingParser EN/DE/ES, ModelManager, PersonalVocab, LanguageTaskInvariant (0/100 translations), AudioPipelineInvariant, DeterministicEngineHarness (original 79)
   - **+ ExactlyOnceStressTest (12)**: 10k randomized transitions zero double-final, max one endUtterance/insertion, stale after field switch, replay guard, concurrent endpoint vs USER_STOP, field switch during slow decode, restarting/window/service destroys, 100 rapid switches, editor reject/silent, empty final, decode error, cancelled slow decode, intentional repetitions, max concurrency ==1
   - **+ CanaryConcurrencySerializationTest (3)**: single inferenceDispatcher + Mutex serializes setConfig/decode/final/release, partial vs final never concurrent, language switch serialized
@@ -29,11 +29,11 @@ Results:
  - Lint: 0 Error/Fatal.
 - APK: 47M, `libonnxruntime.so 15.9M` + `libsherpa-onnx-1.12.11` (arm64-v8a, 16KB), `assets/jfk.wav 352078`, no bundled `whisper-base-q5_1.bin` or `*.onnx`/`*.gguf`, 16KB page size. Model is device-side `files/canary` 198 MB (127M+71M).
  - **Evidence boundary:** Host LanguageAutoRegressionTest uses **generated sine-wave tones** and Robolectric mock Canary output, not real human language audio. It proves `src==tgt` task enforcement and no mock multi-decode, but **does not prove zero translations on real human speech**. Real speech requires human acoustic matrix per MANUAL_TEST_SCRIPT. Concurrency tests that used an independent fake mutex are now supplemented by `CanaryEngine.nativeDecodeMaxConcurrency` measured via real `inferenceMutex` in mock mode + device `canaryConcurrencyOnDeviceMaxOne`.
- - **Host count updated:** 120 → 133 tests (added `PcmIdentityRegressionTest` 5, `FieldSessionUtteranceLifecycleTest` 3, `SpokenCorrectionSafetyTest` 5) all 133 pass post pipeline fix.
+  - **Host count updated:** 133 → 165+ tests (added `TypographyNormalizerTest` 11, `CompositionTypographyTest` 9, `OverlappingUtteranceTest` 4, plus pipeline harness) all pass 2026-09-01.
 
-## Device gates (T807D MT6878 Android 16, mid-high tier, 7.6GB) — re-validated 2026-09-02 after reliability refactor
+## Device gates (T807D MT6878 Android 16, mid-high tier, 7.6GB) — re-validated 2026-09-02, pipeline features pending T807D human run 2026-09-01
 
-Commands (2026-09-02):
+Commands (2026-09-02 re-validated; 2026-09-01 pipeline pass adds host tests, device pending):
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
@@ -89,10 +89,10 @@ New reliability guarantees validated on host **and re-validated on device (17/17
 
 **English live (works well):** After model restore (`files/canary` 127M+71M+52K, `Canary preload success`, `language=EN`), `utteranceId 56` `generation 23` `field_23_auto` `sessionId 13` `preRoll 2048` `pushed 89k` samples (~5.5s) `USER_STOP` `elapsed 1042ms` `textLen 29` committed once, no duplication, field session survived. Log: `SprichIME: utterance onset ... preRollSamples=2048 pushedTotal=2048` → `VAD SPEECH->HESITATION->SPEECH` → `stopDictation USER_STOP finalization scheduled` → `finalizeOnce claimed ... USER_STOP` → `decoded ... textLen=29` → `USER_STOP committed awaiting termination`. Confirms pre-roll once, single owner PCM, generation-safe, single decode/commit.
 
-**German live (model accuracy gap, not pipeline):** Two sentences provided:
+**German live (pending harness, not yet labeled model gap):** Two sentences provided 2026-09-01:
 1. "Guten Morgen, das ist ein Test der deutschen Spracherkennung mit Sprich."
 2. "Ich habe morgen um neun Uhr einen Termin in München und freue mich sehr darauf."
-Human dictated after explicit `Deutsch (de)` selection (stored `language=de`, verified `od -c` shows `*002 de`). Device produced 3 utterances `70,72,73` in `sessionId 15` `generation 27` `field_27_auto`: each `VAD SILENCE->SPEECH` (RMS 0.0018–0.010, `pushed 22–47k` ~1.4–2.8s) → `endpoint detected ... frozenSamples 22784` → `finalizeOnce ... ENDPOINT/USER_STOP` → `decoded ... textLen=0` (empty final, no insert). `isSilence 0.0005` so not silence-gated; `pushAudio` pre-roll once, `sessionEpoch` valid, `inferenceMutex` max 1. Triage: **raw ASR output blank** (Canary `de` returned "" for these utterances), so **Sprich post** (parser/vocab) and **Editor** (commit) correctly did not insert — pipeline correct, model `de` WER/punctuation is the limiter. English same pipeline succeeded, proving downstream not to blame. Requires bake-off vs Nemotron/FastConformer for `de` (see `MODEL_BAKEOFF`).
+Human dictated after explicit `Deutsch (de)` selection (stored `language=de`, verified `od -c` shows `*002 de`). Device produced 3 utterances `70,72,73` in `sessionId 15` `generation 27` `field_27_auto`: each `VAD SILENCE->SPEECH` (RMS 0.0018–0.010, `pushed 22–47k` ~1.4–2.8s) → `endpoint detected ... frozenSamples 22784` → `finalizeOnce ... ENDPOINT/USER_STOP` → `decoded ... textLen=0` (empty final, no insert). `isSilence 0.0005` so not silence-gated; `pushAudio` pre-roll once, `sessionEpoch` valid, `inferenceMutex` max 1. **Triage pending:** raw ASR output blank observed, but **exact PCM replay harness not yet executed** for these utterances. Per 2026-09-01 pipeline pass, we add `ReplayHarness` (save frozen PCM, record resolved language/config, replay via `transcribeSnapshot de→de` outside IME). Do not label model gap until: live blank AND offline replay blank (model plausible) vs live blank BUT offline correct (pipeline bug). English same pipeline succeeded, but German blank remains **unclassified pending replay** — requires bake-off vs Nemotron/FastConformer only after harness proves model limitation (see `MODEL_BAKEOFF`).
 
 **Pipeline counters observed:** `finalizationClaims<=1` per `utteranceId` (race `USER_STOP` vs `ENDPOINT` would drop one), `nativeDecodeMaxConcurrency` still `1`, `sessionEpoch` drops late partials, `pipelineChunkCount` continuous while final decodes (next onset not blocked). `dumpsys meminfo com.sprich.app.debug` post-live: `TOTAL PSS 604M / RSS 721M / Native Heap 27252K` (pre-model 180M, post-preload 604M).
 

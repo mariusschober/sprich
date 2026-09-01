@@ -1,5 +1,6 @@
 package com.sprich.app.input.commands
 
+import com.sprich.app.input.typography.TypographyNormalizer
 import com.sprich.app.speech.api.Language
 
 /**
@@ -54,7 +55,11 @@ object SpokenEditingParser {
     // Only explicit whole-utterance delete commands remain. See mission: false positives worse than misses.
 
     fun parse(text: String, lang: Language, enableCommands: Boolean): EditResult {
-        if (!enableCommands) return EditResult(applyITN(text, lang), false)
+        if (!enableCommands) {
+            val raw = applyITN(text, lang)
+            val normalized = TypographyNormalizer.normalize(raw, lang)
+            return EditResult(normalized, false)
+        }
         val lower = text.lowercase().trim()
         val map = when(lang){
             Language.DE -> deCommands
@@ -84,6 +89,9 @@ object SpokenEditingParser {
         }
         // Correction backtracking REMOVED entirely per reliability requirement — no substring triggers.
         out = applyITN(out, lang)
+        // Deterministic typography: fix "Hallo Punkt" -> "Hallo ." -> "Hallo." and raw "gut ." -> "gut."
+        // Run after ITN so we don't damage URLs/decimals; preserves newlines and intentional word spaces.
+        out = TypographyNormalizer.normalize(out, lang)
         return EditResult(out, foundInline)
     }
 

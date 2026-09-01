@@ -75,9 +75,8 @@ class CanaryEngine(
             if (loaded) return@withContext Result.success(Unit)
             if (!modelManager.isCanaryReady()) return@withContext Result.failure(Exception("Model not downloaded"))
             if (!isSherpaAvailable()) {
-                Log.w("CanaryEngine", "sherpa not available, mock mode")
-                loaded = true
-                return@withContext Result.success(Unit)
+                Log.w("CanaryEngine", "sherpa not available — no mock, failing load")
+                return@withContext Result.failure(Exception("sherpa not available"))
             }
             try {
                 val langTag = cfg?.speechLanguage?.toBcp47() ?: cfg?.language?.code ?: "en"
@@ -202,6 +201,39 @@ class CanaryEngine(
     override fun partialTranscript(): Flow<TranscriptUpdate> = flow
 
     override suspend fun endUtterance(): FinalTranscript = endUtteranceWithSnapshot(ShortArray(0))
+
+    /**
+     * Side-effect-bounded snapshot decode for overlapping utterance queue.
+     * Serializes via inferenceMutex/inferenceDispatcher but does NOT mutate live capture state:
+     * - does not clear pcmRing / utteranceBuffer
+     * - does not clear stabilizer or job/sessionEpoch
+     * - does not invalidate active capture's epoch
+     * If partial decoding for B must pause while A uses recognizer, that is acceptable (mutex); losing B audio is not.
+     * Config is immutable for this utterance (original language).
+     */
+    suspend fun transcribeSnapshot(pcm: ShortArray, config: SpeechSessionConfig): FinalTranscript = withContext(inferenceDispatcher) {
+        inferenceMutex.withLock {
+            cfg?.let { if (it.task != TranscriptionTask.TRANSCRIBE) Log.w("CanaryEngine", "transcribeSnapshot with task=${it.task}") }
+            if (pcm.isEmpty() || isSilence(pcm)) {
+                return@withLock FinalTranscript("")
+            }
+            val speechLang = config.speechLanguage ?: SpeechLanguage.fromLegacy(config.language ?: Language.AUTO)
+            if (speechLang is SpeechLanguage.Auto) {
+                Log.w("CanaryEngine", "transcribeSnapshot Auto requested but Canary has no native Auto — decoding as en")
+                switchLanguageLocked("en")
+            } else {
+                switchLanguageLocked(langCodeFor((speechLang as SpeechLanguage.Fixed).toLegacyLanguage()))
+            }
+            val text = transcribeLocked(pcm)
+            if (text.isBlank()) {
+                return@withLock FinalTranscript("")
+            }
+            // No stabilizer mutation here to avoid corrupting live B's hypothesis.
+            // No buffer clears — active capture remains intact.
+            finalTranscriptCount++
+            FinalTranscript(text.trim())
+        }
+    }
 
     // For continuous speech: allow next utterance capture while previous final decodes.
     // Endpoint captures frozen PCM immediately; decode uses that snapshot, not live buffer that may be overwritten.
@@ -369,13 +401,14 @@ class CanaryEngine(
         if (isSilence(pcm)) return ""
         val rec = recognizer
         if (rec == null) {
-            // Mock: keep serialized tracking
+            // Production: no fabricated transcripts. Empty when native unavailable.
+            // Keep concurrency instrumentation so tests can verify maxConcurrent==1.
             nativeDecodeStarts++
             nativeDecodeCurrent++
-            nativeDecodeMaxConcurrency = maxOf(nativeDecodeMaxConcurrency, nativeDecodeCurrent)
-            try { delay(5) } finally { nativeDecodeCurrent-- }
-            val sec = pcm.size / 16000f
-            return when { sec < 1 -> "Hello"; sec < 2.5 -> "Hello world canary"; else -> "Hello world canary accurate transcription" }
+            if (nativeDecodeCurrent > nativeDecodeMaxConcurrency) nativeDecodeMaxConcurrency = nativeDecodeCurrent
+            try { kotlinx.coroutines.delay(5) } finally { nativeDecodeCurrent-- }
+            Log.w("CanaryEngine", "transcribeLocked no recognizer — returning empty, no mock")
+            return ""
         }
         return decodeRawLocked(pcm)
     }

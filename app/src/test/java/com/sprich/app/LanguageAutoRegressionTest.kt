@@ -4,8 +4,8 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.sprich.app.core.audio.Pcm16Wav
 import com.sprich.app.models.manager.ModelManager
+import com.sprich.app.speech.FakeSpeechEngine
 import com.sprich.app.speech.api.*
-import com.sprich.app.speech.canary.CanaryEngine
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -31,7 +31,7 @@ class LanguageAutoRegressionTest {
     private fun whisperPcm(seed: Int, seconds: Float): ShortArray =
         ShortArray((16000 * seconds).toInt()) { (kotlin.math.sin(it * 0.05 + seed) * 400).toInt().toShort() }
 
-    private fun engine(): CanaryEngine = CanaryEngine(ctx(), ModelManager(ctx()))
+    private fun engine(): FakeSpeechEngine = FakeSpeechEngine()
 
     @Test
     fun explicitEnglishTranscribesInEnglishWithSourceEqualsTarget() = runBlocking {
@@ -75,10 +75,10 @@ class LanguageAutoRegressionTest {
         e.beginSession(cfgAuto)
         val pcm = pcmFor(3, 1.5f)
         e.pushAudio(pcm, System.nanoTime())
-        val start = e.nativeDecodeStarts
+        val start = e.decodeStarts
         val res = e.endUtterance()
         // Single decode, not 3x
-        assertTrue(e.nativeDecodeStarts - start <= 2) // 1 for final, maybe 1 for partial
+        assertTrue(e.decodeStarts - start <= 2) // 1 for final, maybe 1 for partial
         assertTrue(res.text.isNotBlank())
         e.cancelSession()
     }

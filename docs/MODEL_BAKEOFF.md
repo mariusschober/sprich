@@ -1,6 +1,6 @@
-# MODEL BAKE-OFF — 2026-09-02 (T807D MT6878 Android 16)
+# MODEL BAKE-OFF — 2026-09-01 (T807D MT6878 Android 16) — pipeline correctness pass
 
-This document compares candidate ASR architectures for Sprich's **Automatic language mode** and overall reliability. Numbers are measured where available; qualitative claims are marked as pending until a physical-device run.
+This document compares candidate ASR architectures for Sprich's **Automatic language mode** and overall reliability. Numbers are **measured where stated**; all other claims are **expected/pending until physical-device run on T807D** and must not be claimed as production. This pass (2026-09-01) is pipeline-correctness only — no model integration.
 
 ## Methodology (same corpus for every engine when measured)
 
@@ -69,7 +69,7 @@ This document compares candidate ASR architectures for Sprich's **Automatic lang
 | Property | Research note 2026-09-02 (sherpa-onnx docs, no device run) |
 |---|---|
 | Exact artifact | `sherpa-onnx-nemo-fast-conformer-transducer-en-de-es-fr` family (also en-de-es, de-es-en etc.) — NeMo FastConformer CTC/Transducer exported to ONNX via `nemo2onnx`. Check sherpa `model` listings for `nemo_fast_conformer_ctc_be-de-en-es-fr` / `nemo_transducer_en_de_es` variants. Hugging Face: `csukuangfj/sherpa-onnx-nemo-ctc-giga-am-en` style plus multilingual FastConformer checkpoints. Must verify exact current ONNX on sherpa 1.12 docs `https://k2-fsa.github.io/sherpa/onnx/pretrained_models/offline-transducer/nemo/index.html` |
-| Size | CTC ~30–70 MB encoder + small decoder (FastConformer small); Transducer ~120–180 MB total. **10× smaller than Canary 198 MB**, ~5–20× smaller than Nemotron 650 MB. Fits low-tier 3GB devices and reduces download UX. |
+| Size | CTC expected ~30–70 MB encoder + small decoder (FastConformer small); Transducer expected ~120–180 MB total — **expected ~3–6× smaller than measured Canary 198 MB, ~4–10× smaller than Nemotron ~650 MB. NOT YET MEASURED on T807D**; size/RTF/WER must be validated before any claim. Fits low-tier 3GB devices in theory, download UX to be measured. |
 | Punctuation/capitalization | FastConformer CTC models are typically **case-insensitive and punctuation-free** (lowercase, no punctuation) — requires external inverse text normalization (ITN) or LLM polish. Transducer variants may emit cased/punctuated but less reliably than Canary/Nemotron which have built-in punctuation. Must measure punctuation accuracy on T807D. |
 | Language selection vs native Auto | **Not native Auto in the sherpa sense** — models are trained multilingually and infer language from acoustics without explicit `srcLang` switch, but accuracy depends on training mix. For EN/DE/ES/FR combined, they claim multilingual recognition without per-utterance language flag. This is *de facto* Auto for those 4 languages, but WER on code-switching and whisper, and unintended translation rate, must be measured vs Canary explicit and Nemotron true Auto. No hard 30-s cache; language is inferred per utterance from acoustics. |
 | Why it may be useful lightweight candidate | Very small, fast CTC beam search, suitable for **streaming or fast WER baseline** before heavy Nemotron. Could be used as **tiny LID front-end** alternative to Whisper Tiny (≈75 MB) — CTC encoder much smaller and faster for LID, but LID accuracy unknown. |
@@ -84,11 +84,11 @@ This document compares candidate ASR architectures for Sprich's **Automatic lang
 | Measured | **Not benchmarked** — implementation would be cheap via sherpa, but no measurement yet. |
 | Decision | Benchmark only if cheap; do not choose merely for language count. Evaluate punctuation, capitalization, EN/DE conversational WER, latency, whisper vs three primary candidates. Qwen3-ASR 0.6B larger INT8 package is deprioritized unless evidence shows outperformance on T807D. |
 
-## Summary decision gate (as of 2026-09-02)
+## Summary decision gate (as of 2026-09-01 — pipeline pass, no new model measured)
 
 - **Production today:** Canary 180M Flash INT8 **explicit** (EN/DE/ES/FR, no Auto). It meets RTF, memory, concurrency, exactly-once, and insertion reliability gates on T807D as measured. Automatic is hidden in Settings for Canary; explicit language is required.
 - **Next to validate:** Upgrade sherpa-onnx and benchmark **Nemotron 3.5 Streaming 0.6B** on T807D against all gates (Auto, RTF, WER, thermal, memory, whisper). This is the highest-priority challenger.
 - **If Nemotron fails:** Compare **Whisper Base (and Small if viable)** vs **Whisper Tiny LID + Canary** on measured end-to-end behavior (Auto accuracy, latency, memory) and choose based on numbers, not isolated WER.
 - Canary remains available as explicit-language “Accurate” engine even if another model becomes Automatic default.
 
-All numbers above for Canary are from real `BenchmarkOnDeviceTest` (jfk.wav 11s, RTF 0.135–0.149, 198 MB) and host unit/property tests (133 tests, 0 failures, 2026-09-02; synthetic fixtures, not human goldens). Other candidates’ numbers are pending physical-device runs and are not claimed.
+All numbers above for Canary are from real `BenchmarkOnDeviceTest` (jfk.wav 11s, RTF 0.135–0.149 measured 2026-09-01/02, 198 MB) and host unit tests (162+ tests, 0 failures as of 2026-09-01; synthetic fixtures, not human goldens). Other candidates’ numbers are **expected/pending physical-device runs and are not claimed**. Pipeline pass adds punctuation, overlap queue, and harness; device continuous-speech and German replay gates still pending T807D human run.

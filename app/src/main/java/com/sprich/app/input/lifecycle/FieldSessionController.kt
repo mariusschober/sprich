@@ -51,33 +51,51 @@ class FieldSessionController(
         return composition.applyUpdate(ic, stable, unstable, false)
     }
 
+    sealed class CommitResult {
+        object Committed : CommitResult()
+        object EditorRejected : CommitResult()
+        object AlreadyFinalized : CommitResult()
+        object StaleSession : CommitResult()
+        object WrongField : CommitResult()
+        object NoInputConnection : CommitResult()
+    }
+
     /**
      * Per-utterance commit — keeps field session alive for next utterance.
      * Exactly once per utteranceId within the same field session.
      * Transitions Finalizing -> Inserting -> Listening without invalidating field session.
+     * Now returns typed result to avoid dangerous fallback that treated all `false` as editor rejection.
      */
     fun commitUtterance(sessionId: Long, utteranceId: Long, ic: InputConnection?, text: String): Boolean {
-        if (sessionId != currentSessionId) return false
-        if (!session.isSessionValid(sessionId)) return false
-        if (ic == null) return false
-        // Exactly once per utteranceId
+        return when (commitUtteranceTyped(sessionId, utteranceId, ic, text)) {
+            is CommitResult.Committed -> true
+            else -> false
+        }
+    }
+
+    fun commitUtteranceTyped(sessionId: Long, utteranceId: Long, ic: InputConnection?, text: String): CommitResult {
+        if (sessionId != currentSessionId) return CommitResult.StaleSession
+        if (!session.isSessionValid(sessionId)) return CommitResult.StaleSession
+        if (ic == null) return CommitResult.NoInputConnection
+        if (currentFieldId == null) return CommitResult.WrongField
+        // Exactly once per utteranceId — FieldSessionController's set is secondary; primary owner is SprichIME coordinator.
+        // Keep this check for field-local safety, but SprichIME's finalizedUtterances is authoritative for cross-utterance dedup.
         val claimed = synchronized(finalizedUtteranceIds) {
             if (finalizedUtteranceIds.contains(utteranceId)) false
             else { finalizedUtteranceIds.add(utteranceId); true }
         }
-        if (!claimed) return false
+        if (!claimed) return CommitResult.AlreadyFinalized
         session.onInserting()
         val ok = composition.applyUpdate(ic, text, "", true)
         if (ok) {
             // Return to Listening for next utterance within same field session
             session.onListeningAgain()
+            return CommitResult.Committed
         } else {
-            // If commit failed, keep session in Inserting? Transition to Listening or Error
-            // Try to return to Listening so next utterance can still be captured
+            // Commit failed — editor rejected, not stale. Keep session alive.
             try { session.onListeningAgain() } catch (_: Exception) {}
+            return CommitResult.EditorRejected
         }
-        // Field session stays alive — currentFieldId and currentSessionId unchanged
-        return ok
     }
 
     /**

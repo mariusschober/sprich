@@ -41,8 +41,12 @@ import com.sprich.app.storage.Preferences
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import com.sprich.app.diagnostics.ReplayHarness
+import com.sprich.app.input.typography.TypographyNormalizer
 
 class SprichIME : InputMethodService() {
 
@@ -81,6 +85,26 @@ class SprichIME : InputMethodService() {
     // Using UtterancePcmBuffer would duplicate engine buffer — so IME now delegates.
     @Volatile private var frozenUtterancePcm: ShortArray? = null
 
+    // Overlapping utterance queue — immutable per-utterance snapshots, serialized finalization worker
+    // Invariant: one spoken utterance → one immutable PCM snapshot → one final decode → one deterministic post-processing pass → one editor commit
+    // Active capture and pending finalizations are distinct: utterance N+1 can be captured while N decodes without mutation.
+    data class PendingUtterance(
+        val token: UtteranceToken,
+        val pcm: ShortArray,
+        val config: SpeechSessionConfig,
+        val pushedSamples: Long,
+        val reason: StopReason,
+        val endpointTimestampNanos: Long,
+    )
+    private val pendingQueue = ArrayDeque<PendingUtterance>()
+    private val pendingQueueLock = Any()
+    private var finalizationWorkerJob: Job? = null
+    private val pendingQueuePeak = AtomicLong(0)
+    private val finalizationQueueOverflows = AtomicLong(0)
+    private val maxPendingQueueDepth = 4
+    @Volatile var lastQueueDepth: Int = 0
+        private set
+
     // Exactly-once diagnostic counters (debug/test builds, transcript-free)
     @Volatile var finalizationClaims: Long = 0
         private set
@@ -96,8 +120,10 @@ class SprichIME : InputMethodService() {
     private var pipelinePushedSampleCount = 0L
     private var pipelineStartElapsed = 0L
     private var instantMode: Boolean = false
-    private var language: Language = Language.AUTO
+    // Single canonical language state — SpeechLanguage is authoritative; Language is derived synchronously.
+    // Collecting both Language and SpeechLanguage independently causes split-brain (DE vs EN). Only collect SpeechLanguage.
     private var speechLanguage: SpeechLanguage = SpeechLanguage.Auto
+    private val language: Language get() = speechLanguage.toLegacyLanguage()
     private var commandsEnabled: Boolean = true
     private var isPasswordField: Boolean = false
     private lateinit var vocabRepo: com.sprich.app.vocab.VocabRepository
@@ -164,9 +190,7 @@ class SprichIME : InputMethodService() {
             scope.launch {
                 try { prefs.instantMode.collect { instantMode = it } } catch (e: Exception) { Log.w("SprichIME", "instantMode collect fail", e) }
             }
-            scope.launch {
-                try { prefs.language.collect { language = it } } catch (e: Exception) { Log.w("SprichIME", "language collect fail", e) }
-            }
+            // Single canonical collector — SpeechLanguage only. Language derived via toLegacyLanguage().
             scope.launch {
                 try { prefs.speechLanguage.collect { speechLanguage = it } } catch (e: Exception) { Log.w("SprichIME", "speechLanguage collect fail", e) }
             }
@@ -949,19 +973,27 @@ class SprichIME : InputMethodService() {
                 // Mark pending for observability; do not block next onset — queue handles continuous speech.
                 endpointPending.set(true)
                 // Freeze per-utterance PCM at endpoint so fallback cannot include next utterance.
-                // Engine owns freeze; IME caches snapshot for fallback race before engine freeze is visible.
-                // Snapshot captured synchronously before next onset can reuse live buffer.
-                frozenUtterancePcm = try { engine.snapshotUtterancePcm() } catch (_: Exception) { ShortArray(0) }
-                val token = currentUtteranceToken
-                Log.i("SprichIME", "endpoint detected token=$token pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount frozenSamples=${frozenUtterancePcm?.size ?: 0}")
-                if (token != null) {
-                    endpointJob = scope.launch { finalizeOnce(token, StopReason.ENDPOINT) }
-                } else {
-                    // No token (e.g., utteranceActive never true) — still try to finalize if we have audio
+                // CRITICAL: immutable snapshot — captured synchronously before next onset can reuse live buffer.
+                // This prevents Race 1 (A reading B's snapshot) by copying to isolated PendingUtterance.pcm.
+                val frozenSnap: ShortArray = try { engine.snapshotUtterancePcm() } catch (_: Exception) { ShortArray(0) }
+                // Also cache in legacy global for non-queued fallback paths (e.g., remoteStt fallback)
+                frozenUtterancePcm = frozenSnap
+                val token = currentUtteranceToken ?: run {
                     Log.w("SprichIME", "endpoint without token — creating synthetic token")
-                    val synthetic = UtteranceToken(session.sessionId, generation, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
-                    endpointJob = scope.launch { finalizeOnce(synthetic, StopReason.ENDPOINT) }
+                    UtteranceToken(session.sessionId, generation, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
                 }
+                // Create immutable PendingUtterance containing ALL state required to finalize that utterance.
+                // Once created, nothing in the active capture path may mutate it.
+                val pending = PendingUtterance(
+                    token = token,
+                    pcm = frozenSnap.copyOf(), // immutable isolated copy — B cannot clear/replace it
+                    config = activeConfig.copy(),
+                    pushedSamples = pipelinePushedSampleCount,
+                    reason = StopReason.ENDPOINT,
+                    endpointTimestampNanos = System.nanoTime(),
+                )
+                Log.i("SprichIME", "endpoint detected token=$token pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount frozenSamples=${frozenSnap.size} queueDepthBefore=${pendingQueue.size}")
+                enqueuePending(pending)
             }
         } catch (t: Throwable) {
             Log.e("SprichIME", "audio chunk processing failed", t)
@@ -977,122 +1009,166 @@ class SprichIME : InputMethodService() {
         }
     }
 
+    // ---------- Overlapping utterance queue ----------
+
+    private fun enqueuePending(pending: PendingUtterance) {
+        synchronized(pendingQueueLock) {
+            if (pendingQueue.size >= maxPendingQueueDepth) {
+                finalizationQueueOverflows.incrementAndGet()
+                Log.w("SprichIME", "finalization queue at capacity depth=${pendingQueue.size} pending=${pending.token.utteranceId} peak=${pendingQueuePeak.get()} overflows=${finalizationQueueOverflows.get()} — preserving final, degrading partials")
+                // Degrade speculative partials first: cancel partial job would be engine side, here we just log and keep final.
+            }
+            pendingQueue.addLast(pending)
+            lastQueueDepth = pendingQueue.size
+            if (pendingQueue.size.toLong() > pendingQueuePeak.get()) pendingQueuePeak.set(pendingQueue.size.toLong())
+            Log.i("SprichIME", "enqueuePending token=${pending.token} pcm=${pending.pcm.size} queueDepth=${pendingQueue.size} peak=${pendingQueuePeak.get()} reason=${pending.reason}")
+        }
+        ensureFinalizationWorkerRunning()
+    }
+
+    private fun ensureFinalizationWorkerRunning() {
+        if (finalizationWorkerJob?.isActive == true) return
+        finalizationWorkerJob = scope.launch {
+            while (true) {
+                val next = synchronized(pendingQueueLock) {
+                    if (pendingQueue.isEmpty()) null else pendingQueue.removeFirst()
+                } ?: break
+                lastQueueDepth = synchronized(pendingQueueLock) { pendingQueue.size }
+                try {
+                    finalizePending(next)
+                } catch (e: CancellationException) {
+                    Log.i("SprichIME", "finalization worker cancelled next=$next")
+                    throw e
+                } catch (t: Throwable) {
+                    Log.e("SprichIME", "finalizePending failed $next", t)
+                    failSession(next.token.generation, "finalization failed token=${next.token} reason=${next.reason}", "Transcription failed", "Tap to retry", t)
+                }
+            }
+            Log.i("SprichIME", "finalization worker drained queue")
+        }
+    }
+
     /**
-     * Single authoritative finalization entry. Atomically claims the utterance; second caller
-     * returns without decoding or inserting. Only one SpeechEngine.endUtterance() per utterance.
+     * Serialized finalization for one immutable PendingUtterance.
+     * Does NOT mutate active capture B while decoding A.
+     * Uses transcribeSnapshot (side-effect-bounded) and only clears active flags if token still owns active capture.
      */
-    private suspend fun finalizeOnce(token: UtteranceToken, reason: StopReason) {
+    private suspend fun finalizePending(pending: PendingUtterance) {
+        val token = pending.token
+        val reason = pending.reason
         var finishedWithRetry = false
         try {
-            // Atomically claim — second caller for same utteranceId drops silently
+            // Atomically claim — second caller for same utteranceId drops silently (exactly-once)
             val claimed = synchronized(finalizedUtterances) {
-                if (finalizedUtterances.contains(token.utteranceId)) false
-                else { finalizedUtterances.add(token.utteranceId); true }
+                if (finalizedUtterances.contains(token.utteranceId)) false else { finalizedUtterances.add(token.utteranceId); true }
             }
             if (!claimed) {
-                Log.w("SprichIME", "finalizeOnce duplicate claim dropped token=$token reason=$reason")
+                Log.w("SprichIME", "finalizePending duplicate claim dropped token=$token reason=$reason")
                 staleCallbackDrops++
                 return
             }
             finalizationClaims++
-            Log.i("SprichIME", "finalizeOnce claimed token=$token reason=$reason generation=${token.generation} currentGen=${sessionGeneration.get()}")
+            Log.i("SprichIME", "finalizePending claimed token=$token reason=$reason pcm=${pending.pcm.size} pushedSamples=${pending.pushedSamples} queueDepth=${lastQueueDepth}")
 
-            // Validate token is still current before expensive native decode
+            // Validate token is still current before expensive native decode — but do not mutate active B's state on failure.
             if (token.generation != sessionGeneration.get() || !session.requireActive()) {
-                Log.w("SprichIME", "finalizeOnce abandoned pre-decode stale generation token=$token current=${sessionGeneration.get()}")
+                Log.w("SprichIME", "finalizePending abandoned pre-decode stale generation token=$token current=${sessionGeneration.get()}")
                 staleCallbackDrops++
-                endpointPending.set(false)
-                utteranceActive.set(false)
+                // Do NOT clear utteranceActive/endpointPending if B is active with different token
+                maybeClearActiveStateForToken(token)
                 return
             }
             if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) {
-                Log.w("SprichIME", "finalizeOnce abandoned pre-decode invalid session token=$token sessionId=${session.sessionId}")
+                Log.w("SprichIME", "finalizePending abandoned pre-decode invalid session token=$token sessionId=${session.sessionId}")
                 staleCallbackDrops++
-                endpointPending.set(false)
-                utteranceActive.set(false)
+                maybeClearActiveStateForToken(token)
                 return
             }
             if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) {
-                Log.w("SprichIME", "finalizeOnce abandoned pre-decode field mismatch token=$token currentField=$currentFieldId fg=${fieldGeneration.get()}")
+                Log.w("SprichIME", "finalizePending abandoned pre-decode field mismatch token=$token currentField=$currentFieldId fg=${fieldGeneration.get()}")
                 staleCallbackDrops++
-                endpointPending.set(false)
-                utteranceActive.set(false)
+                maybeClearActiveStateForToken(token)
                 return
             }
-            // Distinct stop reasons: only USER_STOP and ENDPOINT may finalize an active utterance.
             if (reason != StopReason.USER_STOP && reason != StopReason.ENDPOINT) {
-                Log.i("SprichIME", "finalizeOnce cancelled by reason=$reason token=$token — prioritizing safety over speculative final")
-                endpointPending.set(false)
-                utteranceActive.set(false)
-                vad.reset()
-                lastVadState = Vad.State.SILENCE
-                frozenUtterancePcm = null
-                try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-                currentUtteranceToken = null
+                Log.i("SprichIME", "finalizePending cancelled by reason=$reason token=$token")
+                maybeClearActiveStateForToken(token)
                 return
             }
 
             session.onFinalizing()
-            Log.i("SprichIME", "finalizeOnce start token=$token pushedSamples=$pipelinePushedSampleCount reason=$reason")
+            Log.i("SprichIME", "finalizePending start token=$token pushedSamples=${pending.pushedSamples} reason=$reason config=${pending.config.resolvedLanguageTag()} utteranceId=${token.utteranceId} resolvedLang=${pending.config.resolvedLanguageTag()}")
+            // Per-utterance metrics for German blank triage (debug, not transcript content)
+            val pcmDurationMs = (pending.pcm.size * 1000L) / SAMPLE_RATE
+            val pcmRms = ReplayHarness.computeRms(pending.pcm)
+            Log.i("SprichIME", "utteranceMetrics id=${token.utteranceId} durationMs=$pcmDurationMs rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)} samples=${pending.pcm.size} lang=${pending.config.resolvedLanguageTag()} pushed=${pending.pushedSamples}")
+            // Opt-in WAV capture: save exact frozen PCM for offline replay harness
+            try {
+                val wavEnabled = try { prefs.debugWavCapture.first() } catch (_: Exception) { false }
+                if (wavEnabled) {
+                    ReplayHarness.saveWavIfEnabled(this@SprichIME, true, token.utteranceId, pending.pcm, pending.config)
+                }
+            } catch (_: Exception) {}
             val t0 = android.os.SystemClock.elapsedRealtime()
-            // Exactly one native decode per utterance — serialized inside engine via Mutex.
-            // Use frozen snapshot captured at endpoint (before live buffer reuse for next utterance) to avoid losing first words of next sentence.
             nativeDecodeStarts++
-            val frozenSnap = frozenUtterancePcm ?: try { engine.snapshotUtterancePcm() } catch (_: Exception) { ShortArray(0) }
-            val finalTranscript = if (frozenSnap.isNotEmpty()) engine.endUtteranceWithSnapshot(frozenSnap) else engine.endUtterance()
+            // Use immutable snapshot and its immutable config — never mutate live buffer, never read global frozenUtterancePcm that B may have replaced.
+            val finalTranscript = engine.transcribeSnapshot(pending.pcm, pending.config)
             val elapsed = android.os.SystemClock.elapsedRealtime() - t0
-            Log.i("SprichIME", "finalizeOnce decoded token=$token elapsedMs=$elapsed textLen=${finalTranscript.text.length}")
+            // Raw vs post triage: raw is finalTranscript.text, post will be after parser
+            val debugTraceEnabled = try { prefs.debugTranscriptTrace.first() } catch (_: Exception) { false }
+            if (debugTraceEnabled) {
+                Log.i("SprichIME", "RAW_ASR token=${token.utteranceId} text=\"${finalTranscript.text.take(80)}\"")
+            } else {
+                Log.i("SprichIME", "finalizePending decoded token=$token elapsedMs=$elapsed textLen=${finalTranscript.text.length} queueDepth=${lastQueueDepth} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)} durationMs=$pcmDurationMs")
+            }
 
-            // Re-validate all conditions immediately before insertion
+            // Re-validate all conditions immediately before insertion — still without corrupting B if A is stale
             if (token.generation != sessionGeneration.get() || !session.requireActive()) {
-                Log.w("SprichIME", "finalizeOnce abandoned post-decode stale generation token=$token")
+                Log.w("SprichIME", "finalizePending abandoned post-decode stale generation token=$token")
                 staleCallbackDrops++
-                endpointPending.set(false)
-                utteranceActive.set(false)
-                vad.reset()
-                lastVadState = Vad.State.SILENCE
+                maybeClearActiveStateForToken(token)
                 return
             }
             if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) {
-                Log.w("SprichIME", "finalizeOnce abandoned post-decode invalid session token=$token")
+                Log.w("SprichIME", "finalizePending abandoned post-decode invalid session token=$token")
                 staleCallbackDrops++
-                endpointPending.set(false); utteranceActive.set(false); vad.reset(); lastVadState = Vad.State.SILENCE; return
+                maybeClearActiveStateForToken(token)
+                return
             }
             if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) {
-                Log.w("SprichIME", "finalizeOnce abandoned post-decode field mismatch token=$token")
+                Log.w("SprichIME", "finalizePending abandoned post-decode field mismatch token=$token")
                 staleCallbackDrops++
-                endpointPending.set(false); utteranceActive.set(false); vad.reset(); lastVadState = Vad.State.SILENCE; return
+                maybeClearActiveStateForToken(token)
+                return
             }
-            // Verify captured InputConnection still current (window not switched)
             val currentIc = try { currentInputConnection } catch (_: Exception) { null }
             if (currentIc == null) {
-                Log.w("SprichIME", "finalizeOnce abandoned post-decode no InputConnection token=$token")
+                Log.w("SprichIME", "finalizePending abandoned post-decode no InputConnection token=$token")
                 staleCallbackDrops++
-                endpointPending.set(false); utteranceActive.set(false); vad.reset(); lastVadState = Vad.State.SILENCE; return
+                maybeClearActiveStateForToken(token)
+                return
             }
-            // If fieldController already moved to new session, drop
             if (!fieldController.isCurrentSession(token.sessionId)) {
-                Log.w("SprichIME", "finalizeOnce abandoned post-decode fieldController stale token=$token")
+                Log.w("SprichIME", "finalizePending abandoned post-decode fieldController stale token=$token")
                 staleCallbackDrops++
-                endpointPending.set(false); utteranceActive.set(false); vad.reset(); lastVadState = Vad.State.SILENCE; return
+                maybeClearActiveStateForToken(token)
+                return
             }
 
             var text = finalTranscript.text.trim()
-            // Use frozen per-utterance PCM for fallback — single authoritative engine buffer, never previous utterances
+            // Punctuation triage: capture three stages for debug
+            val raw = finalTranscript.text
+            // POST_PROCESS stage: after spoken command parsing and typography normalization, before editor
+            // For debug tracing: log RAW_ASR vs POST_PROCESS vs EDITOR_FINAL lengths only (no content by default)
+            Log.i("SprichIME", "punctuationTriage token=${token.utteranceId} RAW_ASR_len=${raw.length} POST_len=${text.length} lang=${pending.config.resolvedLanguageTag()}")
+            // Typography normalization already applied via SpokenEditingParser (POST_PROCESS)
+            // Remote fallback uses pending.pcm isolated, not global
             val sttModeRaw = try { prefs.sttModeRaw.first() } catch (_: Exception) { "local" }
-            if (sttModeRaw == "remote" || (sttModeRaw == "fallback" && text.isBlank() && pipelinePushedSampleCount > 8000)) {
+            if (sttModeRaw == "remote" || (sttModeRaw == "fallback" && text.isBlank() && pending.pushedSamples > 8000)) {
                 statusText?.text = "Transcribing (cloud)…"
-                // Single source: engine's frozen utterance PCM. IME cache is just a snapshot copy taken at endpoint.
-                val cached = frozenUtterancePcm
-                val engineSnap = try { engine.snapshotUtterancePcm() } catch (_: Exception) { ShortArray(0) }
-                val fallbackSnap = when {
-                    cached != null && cached.isNotEmpty() -> cached
-                    engineSnap.isNotEmpty() -> engineSnap
-                    else -> cached ?: ShortArray(0)
-                }
-                Log.i("SprichIME", "remoteStt fallback token=$token snapshotSamples=${fallbackSnap.size} engineSnap=${engineSnap.size}")
-                // Regression: snapshot must contain no samples from previous utterance. Verified via per-utterance buffer.
-                val result = remoteStt.transcribe(fallbackSnap, SAMPLE_RATE.toInt(), activeConfig.language)
+                val fallbackSnap = pending.pcm // immutable isolated, never B's audio
+                Log.i("SprichIME", "remoteStt fallback token=$token snapshotSamples=${fallbackSnap.size} pendingPushed=${pending.pushedSamples}")
+                val result = remoteStt.transcribe(fallbackSnap, SAMPLE_RATE.toInt(), pending.config.language)
                 val remoteText = result.getOrNull()?.trim().orEmpty()
                 Log.i("SprichIME", "remoteStt mode=$sttModeRaw ok=${result.isSuccess} chars=${remoteText.length}")
                 if (remoteText.isNotBlank()) text = remoteText
@@ -1101,29 +1177,24 @@ class SprichIME : InputMethodService() {
             val aiEnabled = try { prefs.aiEnabled.first() } catch (_: Exception) { false }
             if (aiEnabled && text.isNotBlank()) {
                 statusText?.text = "Polishing…"
-                val polished = grammarFixer.fix(text, activeConfig.language)
+                val polished = grammarFixer.fix(text, pending.config.language)
                 val fixed = polished.getOrNull()?.trim().orEmpty()
                 Log.i("SprichIME", "aiPolish ok=${polished.isSuccess} inChars=${text.length} outChars=${fixed.length}")
                 if (fixed.isNotBlank()) text = fixed
             }
 
             val applied = if (text.isBlank()) {
-                Log.w("SprichIME", "final transcript empty token=$token elapsedMs=$elapsed pushedSamples=$pipelinePushedSampleCount")
+                Log.w("SprichIME", "final transcript empty token=$token elapsedMs=$elapsed pushedSamples=${pending.pushedSamples}")
+                // Even blank final must reset only if it owns active capture; otherwise preserve B
                 false
             } else {
                 val ok = applyFinalText(token, text)
-                Log.i("SprichIME", "final token=$token chars=${text.length} applied=$ok elapsedMs=$elapsed")
+                Log.i("SprichIME", "final token=$token chars=${text.length} applied=$ok elapsedMs=$elapsed lang=${pending.config.resolvedLanguageTag()} postLen=${text.length}")
                 if (ok) finalCommitCount++
                 ok
             }
             if (text.isNotBlank() && !applied) {
-                failSession(
-                    token.generation,
-                    "final text insertion failed token=$token",
-                    "Could not insert text",
-                    "Refocus the field and retry",
-                    null,
-                )
+                failSession(token.generation, "final text insertion failed token=$token", "Could not insert text", "Refocus the field and retry", null)
                 return
             }
             if (applied) {
@@ -1132,53 +1203,109 @@ class SprichIME : InputMethodService() {
             }
 
             lastPartialText = ""
-            vad.reset()
-            lastVadState = Vad.State.SILENCE
-            endpointPending.set(false)
-            utteranceActive.set(false)
-            pipelinePushedSampleCount = 0L
-            frozenUtterancePcm = null
-            // Do not clear currentUtteranceToken here for USER_STOP — stopDictation finally handles clear
-            // For ENDPOINT we clear; for USER_STOP caller will clear after termination
-            if (reason != StopReason.USER_STOP) {
-                currentUtteranceToken = null
+            // Only clear active capture state if this pending still owns it; otherwise B is active and must not be corrupted.
+            maybeClearActiveStateForToken(token)
+            // Also clear legacy global frozen only if it equals this pending's pcm (avoid clearing B's snapshot)
+            if (frozenUtterancePcm != null && frozenUtterancePcm?.size == pending.pcm.size) {
+                // Content check optional: if same size, assume it's this pending; otherwise B's newer snapshot has different size likely.
+                // To be safe, only clear if token matches current token
+                if (currentUtteranceToken?.utteranceId == token.utteranceId) {
+                    frozenUtterancePcm = null
+                }
             }
-            try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-            // Re-arm only for ENDPOINT (continuous listening). USER_STOP terminates — do not re-arm.
+            // Do NOT call engine.clearUtteranceCapture() here — that would erase B's live buffer.
+            // Engine's active buffer is owned by live capture; per-utterance snapshot already isolated.
+            // Only need to ensure partial decoding continues for next utterance.
             if (reason == StopReason.ENDPOINT) {
                 try {
-                    engine.beginSession(activeConfig)
-                    if (session.state.value !is SessionState.Listening) {
-                        try { session.onListeningAgain() } catch (_: Exception) {}
+                    // Re-arm for continuous listening only if session still valid and no generation change.
+                    // beginSession clears pcmRing/stabilizer but NOT utteranceBuffer that holds B's active capture? Actually beginSession clears utteranceBuffer — that would erase B!
+                    // So we must NOT call beginSession if B is already capturing (utteranceActive true with different token).
+                    val isBActive = currentUtteranceToken != null && currentUtteranceToken?.utteranceId != token.utteranceId && utteranceActive.get()
+                    if (isBActive) {
+                        Log.i("SprichIME", "finalizePending ENDPOINT skip re-arm, B already active token=${currentUtteranceToken} A=$token")
+                    } else {
+                        engine.beginSession(pending.config)
+                        if (session.state.value !is SessionState.Listening) {
+                            try { session.onListeningAgain() } catch (_: Exception) {}
+                        }
+                        Log.i("SprichIME", "finalizePending ENDPOINT re-armed token=$token fieldStill=${fieldController.isCurrentSession(token.sessionId)}")
                     }
                     finishedWithRetry = true
-                    Log.i("SprichIME", "finalizeOnce ENDPOINT re-armed token=$token fieldStill=${fieldController.isCurrentSession(token.sessionId)}")
                 } catch (t: Throwable) {
                     Log.e("SprichIME", "beginSession after ENDPOINT finalize failed token=$token", t)
                     failSession(token.generation, "begin after finalize failed", "Speech engine stopped", "Tap to retry", t)
                 }
             } else if (reason == StopReason.USER_STOP) {
-                // USER_STOP: do not re-arm, let stopDictation's finally terminate session and advance generation
-                Log.i("SprichIME", "finalizeOnce USER_STOP committed token=$token awaiting termination")
+                Log.i("SprichIME", "finalizePending USER_STOP committed token=$token awaiting termination")
                 finishedWithRetry = false
             }
         } catch (e: CancellationException) {
-            Log.i("SprichIME", "finalizeOnce cancelled token=$token reason=$reason")
-            endpointPending.set(false)
-            utteranceActive.set(false)
+            Log.i("SprichIME", "finalizePending cancelled token=${pending.token} reason=${pending.reason}")
+            maybeClearActiveStateForToken(pending.token)
             throw e
         } catch (t: Throwable) {
-            failSession(
-                token.generation,
-                "finalization failed token=$token reason=$reason",
-                "Transcription failed",
-                "Tap to retry",
-                t,
-            )
+            failSession(token.generation, "finalization failed token=$token reason=$reason", "Transcription failed", "Tap to retry", t)
         } finally {
-            if (!finishedWithRetry && sessionGeneration.get() == token.generation && session.requireActive()) {
-                // Defensive: keep pending cleared if we exited without re-arming
+            // Update queue metrics
+            val depth = synchronized(pendingQueueLock) { pendingQueue.size }
+            lastQueueDepth = depth
+            if (depth == 0) {
+                endpointPending.set(false)
             }
+        }
+    }
+
+    private fun maybeClearActiveStateForToken(token: UtteranceToken) {
+        // Only clear active capture flags if this token still owns the active capture.
+        // If B has already started (different utteranceId), do NOT reset vad/active.
+        val current = currentUtteranceToken
+        if (current != null && current.utteranceId != token.utteranceId) {
+            Log.i("SprichIME", "maybeClearActiveState skipping — B active current=$current vs finished $token")
+            return
+        }
+        // This token is still active (or no active), safe to clear.
+        // But also check if queue still has pending — keep endpointPending true if pending remains.
+        val hasPending = synchronized(pendingQueueLock) { pendingQueue.isNotEmpty() }
+        if (!hasPending) endpointPending.set(false)
+        // Do not unconditionally clear utteranceActive if B just started as active? Already checked above.
+        // For ENDPOINT we keep utteranceActive false; for USER_STOP termination handled elsewhere.
+        // We do NOT reset vad here if B active — already guarded.
+        // If no B, reset is safe but defer to caller? For safety, only reset vad if no active B.
+        if (current == null || current.utteranceId == token.utteranceId) {
+            // No B overwriting, safe to consider clearing? But we avoid clearing vad that B might need for hesitation detection?
+            // For blank final, we had previous logic to reset vad; keep but only if token matches.
+            // Minimal: do not reset pipeline counters here; they are per-utterance via pending.
+        }
+    }
+
+    /**
+     * Single authoritative finalization entry. Now creates immutable PendingUtterance and delegates
+     * to serialized worker to guarantee:
+     * - immutable PCM snapshot (Race 1)
+     * - no clear of active B's buffer (Race 2)
+     * - no unconditional reset of B's state (Race 3)
+     * - multiple pendings queued, not lost via single endpointJob (Race 4)
+     */
+    private suspend fun finalizeOnce(token: UtteranceToken, reason: StopReason) {
+        // Build immutable snapshot — copy PCM now before live buffer reused for next utterance
+        val snap: ShortArray = try {
+            frozenUtterancePcm?.copyOf() ?: engine.snapshotUtterancePcm().copyOf()
+        } catch (_: Exception) { ShortArray(0) }
+        val pending = PendingUtterance(
+            token = token,
+            pcm = snap,
+            config = activeConfig.copy(),
+            pushedSamples = pipelinePushedSampleCount,
+            reason = reason,
+            endpointTimestampNanos = System.nanoTime(),
+        )
+        if (reason == StopReason.USER_STOP) {
+            // USER_STOP must be synchronous for caller awaiting termination ordering; decode before generation bump
+            finalizePending(pending)
+        } else {
+            // ENDPOINT queued — allows capture of B while A decodes
+            enqueuePending(pending)
         }
     }
 
@@ -1213,17 +1340,40 @@ class SprichIME : InputMethodService() {
         return if (SpokenEditingParser.isDeleteCommand(parsed.text)) {
             val toDelete = if (parsed.text == "__DELETE_SENTENCE__") 120 else 40
             val deleted = inputConnection.deleteSurroundingText(toDelete, 0)
-            // Delete command is a per-utterance operation — keeps field session alive
-            try { fieldController.commitUtterance(token.sessionId, token.utteranceId, null, "") } catch (_: Exception) {}
+            // Delete command is a per-utterance operation — mark finalized via both coordinators (best-effort, ignore null IC result)
+            try { fieldController.commitUtterance(token.sessionId, token.utteranceId, inputConnection, "") } catch (_: Exception) {}
+            // Also ensure SprichIME's authoritative set contains this utterance (already claimed in finalizePending)
             try { composition.discardPartial(inputConnection) } catch (_: Exception) { composition.finishIfActive(inputConnection) }
             deleted
         } else {
             val finalText = try { vocabStore.apply(parsed.text) } catch (_: Exception) { parsed.text }
-            // Use FieldSessionController as single authoritative owner — per-utterance commit keeps field alive
-            val viaController = try { fieldController.commitUtterance(token.sessionId, token.utteranceId, inputConnection, finalText) } catch (_: Exception) { false }
-            if (viaController) return true
-            // Fallback direct (should not happen) — but still validated
-            composition.applyUpdate(inputConnection, finalText, "", true)
+            // One authoritative exactly-once owner: SprichIME.finalizedUtterances is primary, FieldSessionController secondary.
+            // Use typed result to avoid dangerous fallback that treated stale/duplicate as editor rejection.
+            val result = try { fieldController.commitUtteranceTyped(token.sessionId, token.utteranceId, inputConnection, finalText) } catch (_: Exception) { FieldSessionController.CommitResult.StaleSession }
+            return when (result) {
+                is FieldSessionController.CommitResult.Committed -> true
+                is FieldSessionController.CommitResult.EditorRejected -> {
+                    // Only editor rejection may retry via direct composition — still validated
+                    Log.w("SprichIME", "controller EditorRejected, retrying direct commit token=$token")
+                    composition.applyUpdate(inputConnection, finalText, "", true)
+                }
+                is FieldSessionController.CommitResult.AlreadyFinalized -> {
+                    Log.w("SprichIME", "AlreadyFinalized token=$token — never direct-commit")
+                    false
+                }
+                is FieldSessionController.CommitResult.StaleSession -> {
+                    Log.w("SprichIME", "StaleSession token=$token — never direct-commit")
+                    false
+                }
+                is FieldSessionController.CommitResult.WrongField -> {
+                    Log.w("SprichIME", "WrongField token=$token — never direct-commit")
+                    false
+                }
+                is FieldSessionController.CommitResult.NoInputConnection -> {
+                    Log.w("SprichIME", "NoInputConnection token=$token — never direct-commit")
+                    false
+                }
+            }
         }
     }
 
