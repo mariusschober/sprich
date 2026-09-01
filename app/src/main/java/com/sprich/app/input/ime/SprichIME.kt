@@ -65,6 +65,8 @@ class SprichIME : InputMethodService() {
     private var pipelineSampleCount = 0L
     private var pipelinePushedSampleCount = 0L
     private var pipelineStartElapsed = 0L
+    // Exact PCM sent to the recognizer for the current utterance. Frozen at endpoint.
+    private val utteranceAudio = com.sprich.app.core.audio.AudioRingBuffer((SAMPLE_RATE * 40).toInt())
     private var instantMode: Boolean = false
     private var language: Language = Language.AUTO
     private var commandsEnabled: Boolean = true
@@ -569,7 +571,7 @@ class SprichIME : InputMethodService() {
     private fun toggleDictation() {
         try {
             if (isDictationRunning()) {
-                stopDictation()
+                stopDictation(commitPending = true)
             } else {
                 startJob?.cancel()
                 startJob = scope.launch { startDictationIfNeeded() }
@@ -628,6 +630,7 @@ class SprichIME : InputMethodService() {
             vibrateTick()
             composition.reset()
             vad.reset()
+            utteranceAudio.clear()
             lastVadState = Vad.State.SILENCE
             utteranceActive.set(false)
             endpointPending.set(false)
@@ -771,6 +774,8 @@ class SprichIME : InputMethodService() {
                 utteranceActive.compareAndSet(false, true)
             ) {
                 val preRoll = audio.snapshotPrebufferMs(PRE_ROLL_MS)
+                utteranceAudio.clear()
+                utteranceAudio.write(preRoll)
                 pipelinePushedSampleCount += preRoll.size
                 engine.pushAudio(preRoll, timestampNanos)
                 scope.launch {
@@ -797,6 +802,7 @@ class SprichIME : InputMethodService() {
                 utteranceActive.get() &&
                 (result.state == Vad.State.SPEECH || result.state == Vad.State.HESITATION)
             ) {
+                utteranceAudio.write(samples)
                 pipelinePushedSampleCount += samples.size
                 engine.pushAudio(samples, timestampNanos)
             }
@@ -808,7 +814,8 @@ class SprichIME : InputMethodService() {
             ) {
                 latency.mark("endpointDetected")
                 Log.i("SprichIME", "endpoint detected pushedSamples=$pipelinePushedSampleCount chunks=$pipelineChunkCount")
-                endpointJob = scope.launch { finalizeUtterance(generation) }
+                val frozenUtterance = utteranceAudio.snapshotLastSamples(utteranceAudio.available())
+                endpointJob = scope.launch { finalizeUtterance(generation, frozenUtterance) }
             }
         } catch (t: Throwable) {
             Log.e("SprichIME", "audio chunk processing failed", t)
@@ -824,7 +831,7 @@ class SprichIME : InputMethodService() {
         }
     }
 
-    private suspend fun finalizeUtterance(generation: Long) {
+    private suspend fun finalizeUtterance(generation: Long, frozenUtterance: ShortArray) {
         var finishedWithRetry = false
         try {
             if (generation != sessionGeneration.get() || !session.requireActive()) {
@@ -855,10 +862,9 @@ class SprichIME : InputMethodService() {
             val sttModeRaw = try { prefs.sttModeRaw.first() } catch (_: Exception) { "local" }
             if (sttModeRaw == "remote" || (sttModeRaw == "fallback" && text.isBlank() && pipelinePushedSampleCount > 8000)) {
                 statusText?.text = "Transcribing (cloud)…"
-                val snapshot = audio.ringBuffer.snapshotLast(30f)
-                val result = remoteStt.transcribe(snapshot, SAMPLE_RATE.toInt(), activeConfig.language)
+                val result = remoteStt.transcribe(frozenUtterance, SAMPLE_RATE.toInt(), activeConfig.language)
                 val remoteText = result.getOrNull()?.trim().orEmpty()
-                Log.i("SprichIME", "remoteStt mode=$sttModeRaw ok=${result.isSuccess} chars=${remoteText.length} samples=${snapshot.size}")
+                Log.i("SprichIME", "remoteStt mode=$sttModeRaw ok=${result.isSuccess} chars=${remoteText.length} samples=${frozenUtterance.size}")
                 if (remoteText.isNotBlank()) text = remoteText
             }
 
@@ -901,6 +907,7 @@ class SprichIME : InputMethodService() {
             endpointPending.set(false)
             utteranceActive.set(false)
             pipelinePushedSampleCount = 0L
+            utteranceAudio.clear()
             // Prepare for the next utterance without dropping mic. beginSession may throw if engine was torn down.
             try {
                 engine.beginSession(activeConfig)
@@ -915,6 +922,7 @@ class SprichIME : InputMethodService() {
             Log.i("SprichIME", "finalize cancelled generation=$generation")
             endpointPending.set(false)
             utteranceActive.set(false)
+            utteranceAudio.clear()
             throw e
         } catch (t: Throwable) {
             failSession(
@@ -969,13 +977,14 @@ class SprichIME : InputMethodService() {
         utteranceActive.set(false)
         endpointPending.set(false)
         lastPartialText = ""
+        utteranceAudio.clear()
         session.error(reason)
         statusText?.text = userStatus
         (statusText?.tag as? TextView)?.text = userHint
         writeDiagnostics("error=$reason")
     }
 
-    private fun stopDictation() {
+    private fun stopDictation(commitPending: Boolean = false) {
         val wasActive = isDictationRunning()
         val generationAtStop = sessionGeneration.get()
         val generation = sessionGeneration.incrementAndGet()
@@ -987,7 +996,7 @@ class SprichIME : InputMethodService() {
         endpointJob = null
         // If user tapped stop while speech was active and we have audio, try to commit final transcript before clearing.
         // This makes tap-to-stop behave like an explicit endpoint. Do NOT use stale lastPartialText — only real final.
-        val shouldCommit = wasActive && pipelinePushedSampleCount > 8000
+        val shouldCommit = commitPending && wasActive && pipelinePushedSampleCount > 8000
         if (shouldCommit) {
             // Keep engineJob alive until finalization finishes, then clean up.
             scope.launch {
@@ -1013,6 +1022,7 @@ class SprichIME : InputMethodService() {
                     endpointPending.set(false)
                     lastPartialText = ""
                     pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
+                    utteranceAudio.clear()
                     vad.reset()
                     lastVadState = Vad.State.SILENCE
                     try { composition.finishIfActive(currentInputConnection) } catch (_: Exception) {}
@@ -1032,6 +1042,7 @@ class SprichIME : InputMethodService() {
         endpointPending.set(false)
         lastPartialText = ""
         pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
+        utteranceAudio.clear()
         vad.reset()
         lastVadState = Vad.State.SILENCE
         try { composition.finishIfActive(currentInputConnection) } catch (_: Exception) {}

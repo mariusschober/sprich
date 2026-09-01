@@ -40,13 +40,20 @@ class Preferences(context: Context) {
     val onboardingDone: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_ONBOARDING_DONE] ?: false }
     val instantMode: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_INSTANT_MODE] ?: false }
     val language: Flow<Language> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{
+        // Canary requires an explicit source language. The old AUTO value was a heuristic that
+        // could select a translated candidate, so migrate it deterministically to English.
         when(it[KEY_LANGUAGE]){
-            "en" -> Language.EN; "de" -> Language.DE; "es" -> Language.ES; else -> Language.AUTO
+            "de" -> Language.DE
+            "es" -> Language.ES
+            "fr" -> Language.FR
+            else -> Language.EN
         }
     }
     val engineType: Flow<EngineType> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{
         when(it[KEY_ENGINE]){
-            "accurate" -> EngineType.ACCURATE; "streaming" -> EngineType.STREAMING; else -> EngineType.FAST
+            "streaming" -> EngineType.STREAMING
+            "fast" -> EngineType.FAST
+            else -> EngineType.ACCURATE
         }
     }
     val haptics: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_HAPTICS] ?: true }
@@ -76,7 +83,10 @@ class Preferences(context: Context) {
 
     suspend fun setOnboardingDone(v: Boolean){ context.ds.edit{it[KEY_ONBOARDING_DONE]=v} }
     suspend fun setInstantMode(v: Boolean){ context.ds.edit{it[KEY_INSTANT_MODE]=v} }
-    suspend fun setLanguage(v: Language){ context.ds.edit{it[KEY_LANGUAGE]=v.code} }
+    suspend fun setLanguage(v: Language){
+        // AUTO is not a safe Canary task. Persist English until a true multilingual/LID engine exists.
+        context.ds.edit{ it[KEY_LANGUAGE] = if (v == Language.AUTO) Language.EN.code else v.code }
+    }
     suspend fun setEngine(v: EngineType){ context.ds.edit{it[KEY_ENGINE]= when(v){ EngineType.FAST->"fast"; EngineType.ACCURATE->"accurate"; EngineType.STREAMING->"streaming" }}}
     suspend fun setHaptics(v: Boolean){ context.ds.edit{it[KEY_HAPTICS]=v} }
     suspend fun setCommands(v: Boolean){ context.ds.edit{it[KEY_COMMANDS]=v} }

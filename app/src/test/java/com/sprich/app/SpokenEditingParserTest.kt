@@ -28,11 +28,34 @@ class SpokenEditingParserTest {
 
     @Test
     fun noFalsePositiveForNormalSpeechContainingComma() {
-        // "comma" inside word should not trigger?
-        // Our parser is word-boundary, so "comma" as standalone word should trigger, but "comma" in sentence may be punctuation intent
-        // For now check that "coming" not replaced
         val r = SpokenEditingParser.parse("I am coming tomorrow", Language.EN, true)
         assertEquals("I am coming tomorrow", r.text)
+    }
+
+    @Test
+    fun ordinaryEnglishNoIsNeverACorrectionCommand() {
+        val r = SpokenEditingParser.parse("I have no time today", Language.EN, true)
+        assertEquals("I have no time today", r.text)
+        assertFalse(r.isCommand)
+    }
+
+    @Test
+    fun ordinarySpanishNoIsNeverACorrectionCommand() {
+        val r = SpokenEditingParser.parse("No quiero traducir esto", Language.ES, true)
+        assertEquals("No quiero traducir esto", r.text)
+        assertFalse(r.isCommand)
+    }
+
+    @Test
+    fun ordinaryActuallyDoesNotDeletePreviousWords() {
+        val r = SpokenEditingParser.parse("This is actually important", Language.EN, true)
+        assertEquals("This is actually important", r.text)
+    }
+
+    @Test
+    fun numberWordsRemainVerbatim() {
+        val r = SpokenEditingParser.parse("There is one reason", Language.EN, true)
+        assertEquals("There is one reason", r.text)
     }
 
     @Test

@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.Flow
 enum class Language(val code: String) { EN("en"), DE("de"), ES("es"), FR("fr"), AUTO("auto") }
 
 data class SpeechSessionConfig(
-    val language: Language = Language.AUTO,
+    val language: Language = Language.EN,
     val enablePunctuation: Boolean = true,
     val enableCommands: Boolean = true,
     val personalVocab: List<String> = emptyList(),
