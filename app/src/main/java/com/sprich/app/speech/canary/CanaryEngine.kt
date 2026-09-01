@@ -314,7 +314,8 @@ class CanaryEngine(
         language: Language,
         punctuation: Boolean,
     ): OfflineRecognizer = OfflineRecognizer(
-        buildRecognizerConfig(
+        assetManager = null,
+        config = buildRecognizerConfig(
             modelDir = modelDir,
             language = language,
             punctuation = punctuation,
@@ -336,33 +337,33 @@ class CanaryEngine(
         require(decoder.isFile && decoder.length() > 0) { "Missing Canary decoder" }
         require(tokens.isFile && tokens.length() > 0) { "Missing Canary tokens" }
 
-        val canary = OfflineCanaryModelConfig.builder()
-            .setEncoder(encoder.absolutePath)
-            .setDecoder(decoder.absolutePath)
-            .setSrcLang(task.sourceLanguage)
-            .setTgtLang(task.targetLanguage)
-            .setUsePnc(punctuation)
-            .build()
+        val canary = OfflineCanaryModelConfig(
+            encoder = encoder.absolutePath,
+            decoder = decoder.absolutePath,
+            srcLang = task.sourceLanguage,
+            tgtLang = task.targetLanguage,
+            usePnc = punctuation,
+        )
 
-        val model = OfflineModelConfig.builder()
-            .setCanary(canary)
-            .setTokens(tokens.absolutePath)
-            .setNumThreads(NUM_THREADS)
-            .setDebug(false)
-            .setProvider("cpu")
-            .build()
+        val model = OfflineModelConfig(
+            canary = canary,
+            tokens = tokens.absolutePath,
+            numThreads = NUM_THREADS,
+            debug = false,
+            provider = "cpu",
+        )
 
-        val features = FeatureConfig.builder()
-            .setSampleRate(SAMPLE_RATE)
-            .setFeatureDim(80)
-            .setDither(0f)
-            .build()
+        val features = FeatureConfig(
+            sampleRate = SAMPLE_RATE,
+            featureDim = 80,
+            dither = 0f,
+        )
 
-        return OfflineRecognizerConfig.builder()
-            .setFeatureConfig(features)
-            .setOfflineModelConfig(model)
-            .setDecodingMethod("greedy_search")
-            .build()
+        return OfflineRecognizerConfig(
+            featConfig = features,
+            modelConfig = model,
+            decodingMethod = "greedy_search",
+        )
     }
 
     private fun hasAudibleSignal(pcm: ShortArray): Boolean {
