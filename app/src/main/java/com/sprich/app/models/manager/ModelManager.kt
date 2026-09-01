@@ -80,8 +80,15 @@ class ModelManager(private val context: Context) {
     fun isFastConformerReady(): Boolean {
         val dir = File(context.filesDir, "fastconformer")
         return File(dir, "model.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
-               File(dir, "tokens.txt").exists()
+                File(dir, "tokens.txt").exists()
     }
+
+    /** Single derived readiness for Automatic — both Tiny LID and FastConformer required. No Canary. */
+    fun isAutomaticReady(): Boolean = isWhisperTinyReady() && isFastConformerReady()
+
+    /** Flow-friendly getter for tests/UI. */
+    fun isAutomaticReadyStatus(lid: ModelStatus, fast: ModelStatus): Boolean =
+        lid is ModelStatus.Ready && fast is ModelStatus.Ready
 
     fun isNemotron560Ready(): Boolean {
         val dir = File(context.filesDir, "nemotron-560")
