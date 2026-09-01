@@ -72,7 +72,17 @@ class AudioRingBuffer(capacitySamples: Int = 16000 * 5) {
         require(seconds >= 0f && seconds.isFinite()) { "seconds must be finite and non-negative" }
         require(sampleRate > 0) { "sampleRate must be positive" }
         val requested = (seconds * sampleRate).toLong().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        val want = requested.coerceAtMost(size)
+        return snapshotLastSamplesLocked(requested)
+    }
+
+    @Synchronized
+    fun snapshotLastSamples(sampleCount: Int): ShortArray {
+        require(sampleCount >= 0) { "sampleCount must be non-negative" }
+        return snapshotLastSamplesLocked(sampleCount)
+    }
+
+    private fun snapshotLastSamplesLocked(sampleCount: Int): ShortArray {
+        val want = sampleCount.coerceAtMost(size)
         if (want == 0) return ShortArray(0)
         val out = ShortArray(want)
         val start = ((writePos - want) % cap + cap) % cap
