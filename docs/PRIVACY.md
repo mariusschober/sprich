@@ -7,9 +7,9 @@
 - No cloud ASR by default, no remote inference by default, no telemetry, no analytics SDK, no crash SDK, no AD_ID, no account, no sync, no remote config for dictation.
 - Transcription runs on-device through the Canary 180M Flash INT8 sherpa-onnx runtime by default.
 - Raw audio is not retained or transmitted by default. Microphone state is always visibly discoverable (Listening… + waveform + glow) and immediately pausable (tap to stop, mic released <1s).
-- **Transcription choices**: `On-device` (local only, 0 STT API calls), `API` (remote primary, local fallback on failure, remote success has 0 local decode), `On-device → API fallback` (local first, remote only on blank/exception). Default `ON_DEVICE`. All `RemoteSttConfig` snapshots are immutable per utterance (providerId/endpoint/model/languagePolicy/deadline/credentialRef).
+- **Transcription choices**: `On-device` (local only, 0 STT API calls), `API` (remote primary, local fallback on failure, remote success has 0 local decode, 0 local loads/sessions/pushes; fallback lazy, same frozen PCM, re-arm neutral), `On-device → API fallback` (local first, remote only on blank/exception). Default `ON_DEVICE`. All `RemoteSttConfig` snapshots are immutable per utterance (providerId/endpoint/model/languagePolicy/deadline/credentialRef) built without `runBlocking` on audio path.
 - **Refinement choices**: `Off` (0 LLM calls), `Correct`, `Clean dictation`. Default `OFF`. When enabled, transcript text only (never audio) is sent to your refinement provider via `ai/OpenAiCompatibleRefinementProvider` (`POST /chat/completions`, tiny request, `temperature 0`).
-- **BYOK**: Secrets via `ApiSecretStore` Keystore AES-GCM in `noBackupFilesDir/api_secrets/<id>.enc`; DataStore keeps refs only, Settings shows `Saved` without reloading plaintext, `Clear local data` deletes all. No secret in logs/diagnostics/backups.
+- **BYOK**: Secrets via `ApiSecretStore` Keystore AES-GCM in `noBackupFilesDir/api_secrets/<id>.enc` **or FAIL CLOSED** (no reversible Base64 fallback); DataStore keeps refs only, `hasSecret()` means decryptable (invalidated key shows “needs to be entered again”), `LegacyApiCredentialMigrator` migrates plaintext once and deletes it, Settings shows `Saved` only after durable encrypted success and shows “Could not securely save” on failure. No secret in logs/diagnostics/backups; all request/config `toString()` redacted.
 - **Dynamic disclosure**: Settings → Privacy reflects actual mode: local-only → `Models only`; API STT → `Audio is sent directly... using your API key`; refinement → `Transcript sent directly...`; both → combined; always `Sprich does not provide, proxy or receive your API key` + `billed directly by your provider`.
 
 ## Data flows
@@ -25,7 +25,7 @@
 - Password/PIN fields: checked via `EditorInfo.inputType` + `isPassword` + autofill hints. Instant Mode does nothing, mic stays off.
 - Permissions: `RECORD_AUDIO` (runtime), `VIBRATE` (haptics), `FOREGROUND_SERVICE_MICROPHONE` (accessibility overlay, Android 14+), `POST_NOTIFICATIONS`, `INTERNET` (only for opt-in remote). No external-storage permission.
 - Storage: Canary model in `files/canary` (app-private); cleanup removes stale dirs. Diagnostic WAVs only when `AudioDiagnostics.isEnabled`. `Diagnostics` and `ModelManager` use atomic rename + SHA verification.
-- Settings exposes: `Audio storage: Never` (normal), `Network use: None by default` (local), `Clear local data`, plus `Advanced → Remote STT` and `AI polish` with explicit toggles.
+- Settings exposes: `Audio storage: Never — audio is not retained after transcription` (normal) vs `Debug capture enabled: test audio is stored locally (WAV)` when `debugWavCapture` is on (disabled by default, release never retains silently), `Network use` derived from `transcriptionMode`/`refinementMode`, `Clear local data`, plus `Transcription` and `Improve transcript` with explicit toggles.
 
 ## Verification
 
