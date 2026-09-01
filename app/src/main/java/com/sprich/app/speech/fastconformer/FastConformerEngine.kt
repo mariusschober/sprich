@@ -33,7 +33,8 @@ class FastConformerEngine(
     @Volatile var nativeDecodeStarts: Long = 0
     @Volatile var nativeDecodeCurrent: Int = 0
     @Volatile var nativeDecodeMaxConcurrency: Int = 0
-    private val pcmBuffer = mutableListOf<Short>()
+    // Primitive bounded buffer — same architecture as Canary (no MutableList<Short> boxing)
+    private val pcmBuffer = com.sprich.app.core.audio.UtterancePcmBuffer(16000 * 30)
 
     override fun capabilities() = SpeechEngineCapabilities(trueStreaming = false, partialResults = false, punctuation = false, capitalization = false, languageDetection = false)
     override fun supportedLanguages() = setOf(Language.EN, Language.DE, Language.ES, Language.FR)
@@ -97,8 +98,15 @@ class FastConformerEngine(
     }
 
     override fun pushAudio(samples: ShortArray, timestampNanos: Long) {
-        synchronized(pcmBuffer) { for (s in samples) pcmBuffer.add(s) }
+        pcmBuffer.append(samples)
     }
+
+    fun beginUtteranceCapture(preRoll: ShortArray) {
+        pcmBuffer.beginWithPreRoll(preRoll)
+    }
+
+    fun snapshotUtterancePcm(): ShortArray = pcmBuffer.snapshot()
+    fun clearUtteranceCapture() = pcmBuffer.clear()
 
     override fun partialTranscript(): Flow<TranscriptUpdate> = flow
 
@@ -110,7 +118,7 @@ class FastConformerEngine(
 
     override suspend fun endUtterance(): FinalTranscript = withContext(inferenceDispatcher) {
         inferenceMutex.withLock {
-            val pcm = synchronized(pcmBuffer) { pcmBuffer.toShortArray() }
+            val pcm = pcmBuffer.snapshot()
             pcmBuffer.clear()
             if (pcm.isEmpty() || isSilence(pcm)) return@withLock FinalTranscript("")
             val text = decode(pcm)
@@ -150,4 +158,5 @@ class FastConformerEngine(
 
     override fun cancelSession() { pcmBuffer.clear(); flow.tryEmit(TranscriptUpdate("", "", true)) }
     override fun reset() = cancelSession()
+    fun isUsingPrimitiveBuffer(): Boolean = true // for test verification that boxed MutableList removed
 }

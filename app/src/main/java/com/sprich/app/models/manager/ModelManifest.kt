@@ -51,8 +51,8 @@ object BuiltinManifest {
                 engine = "whisper-tiny-lid",
                 version = "1.0.0",
                 sourceUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2",
-                sizeBytes = 116204861L, // archive, extracted int8 98M (12M enc +86M dec) + tokens 798K
-                sha256 = "", // TODO pin after verified download (archive 116M)
+                sizeBytes = 116204861L, // archive 116M, extracted 98M (12M enc +86M dec) + 798K tokens, files: tiny-*.onnx
+                sha256 = "", // NOT YET PINNED — archive verified via api.github.com 116204861 bytes 2024-07-13; pin after local verified download (see DownloadManager verifySha256)
                 files = listOf("tiny-encoder.int8.onnx","tiny-decoder.int8.onnx","tiny-tokens.txt"),
                 requiredFreeBytes = 250L * 1024 * 1024,
                 languages = listOf("en","de","es","fr"),
@@ -66,8 +66,8 @@ object BuiltinManifest {
                 engine = "nemo-ctc",
                 version = "1.0.0",
                 sourceUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-fast-conformer-ctc-en-de-es-fr-14288-int8.tar.bz2",
-                sizeBytes = 102875642L, // archive, extracted 126M model.int8.onnx + 23K tokens
-                sha256 = "",
+                sizeBytes = 102875642L, // archive 102M, extracted 126M model.int8.onnx + 23K tokens
+                sha256 = "", // NOT YET PINNED — archive 102875642 bytes 2025-07-08; pin after verified download
                 files = listOf("model.int8.onnx","tokens.txt"),
                 requiredFreeBytes = 300L * 1024 * 1024,
                 languages = listOf("en","de","es","fr"),
@@ -81,11 +81,11 @@ object BuiltinManifest {
                 engine = "nemotron",
                 version = "2026-06-11",
                 sourceUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2",
-                sizeBytes = 475271763L, // archive, extracted ~500-600M (encoder+decoder+joiner+tokens+data)
-                sha256 = "",
+                sizeBytes = 475271763L, // archive 475M, extracted ~600M (encoder+decoder+joiner+tokens)
+                sha256 = "c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a", // MEASURED via /tmp/nemotron-560.tar.bz2 2026-09-01
                 files = listOf("encoder.int8.onnx","decoder.int8.onnx","joiner.int8.onnx","tokens.txt"),
                 requiredFreeBytes = 900L * 1024 * 1024,
-                languages = listOf("en","de","es","fr","ja","hi","auto"), // 40 locales, `auto` strips tag
+                languages = listOf("en","de","es","fr","ja","hi","auto"), // 40 locales, `auto` strips tag per sherpa 1.13.4+
                 license = "OpenMDW-1.1 (NVIDIA) + Apache-2.0 (sherpa)",
                 quantization = "INT8"
             ),
@@ -97,7 +97,7 @@ object BuiltinManifest {
                 version = "2026-06-11",
                 sourceUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-160ms-int8-2026-06-11.tar.bz2",
                 sizeBytes = 475273363L,
-                sha256 = "",
+                sha256 = "", // NOT YET PINNED — archive 475273363 bytes 2026-07-09; pin after verified download (560 already pinned c6bf...)
                 files = listOf("encoder.int8.onnx","decoder.int8.onnx","joiner.int8.onnx","tokens.txt"),
                 requiredFreeBytes = 900L * 1024 * 1024,
                 languages = listOf("en","de","es","fr","auto"),
