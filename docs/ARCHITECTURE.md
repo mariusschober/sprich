@@ -35,12 +35,15 @@ onStartInput / focus → FieldSessionController.onFieldFocused [sessionId++] →
                          ↘ continuous capture: next onset not blocked by previous final (decode serialized via mutex, live capture via separate PCM buffer/shnapshot)
 ```
 
- ## Modules
+  ## Modules (2026-09-02 sprint 3)
 
 ```
 app/src/main/java/com/sprich/app/
   SprichApp.kt                 owns and preloads the single process-wide Canary engine (Fast alias)
-  core/audio/AudioCapture.kt + RingBuffer(30s) + ForegroundService (mic FGS)
+  core/audio/AudioCapture.kt   16k mono PCM, ring 30s, single ShortArray readBuf zero-copy via startWithOffset, single RMS, requestStop/awaitStop split
+  core/audio/AudioRingBuffer.kt lock-ish ring 30s, O(1) drop, write(offset,len) zero-copy
+  core/audio/UtterancePcmBuffer.kt primitive bounded 30s, append(offset,len) zero-copy, frozen immutable
+  core/audio/UtteranceAudioCollector.kt neutral authoritative PCM (bounded 30s, size<=maxSamples strict), freeze isolates pending
   core/audio/Resampler.kt      linear resampler 48k/44.1k→16k mono PCM16, tested, bounded
   core/audio/AudioDiagnostics.kt developer-only WAV capture, verifies actual device rate/channel/encoding
   core/vad/Vad.kt             energy, calibration 150ms, onset 45ms, hesitation 400ms, endpoint 650ms, adaptive threshold
@@ -49,22 +52,23 @@ app/src/main/java/com/sprich/app/
   core/privacy/PrivacyGuard   log redaction, network-isolation lint
   core/security/EndpointValidator  central isValidHttpsUrl (HTTPS only, no userinfo, valid host, debug localhost)
   speech/api/SpeechEngine.kt  contract + EngineType + TranscriptionTask.TRANSCRIBE + SpeechLanguage.Auto|Fixed(BCP-47)
-  speech/canary/CanaryEngine  Canary 180M Flash INT8 via sherpa-onnx INT8 (primary), serialized JNI, cancellable, src==tgt never translates
-  speech/nemotron/NemotronEngine  dormant prototype, runtime not packaged
-  speech/remote/RemoteSttEngine  OpenAI-compatible backup (/audio/transcriptions) — opt-in only, isolated in speech/remote
+  speech/canary/CanaryEngine  Canary 180M Flash INT8 via sherpa-onnx INT8 (Accurate), serialized JNI, reflection cached, src==tgt never translates
+  speech/fastconformer/FastConformerEngine  FastConformer CTC 126M (Automatic primary), sherpa INT8, reflection cached, 16KB
+  speech/lid/WhisperLidEngine  Whisper Tiny spoken-language-ID INT8 (98M, per-utterance, reflection cached)
+  speech/nemotron/NemotronEngine  dormant prototype, runtime not packaged (hidden behind DEBUG)
+  speech/remote/RemoteSttProvider  abstraction: OpenAiCompatible/MetaMuse (https://api.meta.ai) / Gemini (generativelanguage.googleapis.com), bounded 8KB, followRedirects false, pooled sharedClient
+  speech/refinement + ai/OpenAiCompatibleRefinementProvider  OFF/CORRECT/CLEAN, DATA-block, bounded
   speech/stabilization/TranscriptStabilizer  LCP of last N=2, word-level
-   input/ime/SprichIME         InputMethodService, Instant/Tap, password guard, utteranceId monotonic, sessionGeneration/fieldGeneration, frozen snapshot before decode, continuous capture while previous final decodes, FIFO pendingChannel(4) for ENDPOINT/USER_STOP, stopRequested after drain, suppressEpisode backpressure, local-cold for API_PRIMARY, redirect-blocked pooled OkHttp, exactly-once via finalizedUtterances LRU 128
-   input/composition/CompositionManager  IME-local partials (no external setComposingText → no HelloHello), single irreversible commitText (no retry on ambiguous false), discardPartial vs commitFinal distinct, no destructive silent-commit delete
+   input/ime/SprichIME         InputMethodService — axis-locked gestures (swipe up switch → previous/next/picker, left delete/right undo/down newline, one mutation per gesture), Choreographer single visual lane (no Math.random/ValueAnimator fighting), immediate ACTION_DOWN press, password guard, utteranceId monotonic, sessionGeneration/fieldGeneration, frozen UtterancePlan+PCM at onset, FIFO pendingChannel(4), suppressEpisode backpressure, local-cold for API_PRIMARY, redirect-blocked pooled OkHttp, exactly-once via finalizedUtterances LRU 128, onDestroy field-tied cleanupScope (<50ms wall)
+   input/composition/CompositionManager  IME-local partials (no external setComposingText → no HelloHello), single irreversible commitText (no retry on ambiguous false), discardPartial vs commitFinal distinct, no destructive delete
    input/lifecycle/DictationSession FSM  Idle→Preparing→Listening→Speech→Finalizing→Inserting→Listening (per utterance) →Ending→Idle (field loss only), sessionId per field focus
    input/lifecycle/FieldSessionController single authoritative field session owner, commitUtterance (Inserting→Listening keeps field alive) vs commitFinal (Ending→Idle), utteranceId exactly-once set, cross-field guard, typed CommitResult (Committed/EditorRejected/Stale etc.)
    input/lifecycle/UtteranceToken immutable (sessionId, generation, utteranceId, fieldId/fieldGeneration, capturedIc) — exactly-once claim
-   core/audio/UtterancePcmBuffer primitive bounded (no boxing, O(1), max 30s, frozen immutable) — single authoritative PCM owner (engine), not duplicated in IME
    input/commands/SpokenEditingParser  deterministic EN/DE/ES, word-boundary punctuation, language-aware ITN (EN email only), no substring backtracking
-  input/accessibility/SprichAccessibilityService  TYPE_VIEW_FOCUSED editable node, ACTION_SET_TEXT (experimental, if not shipping remove per minimal privilege)
-  models/manager/ModelManager+Manifest  BuiltinManifest, SHA, atomic rename, integrity check
-  vocab/PersonalVocabStore+Repository  word-boundary replace, DataStore persistence (local only)
-  storage/Preferences          DataStore prefs (instant, speechLanguage BCP-47, engine, haptics, commands) — Locale.getDefault() only for first-run suggestion
-  ui/*                         Compose Material3 DayNight, onboarding 4 steps, home, settings, benchmark
+  models/manager/ModelManager+Manifest  BuiltinManifest (Canary/Fast/Tiny 2026-09-01 SHA), SHA atomic rename, isAutomaticReady gated (>5M threshold accommodates test fixtures)
+  vocab/PersonalVocabStore+Repository  word-boundary replace, DataStore persistence (local only), gesture legend
+  storage/Preferences          DataStore prefs (instant, speechLanguage BCP-47, transcriptionMode, sttProviderId/sttStreamingEnabled, haptics, commands) — suggestLanguageFromLocale suspend (no runBlocking)
+  ui/*                         Compose Material3 DayNight, onboarding 4 steps (jargon-free), home (Ready to speak), settings (Digital clean IA, gesture legend, DEBUG-gated benchmark/nemotron)
   diagnostics/Diagnostics      local only, no transcript, no raw audio by default, opt-in export
   diagnostics/ReplayHarness    debug WAV capture in noBackupFilesDir/sprich_replay (never backed up), paired WAV+.meta deletion, clearAll
 ```

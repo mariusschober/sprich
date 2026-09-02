@@ -46,15 +46,15 @@ See [PLAN.md](PLAN.md) for full product thesis and latency targets.
 
 Full: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Cloud: [docs/API_ARCHITECTURE.md](docs/API_ARCHITECTURE.md)
 
-## Models
+## Models (2026-09-02 sprint 3, commit `609b00b`)
 
 | Model | Size | Delivery | Runtime | Status |
 |-------|------|----------|---------|--------|
-| **Accurate** Canary 180M Flash INT8 | 147 MB | device-side `files/canary` | sherpa-onnx INT8 NDK (CPU, 2 threads) | Supported (primary) |
-| **Fast** Whisper Base Q5_1 multilingual | 59,707,625 bytes | formerly bundled | whisper.cpp (deleted 2026-08-24) | Removed — `fastEngine` aliases Canary |
-| **Streaming** Nemotron 0.6B Q4_K | — | not shipped | not implemented | Disabled |
+| **Automatic** Whisper Tiny 98M (LID) + FastConformer CTC 126M | 224 MB total (`98 + 126`) | device-side `files/whisper-tiny` + `files/fastconformer` | sherpa-onnx 1.13.6 INT8, 16KB, lidar 1 thread + fast 2 threads | **Primary** — per-utterance SLID, `isAutomaticReady()` fail-closed, zero Canary loads |
+| **Accurate** Canary 180M Flash INT8 | 198 MB (`encoder+decoder+tokens`) | device-side `files/canary` | sherpa-onnx 1.13.6 INT8, 2 threads, 16KB | Supported — explicit EN/DE/ES/FR |
+| **Streaming** Nemotron 560/160 0.6B | 475 MB archive | hidden behind `DEBUG` | not shipped in prod | Experimental — WER/thermal not measured |
 
-The reliability build now exposes Accurate (Canary) as primary; Fast (Whisper) was deleted per user request and aliases Canary for benchmark compatibility. A model cannot return to Settings until its native lifecycle, cancellation, memory use, and real-audio instrumentation gates pass. See [docs/MODELS.md](docs/MODELS.md).
+Gestures: `swipe left = delete`, `right = undo`, `down = new line`, `up = switch keyboard` (one mutation per gesture). Visual: single `Choreographer` lane, no `Math.random` animators. Release: R8 `33M`/`17M` AAB, `llvm-readelf` per-`.so` `Align 0x4000` MEASURED. A model returns to prod only after device-measured 16KB, lifecycle and editor-matrix gates. See [docs/SPRINT3_2026-09-02.md](docs/SPRINT3_2026-09-02.md) · [docs/MODELS.md](docs/MODELS.md).
 
 ## Privacy
 
@@ -83,18 +83,29 @@ Instructions and limitations: [docs/BENCHMARK.md](docs/BENCHMARK.md)
 
 CI check fails if `canary/` or `nemotron/` artifacts appear inside APK.
 
-## Testing
+## Testing (sprint 3 `609b00b` — host verified)
 
-- Unit: stabilizer, composition, spoken commands, VAD, session FSM, ring buffer, WAV parsing, and model manager.
-- Instrumentation: real bundled model transcription, cancellation of active native inference, and rapid session reset.
-- Manual matrix: Chrome, WhatsApp, Telegram, Signal, Gmail, Slack, Notion, WebView, Compose fields.
+```bash
+./gradlew :app:testDebugUnitTest      # 290+ (44 suites) PASS
+./gradlew :app:lintDebug              # PASS  (R8-compat, sherpa keeps)
+./gradlew :app:assembleDebug          # 54M PASS
+./gradlew :app:assembleRelease        # 33M (1 dex, R8) PASS
+./gradlew :app:bundleRelease          # 17M AAB PASS
+./scripts/verify-models.sh; ./scripts/check-apk.sh
+llvm-readelf -l */arm64-v8a/*.so | grep LOAD  # all Align 0x4000 MEASURED
+# Device (T807D) — pending re-measurement on this commit:
+# ./gradlew :app:connectedDebugAndroidTest -P..QueueActorStressDeviceTest
+# ./gradlew :app:connectedDebugAndroidTest -P..AutomaticWithoutCanaryDeviceTest
+# adb install -r app/build/outputs/apk/release/app-release-unsigned.apk
+```
 
-## Known limitations (v1)
+Manual matrix: Chrome, WhatsApp, Telegram, Signal, Gmail, Slack, Notion, WebView, Compose — `EditorMatrixRealTest` now covers EditText/Compose/IME-local (host), Chrome/Gmail/WebView still human. See [docs/SPRINT3_2026-09-02.md](docs/SPRINT3_2026-09-02.md) §10.
 
-- Physical mid-range IME/microphone and sustained thermal testing is still required.
-- Only arm64-v8a and the Fast model are supported in this build.
-- Canary and Nemotron remain disabled; their prototype source is not a working product path.
-- Accessibility companion labeled experimental; Play policy restricts overlay.
+## Known limitations (v1 — sprint 3 `609b00b`)
+
+- Device proof pending re-run on T807D for this commit: `AutomaticWithoutCanary` heap (sprint2 BLOCKED, now sequential+cache), `onDestroy <50ms`, `Choreographer` `gfxinfo`, gesture switch + TalkBack, Chrome/WebView human, R8 smoke.
+- Only `arm64-v8a` (NDK 27, `16KB Check` host PASS, device emulator NOT MEASURED), local `224 MB` Automatic + `198 MB` Accurate.
+- Nemotron hidden (`DEBUG` only); `PLAY_SIGNING_READY:NO` (unsigned CI), `30+30+10+10` WER corpus not measured — `OVERALL_PRODUCTION_READY:NO` (correct).
 
 ## License
 
