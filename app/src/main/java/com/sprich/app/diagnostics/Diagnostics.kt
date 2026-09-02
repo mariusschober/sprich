@@ -30,7 +30,7 @@ object Diagnostics {
         return f
     }
 
-    /** Persists the previous process exit, including a bounded native tombstone when Android exposes it. */
+    /** Persists only numeric exit metadata; never copy an OS trace or process description. */
     fun capturePreviousExit(context: Context): File? {
         if (Build.VERSION.SDK_INT < 30) return null
         return try {
@@ -38,15 +38,6 @@ object Diagnostics {
             val exit = manager.getHistoricalProcessExitReasons(context.packageName, 0, 5)
                 .maxByOrNull(ApplicationExitInfo::getTimestamp)
                 ?: return null
-            val trace = try {
-                exit.traceInputStream?.bufferedReader()?.use { reader ->
-                    val buffer = CharArray(32 * 1024)
-                    val count = reader.read(buffer)
-                    if (count > 0) String(buffer, 0, count) else ""
-                }.orEmpty()
-            } catch (_: Exception) {
-                ""
-            }
             val file = File(context.filesDir, "diagnostics/last-exit.log")
             file.parentFile?.mkdirs()
             file.writeText(
@@ -55,11 +46,7 @@ object Diagnostics {
                     appendLine("reason=${exit.reason}")
                     appendLine("status=${exit.status}")
                     appendLine("importance=${exit.importance}")
-                    appendLine("description=${exit.description.orEmpty().take(500)}")
-                    if (trace.isNotBlank()) {
-                        appendLine("trace-begin")
-                        append(trace)
-                    }
+
                 }
             )
             file

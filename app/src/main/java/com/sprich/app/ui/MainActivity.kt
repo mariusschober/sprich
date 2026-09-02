@@ -27,9 +27,9 @@ import kotlinx.coroutines.flow.first
 class MainActivity : ComponentActivity() {
     @SuppressLint("WrongStartDestinationType")
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         val prefs = Preferences(this)
         setContent {
             SprichTheme {

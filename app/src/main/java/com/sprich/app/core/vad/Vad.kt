@@ -4,7 +4,7 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * Tiny energy-based VAD. No ML, configurable, monotonic.
+ * Endpoint state machine with an explicit speech decision; energy fallback for remote-only capture.
  * Calibrates noise floor on first 300ms.
  * States: SILENCE -> SPEECH -> HESITATION -> UTTERANCE_END -> LONG_SILENCE
  */
@@ -81,41 +81,17 @@ class Vad(
         val threshold = maxOf(energyThreshold, noiseFloor * 1.15f)
         val isSpeechFrame = rms > threshold
 
-        // Update accumulators
-        if (isSpeechFrame) {
-            speechMsAcc += durationMs
-            silenceMsAcc = 0
-        } else {
-            silenceMsAcc += durationMs
-            // speech accumulator decays after silence? keep for onset detection
-            if (silenceMsAcc > 200) speechMsAcc = 0
-        }
-
-        val prev = state
-        state = when (state) {
-            State.SILENCE -> if (isSpeechFrame && speechMsAcc >= speechOnsetMs) {
-                hasSpeechEver = true
-                State.SPEECH
-            } else State.SILENCE
-            State.SPEECH -> if (!isSpeechFrame) State.HESITATION else State.SPEECH
-            State.HESITATION -> when {
-                isSpeechFrame -> State.SPEECH
-                silenceMsAcc >= longSilenceMs -> State.LONG_SILENCE
-                silenceMsAcc >= utteranceEndMs -> State.UTTERANCE_END
-                else -> State.HESITATION
-            }
-            State.UTTERANCE_END -> if (isSpeechFrame) State.SPEECH else if (silenceMsAcc >= longSilenceMs) State.LONG_SILENCE else State.UTTERANCE_END
-            State.LONG_SILENCE -> if (isSpeechFrame) State.SPEECH else State.LONG_SILENCE
-        }
-
-        val speech = state == State.SPEECH || state == State.HESITATION
-        return Result(state, speech, rms)
+        return advance(isSpeechFrame, durationMs, rms)
     }
 
-    @Synchronized fun process(samples: ShortArray, offset: Int, length: Int, durationMs: Long, precomputedRms: Float): Result {
+    @Synchronized fun process(samples: ShortArray, offset: Int, length: Int, durationMs: Long, precomputedRms: Float, speechDetected: Boolean? = null): Result {
         val rms = calibrateIfNeeded(samples, offset, length, durationMs, precomputedRms)
-        val threshold = maxOf(energyThreshold, noiseFloor * 1.15f)
-        val isSpeechFrame = rms > threshold
+        // Production local capture supplies the neural decision. The energy path remains
+        // available for remote-only capture (zero local model work) and state-machine tests.
+        return advance(speechDetected ?: (rms > maxOf(energyThreshold, noiseFloor * 1.15f)), durationMs, rms)
+    }
+
+    private fun advance(isSpeechFrame: Boolean, durationMs: Long, rms: Float): Result {
         if (isSpeechFrame) {
             speechMsAcc += durationMs
             silenceMsAcc = 0
@@ -138,8 +114,7 @@ class Vad(
             State.UTTERANCE_END -> if (isSpeechFrame) State.SPEECH else if (silenceMsAcc >= longSilenceMs) State.LONG_SILENCE else State.UTTERANCE_END
             State.LONG_SILENCE -> if (isSpeechFrame) State.SPEECH else State.LONG_SILENCE
         }
-        val speech = state == State.SPEECH || state == State.HESITATION
-        return Result(state, speech, rms)
+        return Result(state, state == State.SPEECH || state == State.HESITATION, rms)
     }
 
     private fun rms(samples: ShortArray, offset: Int, length: Int): Float {

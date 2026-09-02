@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,15 +15,20 @@ android {
     // Explicit monotonic release version — git count is fallback for local debug only, not release authority.
     // Release CI must provide sprichVersionCode/sprichVersionName via gradle.properties or env SPRICH_VERSION_CODE/NAME.
     val gitCount = try { providers.exec { commandLine("git", "rev-list", "--count", "HEAD") }.standardOutput.asText.get().trim().toInt() } catch (_: Exception) { 1 }
-    val gitHash = try { providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }.standardOutput.asText.get().trim() } catch (_: Exception) { "unknown" }
+    val gitHash = try { providers.exec { commandLine("git", "rev-parse", "HEAD") }.standardOutput.asText.get().trim() } catch (_: Exception) { "unknown" }
     val explicitCode = (project.findProperty("sprichVersionCode") as? String)?.toIntOrNull()
         ?: System.getenv("SPRICH_VERSION_CODE")?.toIntOrNull()
     val explicitName = (project.findProperty("sprichVersionName") as? String)
         ?: System.getenv("SPRICH_VERSION_NAME")
-    // For release builds, require explicit monotonic version — fail clearly if absent
-    val isReleaseTask = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) || it.contains("BundleRelease", ignoreCase = true) }
-    if (isReleaseTask && explicitCode == null) {
-        logger.warn("Release build without explicit sprichVersionCode — using git count $gitCount as fallback (local dev). CI must set SPRICH_VERSION_CODE for Play.")
+    val validateReleaseVersion = tasks.register("validateReleaseVersion") {
+        doLast {
+            require(explicitCode != null && explicitCode in 1..2_100_000_000 && !explicitName.isNullOrBlank()) {
+                "Release packaging requires sprichVersionCode and sprichVersionName (or SPRICH_VERSION_CODE/NAME)."
+            }
+        }
+    }
+    tasks.configureEach {
+        if (name in setOf("assembleRelease", "bundleRelease", "packageRelease", "packageReleaseBundle")) dependsOn(validateReleaseVersion)
     }
     defaultConfig {
         applicationId = "com.sprich.app"
@@ -36,17 +44,25 @@ android {
         buildConfigField("String", "GIT_COMMIT", "\"$gitHash\"")
         buildConfigField("boolean", "ENABLE_BENCHMARK", "true")
     }
-    // Signing — external upload-key via keystore.properties (never commit). Local/CI secrets.
+    val signingProperties = Properties().apply {
+        val source = rootProject.file("keystore.properties")
+        if (source.isFile) source.inputStream().use { load(it) }
+    }
+    fun signingValue(property: String, env: String): String? = System.getenv(env)?.takeIf { it.isNotBlank() }
+        ?: signingProperties.getProperty(property)?.takeIf { it.isNotBlank() }
+    val signingValues = listOf(
+        signingValue("storeFile", "SPRICH_KEYSTORE_FILE"), signingValue("storePassword", "SPRICH_KEYSTORE_PASSWORD"),
+        signingValue("keyAlias", "SPRICH_KEY_ALIAS"), signingValue("keyPassword", "SPRICH_KEY_PASSWORD"),
+    )
+    require(signingValues.all { it == null } || signingValues.all { it != null }) { "Release signing configuration is incomplete." }
+    val hasReleaseSigner = signingValues.all { it != null }
     signingConfigs {
-        create("release") {
-            // External upload-key signing via keystore.properties or env — never commit .jks
-            // Example keystore.properties:
-            // storeFile=/path/to/upload.jks
-            // storePassword=...
-            // keyAlias=upload
-            // keyPassword=...
-            // CI can also set SPRICH_KEYSTORE_FILE etc.
-            // Actual loading done via gradle.properties / CI secrets; placeholder keeps build compilable without secrets.
+        if (hasReleaseSigner) create("release") {
+            storeFile = rootProject.file(signingValues[0]!!)
+            require(storeFile!!.isFile) { "Release keystore file does not exist." }
+            storePassword = signingValues[1]
+            keyAlias = signingValues[2]
+            keyPassword = signingValues[3]
         }
     }
     buildTypes {
@@ -62,9 +78,8 @@ android {
             isShrinkResources = true
             isDebuggable = false
             isJniDebuggable = false
-            // Signing configured externally via keystore.properties / env — CI unsigned artifact verification separate
-            // Unsigned CI — real signing requires external keystore.properties (PLAY_SIGNING_READY:NO)
-            // signingConfig intentionally not set until real keystore is provided (separate signed candidate step)
+            if (hasReleaseSigner) signingConfig = signingConfigs.getByName("release")
+            ndk.debugSymbolLevel = "SYMBOL_TABLE"
             buildConfigField("boolean", "ENABLE_BENCHMARK", "false")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
@@ -104,15 +119,8 @@ android {
         checkReleaseBuilds = true
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
     ndkVersion = "27.0.12077973"
 
-    // JFK fixture now in app/src/main/assets/jfk.wav (whisper deleted, Canary focus)
 }
 
 dependencies {
@@ -143,8 +151,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.apache.commons:commons-compress:1.26.2")
 
-    // Sherpa-ONNX 1.13.6 for Canary 180M Flash INT8 + FastConformer + Whisper Tiny LID (single runtime, 1.12.11 removed)
-    implementation(files("libs/sherpa-onnx-1.13.6.aar"))
+    // Speech recognition only; reproducible build and provenance in native/README.md.
+    implementation(files("libs/sherpa-onnx-1.13.6-asr-arm64.aar"))
 
     // Coroutines & serialization
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
@@ -164,4 +172,17 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+}
+
+// Auditable coordinates for the artifacts actually resolved by this release build.
+tasks.register("writeReleaseDependencyInventory") {
+    doLast {
+        val output = layout.buildDirectory.file("reports/release-runtime-dependencies.tsv").get().asFile
+        output.parentFile.mkdirs()
+        output.writeText(configurations.getByName("releaseRuntimeClasspath").resolvedConfiguration.resolvedArtifacts
+            .sortedBy { it.moduleVersion.id.toString() }.joinToString("\n") {
+                val digest = MessageDigest.getInstance("SHA-256").digest(it.file.readBytes()).joinToString("") { byte -> "%02x".format(byte) }
+                "${it.moduleVersion.id}\t${it.file.name}\t$digest"
+            } + "\n")
+    }
 }

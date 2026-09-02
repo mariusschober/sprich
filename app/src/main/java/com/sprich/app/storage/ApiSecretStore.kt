@@ -1,146 +1,96 @@
 package com.sprich.app.storage
 
 import android.content.Context
-import android.util.Base64
+import android.util.AtomicFile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.File
-
-/**
- * BYOK secret store — Android Keystore-backed AES-GCM.
- * Ciphertext stored in noBackupFilesDir (not in DataStore, not backed up).
- * DataStore keeps only provider/model/endpoint/credential ID reference.
- *
- * Required invariants:
- * - API key absent from DataStore, logs, diagnostics, backups, crash breadcrumbs
- * - Clear local data deletes all credentials
- * - Production storage is Keystore AES-GCM or FAIL CLOSED — never reversible fallback
- */
+import java.util.UUID
 
 sealed interface SecretStoreResult {
     data object Success : SecretStoreResult
     data class Failure(val reason: String) : SecretStoreResult
 }
 
-open class ApiSecretStore(
-    private val context: Context,
-    private val crypto: SecretCryptoBackend = AndroidKeystoreCryptoBackend(),
-) {
-    private fun secretsDir(): File {
-        // Production invariant: Android Keystore AES-GCM + noBackupFilesDir or FAIL CLOSED — never fallback to filesDir
-        val dir = try {
-            context.noBackupFilesDir ?: throw IllegalStateException("noBackupFilesDir unavailable")
-        } catch (e: Exception) {
-            throw IllegalStateException("secure storage unavailable: noBackupFilesDir failed", e)
-        }
-        val apiDir = File(dir, "api_secrets")
-        if (!apiDir.exists() && !apiDir.mkdirs() && !apiDir.exists()) {
-            throw IllegalStateException("secure storage unavailable: cannot create api_secrets dir")
-        }
-        return apiDir
+@Serializable private data class BoundSecret(val provider: String, val endpoint: String, val key: String)
+
+/** AES-GCM ciphertext only, in noBackupFilesDir. AtomicFile preserves an existing key on failed replacement. */
+open class ApiSecretStore(private val context: Context, private val crypto: SecretCryptoBackend = AndroidKeystoreCryptoBackend()) {
+    private fun directory(): File = File(checkNotNull(context.noBackupFilesDir), "api_secrets").also {
+        check(it.isDirectory || it.mkdirs()) { "Secure storage unavailable" }
+    }
+    private fun file(id: String): AtomicFile {
+        require(Regex("[A-Za-z0-9._-]{1,120}").matches(id) && id != "." && id != "..")
+        return AtomicFile(File(directory(), "$id.enc"))
     }
 
-    private fun fileFor(id: String): File {
-        // sanitize id
-        val safe = id.replace(Regex("[^A-Za-z0-9._-]"), "_").take(64)
-        return File(secretsDir(), "$safe.enc")
-    }
-
-    /**
-     * Save secret securely. Returns Success only after durable encrypted storage.
-     * On any crypto/IO failure returns Failure and guarantees no recoverable plaintext file remains.
-     * Blank plaintext removes the secret.
-     */
-    open fun saveSecret(id: String, plaintext: String): SecretStoreResult {
-        if (plaintext.isBlank()) {
-            return try {
-                removeSecret(id)
-                SecretStoreResult.Success
-            } catch (e: Exception) {
-                SecretStoreResult.Failure(e.message ?: "secure storage unavailable")
-            }
-        }
-        return try {
-            // Ensure crypto and dir are verified on IO thread — all file/Keystore ops are IO-confined (caller must use Dispatchers.IO)
-            val combined = crypto.encrypt(plaintext.toByteArray(Charsets.UTF_8))
-            val b64 = Base64.encodeToString(combined, Base64.NO_WRAP)
-            val f = fileFor(id) // throws if noBackupFilesDir unavailable → Failure
-            // Write atomically via temp + rename where possible
-            try {
-                val tmp = File(f.parentFile, "${f.name}.tmp")
-                tmp.writeText(b64)
-                if (!tmp.renameTo(f)) {
-                    // fallback to direct write if rename fails
-                    f.writeText(b64)
-                    try { tmp.delete() } catch (_: Exception) {}
-                }
-            } catch (_: Exception) {
-                f.writeText(b64)
-            }
+    /** Low-level storage API. Production callers use provider-bound references below, on IO. */
+    open fun saveSecret(id: String, plaintext: String): SecretStoreResult = synchronized(lock) {
+        if (plaintext.isBlank()) return@synchronized try { removeSecret(id); SecretStoreResult.Success }
+        catch (_: Exception) { SecretStoreResult.Failure("Could not remove key") }
+        try {
+            require(plaintext.toByteArray().size <= 16_384)
+            val encrypted = crypto.encrypt(plaintext.toByteArray(Charsets.UTF_8))
+            val destination = file(id)
+            val output = destination.startWrite()
+            try { output.write(encrypted); destination.finishWrite(output) }
+            catch (e: Exception) { destination.failWrite(output); throw e }
             SecretStoreResult.Success
-        } catch (e: Exception) {
-            // FAIL CLOSED: ensure no plaintext or partial file remains
-            try { fileFor(id).delete() } catch (_: Exception) {}
-            SecretStoreResult.Failure(e.message ?: "secure storage unavailable")
-        }
+        } catch (_: Exception) { SecretStoreResult.Failure("Secure storage unavailable. Try again.") }
     }
 
-    open fun loadSecret(id: String): String? {
-        val f = fileFor(id)
-        if (!f.exists()) return null
-        return try {
-            val b64 = f.readText().trim()
-            if (b64.isBlank()) return null
-            val combined = Base64.decode(b64, Base64.NO_WRAP)
-            val pt = crypto.decrypt(combined)
-            String(pt, Charsets.UTF_8)
-        } catch (e: Exception) {
-            // Corrupted or key invalidated — remove to force re-entry (fail closed)
-            try { f.delete() } catch (_: Exception) {}
-            null
-        }
-    }
-
-    fun removeSecret(id: String) {
+    open fun loadSecret(id: String): String? = synchronized(lock) {
         try {
-            val f = fileFor(id)
-            f.delete()
-        } catch (e: Exception) {
-            // If secretsDir itself fails (FAIL CLOSED), propagate as failure via caller — but remove is best-effort
-            try { File(context.filesDir, "api_secrets/${id.replace(Regex("[^A-Za-z0-9._-]"), "_").take(64)}.enc").delete() } catch (_: Exception) {}
+            val source = file(id)
+            val backup = File(source.baseFile.path + ".bak")
+            if (!source.baseFile.exists() && !backup.exists()) return@synchronized null
+            if (source.baseFile.length() > 32_768 || backup.length() > 32_768) { source.delete(); return@synchronized null }
+            source.openRead().use { input ->
+                val bytes = ByteArray(32_769)
+                var size = 0
+                while (size < bytes.size) {
+                    val count = input.read(bytes, size, bytes.size - size)
+                    if (count < 0) break
+                    size += count
+                }
+                if (size > 32_768) { source.delete(); return@synchronized null }
+                String(crypto.decrypt(bytes.copyOf(size)), Charsets.UTF_8)
+            }
+        } catch (_: Exception) { runCatching { file(id).delete() }; null }
+    }
+    fun removeSecret(id: String) = synchronized(lock) { file(id).delete() }
+    fun clearAll() = synchronized(lock) {
+        val dir = directory()
+        check(dir.deleteRecursively()) { "Could not clear keys" }
+        (crypto as? AndroidKeystoreCryptoBackend)?.deleteKey()
+    }
+    fun hasSecret(id: String): Boolean = !loadSecret(id).isNullOrBlank()
+    fun hasDecryptableSecret(id: String) = hasSecret(id)
+
+    suspend fun saveBoundSecret(provider: String, endpoint: String, key: String): String? = withContext(Dispatchers.IO) {
+        val normalized = normalizeEndpoint(endpoint) ?: return@withContext null
+        if (provider.isBlank() || key.isBlank()) return@withContext null
+        // A new reference per save freezes the credential revision in every utterance plan.
+        val ref = "bound_${UUID.randomUUID()}"
+        val result = saveSecret(ref, Json.encodeToString(BoundSecret(provider, normalized, key.trim())))
+        ref.takeIf { result is SecretStoreResult.Success }
+    }
+    suspend fun loadBoundSecret(ref: String, provider: String, endpoint: String): String? = withContext(Dispatchers.IO) {
+        if (!ref.startsWith("bound_")) return@withContext null // Unbound legacy keys require re-entry.
+        val normalized = normalizeEndpoint(endpoint) ?: return@withContext null
+        val bound = try { Json.decodeFromString<BoundSecret>(loadSecret(ref) ?: return@withContext null) } catch (_: Exception) { return@withContext null }
+        bound.key.takeIf { bound.provider == provider && bound.endpoint == normalized && it.isNotBlank() }
+    }
+    companion object {
+        private val lock = Any()
+        private fun normalizeEndpoint(endpoint: String): String? {
+            val url = endpoint.toHttpUrlOrNull() ?: return null
+            if (!url.isHttps || url.username.isNotEmpty() || url.password.isNotEmpty() || url.fragment != null || url.query != null) return null
+            return url.toString().trimEnd('/')
         }
     }
-
-    fun clearAll() {
-        try {
-            secretsDir().listFiles()?.forEach { try { it.delete() } catch (_: Exception) {} }
-            try { (crypto as? AndroidKeystoreCryptoBackend)?.deleteKey() } catch (_: Exception) {}
-        } catch (_: Exception) {
-            // FAIL CLOSED: if dir unavailable, ensure at least fallback delete attempt for legacy filesDir location (defense)
-            try {
-                File(context.filesDir, "api_secrets").listFiles()?.forEach { try { it.delete() } catch (_: Exception) {} }
-            } catch (_: Exception) {}
-        }
-    }
-
-    /**
-     * Returns true only if a decryptable secure credential exists.
-     * File existence alone is insufficient (key may be invalidated).
-     */
-    fun hasSecret(id: String): Boolean {
-        val f = fileFor(id)
-        if (!f.exists()) return false
-        // Attempt decrypt to verify usability; loadSecret deletes corrupted file as side effect
-        return try {
-            val b64 = f.readText().trim()
-            if (b64.isBlank()) return false
-            val combined = Base64.decode(b64, Base64.NO_WRAP)
-            crypto.decrypt(combined)
-            true
-        } catch (_: Exception) {
-            try { f.delete() } catch (_: Exception) {}
-            false
-        }
-    }
-
-    /** Returns true if decryptable, false if missing or corrupted (and deletes corrupted). */
-    fun hasDecryptableSecret(id: String): Boolean = hasSecret(id)
 }

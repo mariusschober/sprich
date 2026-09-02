@@ -8,6 +8,21 @@ import org.junit.Test
 class SpokenEditingParserTest {
 
     @Test
+    fun acousticPunctuationAloneDoesNotAuthorizeAnInsertion() {
+        for (raw in listOf(".", "...", " , ! ? ", "\n")) {
+            for (language in listOf(Language.EN, Language.DE, Language.ES, Language.FR, Language.AUTO)) {
+                assertEquals("", SpokenEditingParser.parse(raw, language, true).text)
+                assertEquals("", SpokenEditingParser.parse(raw, language, false).text)
+            }
+        }
+        for ((language, word) in listOf(Language.EN to "period", Language.DE to "Punkt", Language.ES to "punto", Language.FR to "point")) {
+            val result = SpokenEditingParser.parse(word, language, true)
+            assertTrue(result.isCommand)
+            assertEquals(".", result.text)
+        }
+    }
+
+    @Test
     fun englishPunctuationInline() {
         val r = SpokenEditingParser.parse("hello comma world", Language.EN, true)
         assertTrue(r.text.contains(","))

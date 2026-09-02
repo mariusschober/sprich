@@ -29,7 +29,7 @@ class WhisperLidEngine(
 ) {
     private val mutex = Mutex()
     private var lid: Any? = null // SpokenLanguageIdentification
-    private var loaded = false
+    @Volatile private var loaded = false
 
     // Reflection cache — avoid Class.forName/getMethod per utterance (perf + ClassLoader churn)
     companion object {
@@ -56,21 +56,6 @@ class WhisperLidEngine(
         true
     } catch (_: Throwable) { false }
 
-    // Single source of truth: ModelManager.isWhisperTinyReady() checks both files + size + tokens
-    // Fallback direct check for tests that bypass ModelManager — must match ModelManager logic
-    private fun isTinyReady(): Boolean {
-        // Use ModelManager as authoritative source if available
-        try {
-            if (modelManager.isWhisperTinyReady()) return true
-        } catch (_: Exception) {}
-        // Direct filesystem check (same logic as ModelManager: encoder+decoder+tokens)
-        val d = java.io.File(context.filesDir, "whisper-tiny")
-        val enc = java.io.File(d, "tiny-encoder.int8.onnx")
-        val dec = java.io.File(d, "tiny-decoder.int8.onnx")
-        val tok = java.io.File(d, "tiny-tokens.txt")
-        return enc.exists() && enc.length() > 5_000_000 && dec.exists() && dec.length() > 5_000_000 && tok.exists() && tok.length() > 0
-    }
-
     suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
         mutex.withLock {
             if (loaded) return@withContext Result.success(Unit)
@@ -78,23 +63,10 @@ class WhisperLidEngine(
                 Log.w("WhisperLid", "sherpa SLID not available")
                 return@withContext Result.failure(Exception("sherpa SLID not available"))
             }
-            if (!isTinyReady()) {
-                Log.w("WhisperLid", "tiny model not ready (both encoder+decoder required)")
-                return@withContext Result.failure(Exception("whisper tiny not ready"))
-            }
-            val dir = java.io.File(context.filesDir, "whisper-tiny")
-            val isDebugTest = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
-            val effectiveDir = if (isDebugTest && !java.io.File(dir, "tiny-encoder.int8.onnx").exists() && java.io.File("/data/local/tmp/whisper-tiny/tiny-encoder.int8.onnx").exists()) {
-                Log.w("WhisperLid", "debug fallback to /data/local/tmp/whisper-tiny — not production")
-                java.io.File("/data/local/tmp/whisper-tiny")
-            } else dir
-            val enc = java.io.File(effectiveDir, "tiny-encoder.int8.onnx").absolutePath
-            val dec = java.io.File(effectiveDir, "tiny-decoder.int8.onnx").absolutePath
-            // Verify both exist
-            if (!java.io.File(enc).exists() || !java.io.File(dec).exists()) {
-                return@withContext Result.failure(Exception("tiny encoder/decoder missing"))
-            }
             try {
+                modelManager.withInstalled("lid") { dir ->
+                val enc = java.io.File(dir, "tiny-encoder.int8.onnx").absolutePath
+                val dec = java.io.File(dir, "tiny-decoder.int8.onnx").absolutePath
                 val whisperConfigClass = cachedWhisperConfigClass ?: Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationWhisperConfig").also { cachedWhisperConfigClass = it }
                 val whisperConfig = whisperConfigClass.getConstructor().newInstance()
                 whisperConfigClass.getDeclaredField("encoder").apply { isAccessible = true; set(whisperConfig, enc) }
@@ -121,6 +93,8 @@ class WhisperLidEngine(
                 }
                 loaded = lid != null
                 if (loaded) Result.success(Unit) else Result.failure(Exception("SLID create failed"))
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
             } catch (e: Throwable) {
                 Log.w("WhisperLid", "load failed", e)
                 Result.failure(Exception("SLID load failed: ${e.message}", e))
@@ -186,7 +160,7 @@ class WhisperLidEngine(
         }
     }
 
-    suspend fun unload() {
+    suspend fun unload() = withContext(Dispatchers.IO) {
         mutex.withLock {
             try {
                 val m = cachedRelease ?: lid?.javaClass?.getMethod("release")?.also { cachedRelease = it }

@@ -98,7 +98,7 @@ class OpenAiCompatibleRefinementProvider(
                         404 -> com.sprich.app.speech.remote.ApiFailure.ModelUnavailable
                         429 -> com.sprich.app.speech.remote.ApiFailure.RateLimited
                         in 500..599 -> com.sprich.app.speech.remote.ApiFailure.ProviderUnavailable
-                        else -> com.sprich.app.speech.remote.ApiFailure.Http(code, bodyStr.take(120))
+                        else -> com.sprich.app.speech.remote.ApiFailure.Http(code)
                     }, "refine HTTP $code")
                 }
                 val json = JSONObject(bodyStr)

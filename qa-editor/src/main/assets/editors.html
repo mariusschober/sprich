@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font:18px system-ui;padding:12px}input,textarea,[contenteditable]{display:block;box-sizing:border-box;width:100%;margin:12px 0;padding:12px;border:1px solid #777;min-height:48px}label{display:block;margin-top:18px}</style>
+<title>Sprich real web editors</title><h3>Web editor QA</h3>
+<label>Single line<input id="single" autocomplete="off"></label>
+<label>Multiline<textarea id="multi" rows="3"></textarea></label>
+<label>Rich text<div id="rich" contenteditable="true" role="textbox" aria-label="Rich text"></div></label>
+<label>Password<input id="password" type="password" autocomplete="off"></label>
+<script>
+const events=[];document.addEventListener('input',e=>{events.push({field:e.target.id,text:e.target.value??e.target.textContent,time:performance.now()});let data=JSON.stringify({fields:[...document.querySelectorAll('input,textarea,[contenteditable]')].map(e=>({id:e.id,text:e.value??e.textContent})),events});if(window.Evidence)Evidence.record(data);else fetch('/evidence',{method:'POST',body:data});});
+</script>

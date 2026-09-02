@@ -215,7 +215,7 @@ class MetaMuseSttProvider(
                 val bodyStr = readBoundedBody(resp)
                 if (bodyStr == null) throw RemoteSttException(ApiFailure.InvalidResponse, "Muse oversized response > $MAX_RESPONSE_BYTES")
                 if (!resp.isSuccessful) {
-                    val failure = ApiFailure.fromHttpCode(resp.code, bodyStr.take(180))
+                    val failure = ApiFailure.fromHttpCode(resp.code)
                     throw RemoteSttException(failure, "Muse STT HTTP ${resp.code}")
                 }
                 val json = JSONObject(bodyStr)
@@ -298,7 +298,7 @@ class MetaMuseSttProvider(
                             webSocket.send("""{"type":"endStream"}""")
                             return
                         } else if (json.optString("type") == "error") {
-                            errorRef.set(RemoteSttException(ApiFailure.ProviderUnavailable, json.optString("message", "Muse error")))
+                            errorRef.set(RemoteSttException(ApiFailure.ProviderUnavailable, "Provider unavailable"))
                             webSocket.close(1000, null)
                             latch.countDown()
                             return
@@ -320,7 +320,7 @@ class MetaMuseSttProvider(
                             if (transcript.isNotBlank()) finalTranscript.set(transcript)
                         }
                         "error" -> {
-                            errorRef.set(RemoteSttException(ApiFailure.ProviderUnavailable, json.optString("message", "Muse error")))
+                            errorRef.set(RemoteSttException(ApiFailure.ProviderUnavailable, "Provider unavailable"))
                             webSocket.close(1000, null)
                             latch.countDown()
                         }

@@ -2,246 +2,204 @@ package com.sprich.app.models.manager
 
 import android.content.Context
 import android.os.StatFs
-import kotlinx.coroutines.Dispatchers
+import com.sprich.app.models.download.DownloadManager
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 sealed class ModelStatus {
-    object NotDownloaded : ModelStatus()
+    data object NotDownloaded : ModelStatus()
     data class Downloading(val progress: Float, val bytes: Long, val total: Long) : ModelStatus()
-    object Verifying : ModelStatus()
-    object Ready : ModelStatus()
+    data object Verifying : ModelStatus()
+    data object Ready : ModelStatus()
     data class Failed(val error: String) : ModelStatus()
 }
 
-class ModelManager(private val context: Context) {
+@Serializable internal data class InstalledFile(val size: Long, val sha256: String)
+@Serializable internal data class InstallReceipt(val archiveSha256: String, val files: Map<String, InstalledFile>)
 
-    private val manifest = BuiltinManifest.default()
+/** Process-wide state and serialization, shared by Settings, the IME and native loaders. */
+class ModelManager(context: Context, private val manifest: ModelManifest = BuiltinManifest.default()) {
+    private val context = context.applicationContext
+    private val state = states.computeIfAbsent(this.context.filesDir.absolutePath) { State() }
+    internal val scope get() = state.scope
+    internal fun lock(id: String) = state.locks.computeIfAbsent(id) { Mutex() }
+    private fun status(id: String) = state.statuses.computeIfAbsent(id) { MutableStateFlow<ModelStatus>(ModelStatus.NotDownloaded) }
+    val canaryStatus: StateFlow<ModelStatus> get() = status("accurate")
+    val lidStatus: StateFlow<ModelStatus> get() = status("lid")
+    val fastConformerStatus: StateFlow<ModelStatus> get() = status("fastconformer")
+    val nemotron560Status: StateFlow<ModelStatus> get() = status("nemotron-560")
+    val nemotron160Status: StateFlow<ModelStatus> get() = status("nemotron-160")
+    val nemotronStatus: StateFlow<ModelStatus> get() = status("nemotron-560")
 
-    private val _canaryStatus = MutableStateFlow<ModelStatus>(if (isCanaryReady()) ModelStatus.Ready else ModelStatus.NotDownloaded)
-    val canaryStatus: StateFlow<ModelStatus> = _canaryStatus
+    init { if (state.started.compareAndSet(false, true)) scope.launch { refresh() } }
 
-    // Legacy aggregate (kept for backward compat, reflects any variant ready) — DO NOT use for variant-specific UI
-    private val _nemotronStatus = MutableStateFlow<ModelStatus>(if (isNemotronReady()) ModelStatus.Ready else ModelStatus.NotDownloaded)
-    val nemotronStatus: StateFlow<ModelStatus> = _nemotronStatus
+    fun getManifest() = manifest
+    internal fun directory(id: String) = File(context.filesDir, when (id) { "accurate" -> "canary"; "lid" -> "whisper-tiny"; else -> id })
+    private fun entry(id: String) = manifest.models.single { it.id == id }
+    private fun fingerprint(dir: File, entry: ModelEntry): List<Long> =
+        (entry.files + RECEIPT).flatMap { name -> File(dir, name).let { listOf(it.length(), it.lastModified()) } }
 
-    // Required independent variant states — downloading 560 must not mark 160 Ready, deleting one must not delete the other
-    private val _nemotron560Status = MutableStateFlow<ModelStatus>(if (isNemotron560Ready()) ModelStatus.Ready else ModelStatus.NotDownloaded)
-    val nemotron560Status: StateFlow<ModelStatus> = _nemotron560Status
-    private val _nemotron160Status = MutableStateFlow<ModelStatus>(if (isNemotron160Ready()) ModelStatus.Ready else ModelStatus.NotDownloaded)
-    val nemotron160Status: StateFlow<ModelStatus> = _nemotron160Status
-
-    private val _lidStatus = MutableStateFlow<ModelStatus>(if (isWhisperTinyReady()) ModelStatus.Ready else ModelStatus.NotDownloaded)
-    val lidStatus: StateFlow<ModelStatus> = _lidStatus
-
-    private val _fastConformerStatus = MutableStateFlow<ModelStatus>(if (isFastConformerReady()) ModelStatus.Ready else ModelStatus.NotDownloaded)
-    val fastConformerStatus: StateFlow<ModelStatus> = _fastConformerStatus
-
-    fun canaryDir(): File? = File(context.filesDir, "canary").let { if (it.exists() && isCanaryReady()) it else null }
-    fun nemotronDir(): File? {
-        // Prefer new 560 dir, fallback to legacy nemotron and 160
-        val d560 = File(context.filesDir, "nemotron-560")
-        if (d560.exists() && isNemotron560Ready()) return d560
-        val d160 = File(context.filesDir, "nemotron-160")
-        if (d160.exists() && isNemotron160Ready()) return d160
-        val d = File(context.filesDir, "nemotron")
-        if (d.exists() && isNemotronReady()) return d
-        return null
+    private fun ready(id: String): Boolean {
+        val e = entry(id)
+        val trusted = state.verified[id] ?: return false
+        return trusted.archiveSha256 == e.sha256 && trusted.metadata == fingerprint(directory(id), e)
     }
-    fun nemotron560Dir(): File? = File(context.filesDir, "nemotron-560").let { if (it.exists() && isNemotron560Ready()) it else null }
-    fun nemotron160Dir(): File? = File(context.filesDir, "nemotron-160").let { if (it.exists() && isNemotron160Ready()) it else null }
-    fun lidDir(): File? = File(context.filesDir, "whisper-tiny").let { if (it.exists() && isWhisperTinyReady()) it else null }
-    fun fastConformerDir(): File? = File(context.filesDir, "fastconformer").let { if (it.exists() && isFastConformerReady()) it else null }
+    fun isCanaryReady() = ready("accurate")
+    fun isWhisperTinyReady() = ready("lid")
+    fun isWhisperTinyReadyForRelease() = isWhisperTinyReady()
+    fun isFastConformerReady() = ready("fastconformer")
+    fun isAutomaticReady() = isWhisperTinyReady() && isFastConformerReady()
+    fun isAutomaticReadyStatus(lid: ModelStatus, fast: ModelStatus) = lid is ModelStatus.Ready && fast is ModelStatus.Ready
+    fun isNemotron560Ready() = ready("nemotron-560")
+    fun isNemotron160Ready() = ready("nemotron-160")
+    fun isNemotronReady() = isNemotron560Ready() || isNemotron160Ready()
+    fun isNemotronReadyForRelease() = isNemotronReady()
+    fun canaryDir(): File? = directory("accurate").takeIf { isCanaryReady() }
+    fun lidDir(): File? = directory("lid").takeIf { isWhisperTinyReady() }
+    fun fastConformerDir(): File? = directory("fastconformer").takeIf { isFastConformerReady() }
+    fun nemotron560Dir(): File? = directory("nemotron-560").takeIf { isNemotron560Ready() }
+    fun nemotron160Dir(): File? = directory("nemotron-160").takeIf { isNemotron160Ready() }
+    fun nemotronDir(): File? = nemotron560Dir() ?: nemotron160Dir()
 
-    fun isCanaryReady(): Boolean {
-        val dir = File(context.filesDir, "canary")
-        return File(dir, "encoder.int8.onnx").let{ it.exists() && it.length() > 50_000_000} &&
-               File(dir, "decoder.int8.onnx").let{ it.exists() && it.length() > 50_000_000} &&
-               File(dir, "tokens.txt").exists()
-    }
-    fun isNemotronReady(): Boolean {
-        return isNemotron560Ready() || isNemotron160Ready() || isNemotronLegacyReady()
-    }
-
-    fun isNemotronReadyForRelease(): Boolean = isNemotronReady()
-
-    fun isWhisperTinyReady(): Boolean {
-        val dir = File(context.filesDir, "whisper-tiny")
-        // Production invariant: successful SHA-pinned verification → extraction → required files verified → marker written atomically
-        // Then readiness uses trusted install marker + required-file sanity. For legacy installs, migrate/verify once.
-        val marker = File(dir, ".installed_ok")
-        if (marker.exists()) {
-            // Marker present → verify required files still exist and have plausible sizes
-            return File(dir, "tiny-encoder.int8.onnx").let { it.exists() && it.length() > 10_000_000 } &&
-                   File(dir, "tiny-decoder.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
-                   File(dir, "tiny-tokens.txt").let { it.exists() && it.length() > 0 }
-        }
-        // Legacy path without marker: still require production sizes (do not weaken to 5M for fixtures)
-        return File(dir, "tiny-encoder.int8.onnx").let { it.exists() && it.length() > 10_000_000 } &&
-               File(dir, "tiny-decoder.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
-               File(dir, "tiny-tokens.txt").let { it.exists() && it.length() > 0 }
-    }
-
-    fun markWhisperTinyInstalled() {
-        try {
-            val dir = File(context.filesDir, "whisper-tiny")
-            if (!dir.exists()) dir.mkdirs()
-            File(dir, ".installed_ok").writeText(System.currentTimeMillis().toString())
-        } catch (_: Exception) {}
-    }
-
-    fun isWhisperTinyReadyForRelease(): Boolean = isWhisperTinyReady()
-
-    fun isFastConformerReady(): Boolean {
-        val dir = File(context.filesDir, "fastconformer")
-        return File(dir, "model.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
-                File(dir, "tokens.txt").exists()
-    }
-
-    /** Single derived readiness for Automatic — both Tiny LID and FastConformer required. No Canary. */
-    fun isAutomaticReady(): Boolean = isWhisperTinyReady() && isFastConformerReady()
-
-    /** Flow-friendly getter for tests/UI. */
-    fun isAutomaticReadyStatus(lid: ModelStatus, fast: ModelStatus): Boolean =
-        lid is ModelStatus.Ready && fast is ModelStatus.Ready
-
-    fun isNemotron560Ready(): Boolean {
-        val dir = File(context.filesDir, "nemotron-560")
-        return File(dir, "encoder.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
-               File(dir, "decoder.int8.onnx").exists() &&
-               File(dir, "joiner.int8.onnx").exists() &&
-               File(dir, "tokens.txt").exists()
-    }
-
-    fun isNemotron160Ready(): Boolean {
-        val dir = File(context.filesDir, "nemotron-160")
-        return File(dir, "encoder.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
-               File(dir, "decoder.int8.onnx").exists() &&
-               File(dir, "joiner.int8.onnx").exists() &&
-               File(dir, "tokens.txt").exists()
-    }
-
-    // Legacy GGUF nemotron still considered ready if present (for backward compat)
-    fun isNemotronLegacyReady(): Boolean {
-        val dir = File(context.filesDir, "nemotron")
-        return File(dir, "model_q4_k.gguf").let { it.exists() && it.length() > 50_000_000 }
-    }
-
-    fun isFastReady(): Boolean {
-        return try { context.assets.open("models/whisper-base-q5_1.bin").use{ it.available() > 0 } } catch (_:Exception){ false }
-    }
-
-    fun requireFastReadyForRelease(): Boolean {
-        // Release check: must be real 50MB+ model, not placeholder. CI will verify.
-        return try { context.assets.open("models/whisper-base-q5_1.bin").use{ it.available() > 50_000_000 } } catch (_:Exception){ false }
-    }
-
-    suspend fun deleteCanary() = withContext(Dispatchers.IO) {
-        File(context.filesDir, "canary").deleteRecursively()
-        _canaryStatus.value = ModelStatus.NotDownloaded
-    }
-    suspend fun deleteNemotron() = withContext(Dispatchers.IO){
-        // Delete all nemotron variants (legacy + 160/560) — explicit "Delete all" action
-        File(context.filesDir, "nemotron").deleteRecursively()
-        File(context.filesDir, "nemotron-160").deleteRecursively()
-        File(context.filesDir, "nemotron-560").deleteRecursively()
-        _nemotronStatus.value = ModelStatus.NotDownloaded
-        _nemotron160Status.value = ModelStatus.NotDownloaded
-        _nemotron560Status.value = ModelStatus.NotDownloaded
-    }
-    suspend fun deleteNemotron560() = withContext(Dispatchers.IO){
-        File(context.filesDir, "nemotron-560").deleteRecursively()
-        _nemotron560Status.value = ModelStatus.NotDownloaded
-        // Update aggregate to reflect remaining variants
-        _nemotronStatus.value = if (isNemotronReady()) ModelStatus.Ready else ModelStatus.NotDownloaded
-    }
-    suspend fun deleteNemotron160() = withContext(Dispatchers.IO){
-        File(context.filesDir, "nemotron-160").deleteRecursively()
-        _nemotron160Status.value = ModelStatus.NotDownloaded
-        _nemotronStatus.value = if (isNemotronReady()) ModelStatus.Ready else ModelStatus.NotDownloaded
-    }
-    suspend fun deleteLid() = withContext(Dispatchers.IO){
-        File(context.filesDir, "whisper-tiny").deleteRecursively()
-        _lidStatus.value = ModelStatus.NotDownloaded
-    }
-    suspend fun deleteFastConformer() = withContext(Dispatchers.IO){
-        File(context.filesDir, "fastconformer").deleteRecursively()
-        _fastConformerStatus.value = ModelStatus.NotDownloaded
-    }
-
-    fun hasEnoughSpace(required: Long): Boolean {
-        val s = StatFs(context.filesDir.path)
-        return s.availableBytes > required
-    }
-
-    fun getManifest(): ModelManifest = manifest
-
-    fun updateDownloadProgress(id: String, prog: Float, bytes: Long, total: Long){
-        when(id){
-            "accurate" -> _canaryStatus.value = ModelStatus.Downloading(prog, bytes, total)
-            "lid" -> _lidStatus.value = ModelStatus.Downloading(prog, bytes, total)
-            "fastconformer" -> _fastConformerStatus.value = ModelStatus.Downloading(prog, bytes, total)
-            "nemotron-560" -> _nemotron560Status.value = ModelStatus.Downloading(prog, bytes, total)
-            "nemotron-160" -> _nemotron160Status.value = ModelStatus.Downloading(prog, bytes, total)
-            "streaming", "nemotron" -> _nemotronStatus.value = ModelStatus.Downloading(prog, bytes, total)
-        }
-        // Keep aggregate in sync only for legacy callers (not variant-specific)
-        if (id.startsWith("nemotron")) _nemotronStatus.value = if (id=="nemotron-560") _nemotron560Status.value else if (id=="nemotron-160") _nemotron160Status.value else _nemotronStatus.value
-    }
-    fun setVerifying(id: String){
-        when(id){
-            "accurate"-> _canaryStatus.value=ModelStatus.Verifying
-            "lid" -> _lidStatus.value=ModelStatus.Verifying
-            "fastconformer" -> _fastConformerStatus.value=ModelStatus.Verifying
-            "nemotron-560" -> _nemotron560Status.value=ModelStatus.Verifying
-            "nemotron-160" -> _nemotron160Status.value=ModelStatus.Verifying
-            "streaming", "nemotron" -> _nemotronStatus.value=ModelStatus.Verifying
-        }
-    }
-    fun setReady(id: String){
-        when(id){
-            "accurate"-> _canaryStatus.value=ModelStatus.Ready
-            "lid" -> _lidStatus.value=ModelStatus.Ready
-            "fastconformer" -> _fastConformerStatus.value=ModelStatus.Ready
-            "nemotron-560" -> _nemotron560Status.value=ModelStatus.Ready
-            "nemotron-160" -> _nemotron160Status.value=ModelStatus.Ready
-            "streaming", "nemotron" -> _nemotronStatus.value=ModelStatus.Ready
-        }
-        if (id=="nemotron-560" || id=="nemotron-160") _nemotronStatus.value = if (isNemotronReady()) ModelStatus.Ready else _nemotronStatus.value
-    }
-    fun setFailed(id: String, err: String){
-        when(id){
-            "accurate"-> _canaryStatus.value=ModelStatus.Failed(err)
-            "lid" -> _lidStatus.value=ModelStatus.Failed(err)
-            "fastconformer" -> _fastConformerStatus.value=ModelStatus.Failed(err)
-            "nemotron-560" -> _nemotron560Status.value=ModelStatus.Failed(err)
-            "nemotron-160" -> _nemotron160Status.value=ModelStatus.Failed(err)
-            "streaming", "nemotron" -> _nemotronStatus.value=ModelStatus.Failed(err)
-        }
-    }
-
-    suspend fun verifySha256(file: File, expected: String): Boolean = withContext(Dispatchers.IO){
-        if (expected.isBlank()) return@withContext true // no pin yet
-        try {
-            val md = MessageDigest.getInstance("SHA-256")
-            file.inputStream().use { inp ->
-                val buf = ByteArray(8192)
-                var n: Int
-                while (inp.read(buf).also { n = it } != -1) md.update(buf, 0, n)
-            }
-            val hex = md.digest().joinToString(""){ "%02x".format(it)}
-            hex.equals(expected, ignoreCase = true)
-        } catch (_:Exception){ false }
-    }
-
-    fun checkIntegrity(): Boolean {
-        // Ensure no partial .tmp remains
-        listOf(File(context.filesDir, "canary.tmp"), File(context.filesDir, "nemotron.tmp")).forEach{
-            if (it.exists()) it.deleteRecursively()
+    /** Always run on IO, under the same lock used by installation/deletion/native construction. */
+    internal suspend fun verifyDirectory(dir: File, e: ModelEntry): Boolean {
+        if (!Regex("[a-fA-F0-9]{64}").matches(e.sha256)) return false
+        val receipt = try {
+            val file = File(dir, RECEIPT)
+            if (!file.isFile || file.length() > 16_384) return false
+            Json.decodeFromString<InstallReceipt>(file.readText())
+        } catch (_: Exception) { return false }
+        if (receipt.archiveSha256 != e.sha256 || receipt.files.keys != e.files.toSet()) return false
+        for (name in e.files) {
+            currentCoroutineContext().ensureActive()
+            val f = File(dir, name)
+            val expected = receipt.files.getValue(name)
+            if (!f.isFile || expected.size <= 0 || f.length() != expected.size || !verifySha256(f, expected.sha256)) return false
         }
         return true
+    }
+
+    internal suspend fun writeReceipt(dir: File, e: ModelEntry) {
+        val files = e.files.associateWith { name ->
+            val f = File(dir, name)
+            check(f.isFile && f.length() > 0) { "Incomplete model" }
+            InstalledFile(f.length(), sha256(f))
+        }
+        File(dir, RECEIPT).outputStream().use { out ->
+            out.write(Json.encodeToString(InstallReceipt(e.sha256, files)).toByteArray())
+            out.fd.sync()
+        }
+    }
+
+    internal fun installed(id: String) {
+        state.verified[id] = VerifiedInstall(entry(id).sha256, fingerprint(directory(id), entry(id)))
+        status(id).value = ModelStatus.Ready
+    }
+
+    suspend fun verifyInstalled(id: String): Boolean = withContext(Dispatchers.IO) {
+        lock(id).withLock { verifyInstalledLocked(id) }
+    }
+    internal suspend fun verifyInstalledLocked(id: String): Boolean {
+        if (ready(id)) return true
+        val ok = verifyDirectory(directory(id), entry(id))
+        if (ok) installed(id) else { state.verified.remove(id); status(id).value = ModelStatus.NotDownloaded }
+        return ok
+    }
+
+    /** Recover either side of an interrupted atomic replacement; unverified legacy files are never ready. */
+    suspend fun refresh() = withContext(Dispatchers.IO) {
+        for (e in manifest.models) lock(e.id).withLock {
+            val dest = directory(e.id)
+            val old = File(dest.path + ".old")
+            if (old.exists()) {
+                if (verifyDirectory(dest, e)) old.deleteRecursively()
+                else if (verifyDirectory(old, e)) {
+                    check(!dest.exists() || dest.deleteRecursively())
+                    check(old.renameTo(dest))
+                }
+            }
+            File(dest.path + ".staging").deleteRecursively()
+            File(dest.path + ".tmp").deleteRecursively()
+            verifyInstalledLocked(e.id)
+        }
+    }
+
+    /** Native construction holds this lock so files cannot be swapped/deleted midway through loading. */
+    suspend fun <T> withInstalled(id: String, block: (File) -> T): T = withContext(Dispatchers.IO) {
+        lock(id).withLock {
+            check(verifyInstalledLocked(id)) { "Model needs to be downloaded" }
+            block(directory(id))
+        }
+    }
+
+    suspend fun delete(id: String) = withContext(Dispatchers.IO) {
+        if (id == "lid" || id == "fastconformer") DownloadManager.cancelFor(context, "automatic")
+        DownloadManager.cancelFor(context, id)
+        lock(id).withLock {
+            state.verified.remove(id)
+            val dest = directory(id)
+            listOf(dest, File(dest.path + ".old"), File(dest.path + ".staging"), File(dest.path + ".tmp")).forEach {
+                check(!it.exists() || it.deleteRecursively()) { "Could not remove model" }
+            }
+            File(context.cacheDir, "model-$id.tar.bz2").delete()
+            status(id).value = ModelStatus.NotDownloaded
+        }
+    }
+    suspend fun deleteCanary() = delete("accurate")
+    suspend fun deleteLid() = delete("lid")
+    suspend fun deleteFastConformer() = delete("fastconformer")
+    suspend fun deleteNemotron560() = delete("nemotron-560")
+    suspend fun deleteNemotron160() = delete("nemotron-160")
+    suspend fun deleteNemotron() { deleteNemotron560(); deleteNemotron160(); withContext(Dispatchers.IO) { File(context.filesDir, "nemotron").deleteRecursively() } }
+    suspend fun deleteAll() { manifest.models.forEach { delete(it.id) } }
+    fun hasEnoughSpace(required: Long) = StatFs(context.filesDir.path).availableBytes >= required
+    fun updateDownloadProgress(id: String, prog: Float, bytes: Long, total: Long) { status(id).value = ModelStatus.Downloading(prog.coerceIn(0f, 1f), bytes, total) }
+    fun setVerifying(id: String) { status(id).value = ModelStatus.Verifying }
+    // A UI or diagnostic caller cannot manufacture readiness.
+    fun setReady(id: String) { status(id).value = if (ready(id)) ModelStatus.Ready else ModelStatus.NotDownloaded }
+    fun setFailed(id: String, err: String) { status(id).value = if (ready(id)) ModelStatus.Ready else ModelStatus.Failed(err) }
+    fun resetStatus(id: String) = setReady(id)
+
+    suspend fun verifySha256(file: File, expected: String): Boolean = withContext(Dispatchers.IO) {
+        if (!Regex("[a-fA-F0-9]{64}").matches(expected)) return@withContext false
+        try { sha256(file).equals(expected, ignoreCase = true) }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { false }
+    }
+
+    companion object {
+        internal const val RECEIPT = ".install-receipt.json"
+        private data class VerifiedInstall(val archiveSha256: String, val metadata: List<Long>)
+        private class State {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val started = AtomicBoolean(false)
+            val locks = ConcurrentHashMap<String, Mutex>()
+            val statuses = ConcurrentHashMap<String, MutableStateFlow<ModelStatus>>()
+            val verified = ConcurrentHashMap<String, VerifiedInstall>()
+        }
+        private val states = ConcurrentHashMap<String, State>()
+        internal suspend fun sha256(file: File): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    digest.update(buffer, 0, n)
+                }
+            }
+            return digest.digest().joinToString("") { "%02x".format(it) }
+        }
     }
 }

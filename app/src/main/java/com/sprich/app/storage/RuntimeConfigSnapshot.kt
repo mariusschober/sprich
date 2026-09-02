@@ -38,3 +38,8 @@ data class RuntimeConfigSnapshot(
         return "RuntimeConfigSnapshot(mode=$transcriptionMode, speechLang=$speechLanguage, refine=$refinementMode, sttProvider=$sttProviderId, sttModel=$sttModel, streaming=$sttStreamingEnabled, instant=$instantMode)"
     }
 }
+
+fun RuntimeConfigSnapshot.enforceProviderAvailability(): RuntimeConfigSnapshot = copy(
+    transcriptionMode = if (com.sprich.app.speech.remote.ProviderAvailability.isEnabled(sttProviderId)) transcriptionMode else TranscriptionMode.ON_DEVICE,
+    refinementMode = if (com.sprich.app.speech.remote.ProviderAvailability.isEnabled(refinementProviderId)) refinementMode else RefinementMode.OFF,
+)

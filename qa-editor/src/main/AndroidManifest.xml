@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <instrumentation android:name=".NativeRuntimeCheck" android:targetPackage="${qaTargetPackage}" android:functionalTest="true" />
+    <application android:label="Sprich QA editor" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:testOnly="true">
+        <activity android:name=".EditorActivity" android:exported="true" android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity>
+        <provider android:name=".EvidenceProvider" android:authorities="com.sprich.qa.editor.state" android:exported="true" android:readPermission="android.permission.DUMP" android:writePermission="android.permission.DUMP" />
+    </application>
+</manifest>

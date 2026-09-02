@@ -7,6 +7,7 @@ package com.sprich.app.input.lifecycle
 enum class StopReason {
     USER_STOP,          // User tapped stop — may finalize active utterance if audio present
     ENDPOINT,           // VAD natural endpoint — always finalize
+    CURSOR_MOVED,       // Manual cursor/selection change cancels uninserted dictation
     FIELD_LOST,         // onFinishInput / focus lost — never insert stale text into another field
     INPUT_RESTARTED,    // onStartInput(restarting=true) — never insert after restart
     WINDOW_HIDDEN,      // onWindowHidden — prioritize safety, cancel speculative final

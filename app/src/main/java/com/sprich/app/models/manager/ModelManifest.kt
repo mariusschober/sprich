@@ -71,9 +71,10 @@ object BuiltinManifest {
                 files = listOf("model.int8.onnx","tokens.txt"),
                 requiredFreeBytes = 300L * 1024 * 1024,
                 languages = listOf("en","de","es","fr"),
-                license = "Apache-2.0 (NVIDIA NeMo) + Apache-2.0 (sherpa)",
+                license = "NVIDIA NGC Terms of Use (model) + Apache-2.0 (sherpa conversion)",
                 quantization = "INT8"
             ),
+        ) + if (com.sprich.app.BuildConfig.DEBUG) listOf(
             ModelEntry(
                 id = "nemotron-560",
                 displayName = "Nemotron 3.5 Streaming 560ms",
@@ -104,6 +105,6 @@ object BuiltinManifest {
                 license = "OpenMDW-1.1 (NVIDIA) + Apache-2.0 (sherpa)",
                 quantization = "INT8"
             ),
-        )
+        ) else emptyList()
     )
 }

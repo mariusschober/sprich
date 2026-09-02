@@ -6,8 +6,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 private val Pleasure = Color(0xFFFF4D76)
-private val PleasureStart = Color(0xFFFF7A67)
-private val PleasureEnd = Color(0xFFE92B8E)
 
 private val LightColors = lightColorScheme(
     primary = Color(0xFF111111),
@@ -17,7 +15,7 @@ private val LightColors = lightColorScheme(
     surface = Color(0xFFFAFAF8),
     onSurface = Color(0xFF111111),
     surfaceVariant = Color(0xFFF0F0EE),
-    outline = Color(0xFFE0E0DE),
+    outline = Color(0xFF777777),
     outlineVariant = Color(0xFFE8E8E8),
     error = Color(0xFFC62828),
     tertiary = Pleasure,
@@ -32,7 +30,7 @@ private val DarkColors = darkColorScheme(
     surface = Color(0xFF121212),
     onSurface = Color(0xFFF5F5F3),
     surfaceVariant = Color(0xFF1E1E1E),
-    outline = Color(0xFF333333),
+    outline = Color(0xFF999999),
     outlineVariant = Color(0xFF2A2A2A),
     tertiary = Pleasure,
     onTertiary = Color.White,

@@ -24,7 +24,7 @@ class ModelManagerTest {
     }
 
     @Test
-    fun canaryReadyAfterFakeInstall() {
+    fun sizeOnlyFakeInstallIsRejected() {
         val c = ctx()
         val dir = File(c.filesDir, "canary")
         dir.mkdirs()
@@ -33,19 +33,19 @@ class ModelManagerTest {
         File(dir, "decoder.int8.onnx").writeBytes(ByteArray(51_000_000))
         File(dir, "tokens.txt").writeText("a b")
         val mm = ModelManager(c)
-        assertTrue(mm.isCanaryReady())
+        assertFalse(mm.isCanaryReady())
         dir.deleteRecursively()
     }
 
     @Test
-    fun atomicRollbackOnFailedDownload() {
+    fun startupRemovesAbandonedStaging() {
         val c = ctx()
         val mm = ModelManager(c)
         // Simulate partial tmp dir
         val tmp = File(c.filesDir, "canary.tmp")
         tmp.mkdirs()
         File(tmp, "partial").writeText("x")
-        mm.checkIntegrity()
+        kotlinx.coroutines.runBlocking { mm.refresh() }
         assertFalse(tmp.exists())
     }
 
@@ -63,12 +63,12 @@ class ModelManagerTest {
     }
 
     @Test
-    fun shaBlankPasses() {
+    fun missingChecksumFailsClosed() {
         val c = ctx()
         val mm = ModelManager(c)
         val f = File(c.cacheDir, "tmp_sha")
         f.writeText("hello")
         val ok = kotlinx.coroutines.runBlocking { mm.verifySha256(f, "") }
-        assertTrue(ok)
+        assertFalse(ok)
     }
 }

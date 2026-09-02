@@ -9,6 +9,7 @@ import com.sprich.app.speech.remote.ApiFailure
 import com.sprich.app.speech.remote.DeadlinePolicy
 import com.sprich.app.storage.ApiSecretStore
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.ensureActive
 import java.util.concurrent.TimeUnit
 
 /**
@@ -128,56 +129,15 @@ class TranscriptionCoordinator(
     }
 
     private suspend fun tryRemote(pcm: ShortArray, config: com.sprich.app.speech.remote.RemoteSttConfig, speechConfig: SpeechSessionConfig, utteranceId: Long): TranscriptionResult? {
-        // Resolve provider from frozen config (do not rely on mutable global prefs). Create on-demand for locked providers to reflect frozen endpoint/model.
-        val provider: RemoteSttProvider = when (config.providerId) {
-            "mock", "mock-refine" -> remoteProviders[config.providerId] ?: remoteProviders["mock"] ?: return null
-            "meta-muse", "meta-muse-voice-transcribe" -> {
-                val injected = remoteProviders[config.providerId] ?: remoteProviders["meta-muse-voice-transcribe"] ?: remoteProviders["meta-muse"]
-                if (injected != null && injected !is com.sprich.app.speech.remote.MetaMuseSttProvider) injected else {
-                    val shared = sharedHttpClient as? okhttp3.OkHttpClient
-                    val client = if (shared != null) shared.newBuilder()
-                        .connectTimeout(deadlinePolicy.socketConnectMs, TimeUnit.MILLISECONDS)
-                        .readTimeout(deadlinePolicy.socketReadMs, TimeUnit.MILLISECONDS)
-                        .writeTimeout(deadlinePolicy.socketWriteMs, TimeUnit.MILLISECONDS)
-                        .build() else com.sprich.app.speech.remote.MetaMuseSttProvider.createClient(deadlinePolicy)
-                    com.sprich.app.speech.remote.MetaMuseSttProvider(config.endpoint, config.model, client, config.preferStreaming)
-                }
-            }
-            "gemini", "gemini-3.5-transcribe", "gemini-3.5-transcribe-live" -> {
-                val injected = remoteProviders[config.providerId] ?: remoteProviders["gemini"]
-                if (injected != null && injected !is com.sprich.app.speech.remote.GeminiSttProvider) injected else {
-                    val shared = sharedHttpClient as? okhttp3.OkHttpClient
-                    val client = if (shared != null) shared.newBuilder()
-                        .connectTimeout(deadlinePolicy.socketConnectMs, TimeUnit.MILLISECONDS)
-                        .readTimeout(deadlinePolicy.socketReadMs, TimeUnit.MILLISECONDS)
-                        .writeTimeout(deadlinePolicy.socketWriteMs, TimeUnit.MILLISECONDS)
-                        .build() else com.sprich.app.speech.remote.GeminiSttProvider.createClient(deadlinePolicy)
-                    com.sprich.app.speech.remote.GeminiSttProvider(config.endpoint, config.model, client, config.preferStreaming)
-                }
-            }
-            else -> {
-                // OpenAI-compatible: use injected mock if set, otherwise create fresh from frozen config (ensures Settings change mid-utterance not mixed)
-                val injected = remoteProviders[config.providerId] ?: remoteProviders["openai-compatible"]
-                if (injected != null && injected is com.sprich.app.speech.remote.MockRemoteSttProvider) {
-                    injected
-                } else {
-                    // P0-18: reuse shared connection pool via newBuilder() — do not build brand-new independent pool per utterance
-                    val shared = sharedHttpClient as? okhttp3.OkHttpClient
-                    if (shared != null) {
-                        val client = shared.newBuilder()
-                            .connectTimeout(deadlinePolicy.socketConnectMs, TimeUnit.MILLISECONDS)
-                            .readTimeout(deadlinePolicy.socketReadMs, TimeUnit.MILLISECONDS)
-                            .writeTimeout(deadlinePolicy.socketWriteMs, TimeUnit.MILLISECONDS)
-                            .build()
-                        com.sprich.app.speech.remote.OpenAiCompatibleSttProvider(config.endpoint, config.model, client)
-                    } else {
-                        com.sprich.app.speech.remote.OpenAiCompatibleSttProvider.createWithDefaultClient(config.endpoint, config.model, deadlinePolicy)
-                    }
-                }
-            }
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        val provider = try {
+            com.sprich.app.speech.remote.RemoteProviderFactory.create(config, sharedHttpClient as? okhttp3.OkHttpClient, deadlinePolicy, remoteProviders)
+        } catch (_: IllegalArgumentException) {
+            lastRemoteFailure = ApiFailure.ProviderUnavailable
+            return null
         }
         // Resolve credential — secret store is authoritative, fail closed (no legacy plaintext fallback)
-        val credential = try { secretStore?.loadSecret(config.credentialRef) ?: "" } catch (_: Exception) { "" }
+        val credential = try { secretStore?.loadBoundSecret(config.credentialRef, config.providerId, config.endpoint) ?: "" } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { "" }
         if (credential.isBlank()) {
             Log.w("TranscriptionCoordinator", "no credential for ${config.credentialRef}")
             lastRemoteFailure = ApiFailure.Authentication
@@ -222,6 +182,8 @@ class TranscriptionCoordinator(
                 )
             }
         } catch (e: RemoteSttException) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (e.failure == ApiFailure.Cancelled) throw kotlinx.coroutines.CancellationException("Remote operation cancelled")
             Log.w("TranscriptionCoordinator", "remote failed ${e.failure}", e)
             lastRemoteFailure = e.failure
             lastRemoteFailureAtMs = android.os.SystemClock.elapsedRealtime()

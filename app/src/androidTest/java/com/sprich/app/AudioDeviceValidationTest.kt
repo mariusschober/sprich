@@ -31,7 +31,7 @@ class AudioDeviceValidationTest {
         var chunks = 0
         var startOk = false
         val t0 = System.nanoTime()
-        startOk = capture.start(
+        startOk = kotlinx.coroutines.runBlocking { capture.start(
             onChunk = { samples, ts ->
                 chunks++
                 // Verify chunk is 1024 samples (64ms) typical, and RMS finite
@@ -41,7 +41,7 @@ class AudioDeviceValidationTest {
                 assertTrue(rms.isFinite())
             },
             onFailure = { fail(it) }
-        )
+        ) }
         // If emulator without mic, start may fail; on real device it must succeed
         if (!startOk) {
             // On this device, fail the test to surface hardware issue

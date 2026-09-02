@@ -1,35 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
+    <!-- Some OEMs allow device transfer despite allowBackup=false. -->
     <cloud-backup>
-        <exclude domain="file" path="canary/"/>
-        <exclude domain="file" path="nemotron/"/>
-        <exclude domain="file" path="nemotron-160/"/>
-        <exclude domain="file" path="nemotron-560/"/>
-        <exclude domain="file" path="fastconformer/"/>
-        <exclude domain="file" path="whisper-tiny/"/>
-        <exclude domain="file" path="sprich_replay/"/>
-        <exclude domain="file" path="sprich_traces/"/>
-        <exclude domain="file" path="diagnostics/"/>
-        <exclude domain="file" path="benchmark/"/>
-        <exclude domain="file" path="api_secrets/"/>
-        <exclude domain="file" path="datastore/sprich_prefs.preferences_pb"/>
-        <exclude domain="sharedpref" path="sprich_prefs.xml"/>
-        <exclude domain="sharedpref" path="sprich_vocab.xml"/>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
     </cloud-backup>
     <device-transfer>
-        <exclude domain="file" path="canary/"/>
-        <exclude domain="file" path="nemotron/"/>
-        <exclude domain="file" path="nemotron-160/"/>
-        <exclude domain="file" path="nemotron-560/"/>
-        <exclude domain="file" path="fastconformer/"/>
-        <exclude domain="file" path="whisper-tiny/"/>
-        <exclude domain="file" path="sprich_replay/"/>
-        <exclude domain="file" path="sprich_traces/"/>
-        <exclude domain="file" path="diagnostics/"/>
-        <exclude domain="file" path="benchmark/"/>
-        <exclude domain="file" path="api_secrets/"/>
-        <exclude domain="file" path="datastore/sprich_prefs.preferences_pb"/>
-        <exclude domain="sharedpref" path="sprich_prefs.xml"/>
-        <exclude domain="sharedpref" path="sprich_vocab.xml"/>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
     </device-transfer>
 </data-extraction-rules>

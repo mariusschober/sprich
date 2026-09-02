@@ -144,7 +144,7 @@ class OpenAiCompatibleSttProvider(
                     throw RemoteSttException(ApiFailure.InvalidResponse, "Oversized response > $MAX_RESPONSE_BYTES")
                 }
                 if (!resp.isSuccessful) {
-                    val failure = ApiFailure.fromHttpCode(resp.code, bodyStr.take(180))
+                    val failure = ApiFailure.fromHttpCode(resp.code)
                     throw RemoteSttException(failure, "STT HTTP ${resp.code}")
                 }
                 val text = parseText(bodyStr) ?: throw RemoteSttException(ApiFailure.InvalidResponse, "Invalid response")

@@ -102,7 +102,7 @@ object ReplayHarness {
         pcm: ShortArray,
         config: SpeechSessionConfig,
     ): File? {
-        if (!enabled) return null
+        if (!com.sprich.app.BuildConfig.DEBUG || !enabled) return null
         if (pcm.isEmpty()) return null
         return try {
             val dir = replayDir(context)
@@ -141,32 +141,6 @@ object ReplayHarness {
             Log.w(TAG, "offline replay failed", e)
             ""
         }
-    }
-
-    /**
-     * Compare live vs replay for triage.
-     * Returns diagnostic string (no transcript content by default, only lengths/booleans) unless opt-in debug trace.
-     */
-    fun compareLiveVsReplay(
-        utteranceId: Long,
-        liveRawLen: Int,
-        livePostLen: Int,
-        replayRawLen: Int,
-        liveBlank: Boolean,
-        replayBlank: Boolean,
-        debugTraces: Triple<String, String, String>? = null // RAW_ASR, POST_PROCESS, EDITOR_FINAL only if opt-in
-    ): String {
-        val verdict = when {
-            liveBlank && replayBlank -> "Both blank — model/acoustic/segmentation limitation plausible"
-            liveBlank && !replayBlank -> "Live blank BUT replay correct — PIPELINE/CONFIG/STATE bug (not model gap)"
-            !liveBlank && replayBlank -> "Live correct but replay blank — harness/config mismatch"
-            else -> "Both correct — pipeline correct"
-        }
-        val base = "utt=$utteranceId liveRaw=$liveRawLen livePost=$livePostLen replayRaw=$replayRawLen verdict=$verdict"
-        return if (debugTraces != null) {
-            // Opt-in debug only — never default
-            "$base\nRAW_ASR=${debugTraces.first}\nPOST=${debugTraces.second}\nEDITOR=${debugTraces.third}"
-        } else base
     }
 
     fun listSavedWavs(context: Context): List<File> {

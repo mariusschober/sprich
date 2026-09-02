@@ -1,0 +1,4 @@
+<resources>
+    <item name="action_delete_word" type="id" />
+    <item name="action_undo_delete" type="id" />
+</resources>

@@ -94,4 +94,46 @@ class ApiSecretStoreTest {
         // After bad check, file should be gone
         assertFalse(good.hasSecret("k"))
     }
+    @Test fun providerAndEndpointChangesCannotReuseCredentials() = kotlinx.coroutines.runBlocking {
+        val store = ApiSecretStore(ApplicationProvider.getApplicationContext<Context>(), FakeSecretCryptoBackend())
+        store.clearAll()
+        val ref = store.saveBoundSecret("custom", "https://one.example/v1", "bound-key")!!
+        assertEquals("bound-key", store.loadBoundSecret(ref, "custom", "https://one.example/v1"))
+        assertNull(store.loadBoundSecret(ref, "gemini", "https://one.example/v1"))
+        assertNull(store.loadBoundSecret(ref, "custom", "https://two.example/v1"))
+        assertNull(store.loadBoundSecret(ref, "custom", "https://one.example/v2"))
+        store.saveSecret("stt_default", "legacy")
+        assertNull(store.loadBoundSecret("stt_default", "custom", "https://one.example/v1"))
+    }
+    @Test fun credentialRevisionDoesNotChangeAfterAnotherSave() = kotlinx.coroutines.runBlocking {
+        val store = ApiSecretStore(ApplicationProvider.getApplicationContext<Context>(), FakeSecretCryptoBackend())
+        val first = store.saveBoundSecret("custom", "https://one.example/v1", "first")!!
+        val second = store.saveBoundSecret("custom", "https://one.example/v1", "second")!!
+        assertNotEquals(first, second)
+        assertEquals("first", store.loadBoundSecret(first, "custom", "https://one.example/v1"))
+        store.clearAll()
+        assertNull(store.loadBoundSecret(first, "custom", "https://one.example/v1"))
+        assertNull(store.loadBoundSecret(second, "custom", "https://one.example/v1"))
+    }
+    @Test fun encryptionFailurePreservesPreviouslySavedKey() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val good = ApiSecretStore(ctx, FakeSecretCryptoBackend())
+        good.saveSecret("existing", "original")
+        val broken = ApiSecretStore(ctx, FailingCryptoBackend("unavailable"))
+        assertTrue(broken.saveSecret("existing", "replacement") is SecretStoreResult.Failure)
+        assertEquals("original", good.loadSecret("existing"))
+    }
+    @Test fun oversizedAtomicBackupIsRejectedAndRemoved() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val store = ApiSecretStore(ctx, FakeSecretCryptoBackend())
+        store.clearAll()
+        val file = java.io.File(ctx.noBackupFilesDir, "api_secrets/oversized.enc")
+        file.parentFile!!.mkdirs()
+        val backup = java.io.File(file.path + ".bak")
+        backup.writeBytes(ByteArray(65_536))
+        assertNull(store.loadSecret("oversized"))
+        assertFalse(file.exists())
+        assertFalse(backup.exists())
+    }
+
 }

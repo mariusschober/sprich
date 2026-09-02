@@ -1,22 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Large models -->
-    <exclude domain="file" path="canary/" />
-    <exclude domain="file" path="nemotron/" />
-    <exclude domain="file" path="nemotron-160/" />
-    <exclude domain="file" path="nemotron-560/" />
-    <exclude domain="file" path="fastconformer/" />
-    <exclude domain="file" path="whisper-tiny/" />
-    <exclude domain="file" path="vocab/" />
-    <!-- Diagnostic audio must never enter backup — defense-in-depth even though stored in noBackupFilesDir -->
-    <exclude domain="file" path="sprich_replay/" />
-    <exclude domain="file" path="sprich_traces/" />
-    <exclude domain="file" path="diagnostics/" />
-    <exclude domain="file" path="benchmark/" />
-    <!-- BYOK secrets: encrypted in noBackupFilesDir/api_secrets — never backed up. DataStore contains only refs, not plaintext. -->
-    <exclude domain="file" path="api_secrets/" />
-    <!-- DataStore is the real prefs location, not SharedPreferences. Exclude its file explicitly. -->
-    <exclude domain="file" path="datastore/sprich_prefs.preferences_pb" />
-    <exclude domain="sharedpref" path="sprich_prefs.xml" />
-    <exclude domain="sharedpref" path="sprich_vocab.xml" />
+    <!-- Exclude every storage domain, including temporary and future app files. -->
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+    <exclude domain="device_root" path="." />
+    <exclude domain="device_file" path="." />
+    <exclude domain="device_database" path="." />
+    <exclude domain="device_sharedpref" path="." />
 </full-backup-content>

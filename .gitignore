@@ -18,3 +18,7 @@ native/whisper/build/
 .DS_Store
 # Secrets
 secrets.properties
+__pycache__/
+*.pyc
+*.apks
+release-output/

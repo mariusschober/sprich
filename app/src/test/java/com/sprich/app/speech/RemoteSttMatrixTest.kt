@@ -21,10 +21,9 @@ class RemoteSttMatrixTest {
         val mock = MockRemoteSttProvider(nextResult = Result.success(RemoteSttResult("hello from api", ResolvedUtteranceLanguage.Unknown, TranscriptionSourceId.API_MOCK)))
         val local = FakeLocal(ctx, "should-not-be-called")
         // Need credential in secret store — provide mock secret store that returns "key"
-        val secretStore = object : com.sprich.app.storage.ApiSecretStore(ctx) {
-            override fun loadSecret(id: String): String? = "fake-key"
-        }
-        val remoteCfg = RemoteSttConfig("mock", "http://mock", "whisper", LanguagePolicy.Automatic, 1000L, "ref")
+        val secretStore = com.sprich.app.storage.ApiSecretStore(ctx, com.sprich.app.storage.FakeSecretCryptoBackend())
+        val credentialRef = secretStore.saveBoundSecret("mock", "https://api.example.com/v1", "test-credential")!!
+        val remoteCfg = RemoteSttConfig("mock", "https://api.example.com/v1", "whisper", LanguagePolicy.Automatic, 1000L, credentialRef)
         val coord2 = TranscriptionCoordinator(local, mapOf("mock" to mock), secretStore, DeadlinePolicy.TEST_SHORT)
         val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(remoteCfg, LocalAsrRoute.AutomaticFastConformer), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
         val result = coord2.transcribe(ShortArray(16000), plan)
@@ -38,11 +37,10 @@ class RemoteSttMatrixTest {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
         val mock = FailingMockProvider(ApiFailure.ProviderUnavailable)
         val local = FakeLocal(ctx, "local fallback")
-        val secretStore = object : com.sprich.app.storage.ApiSecretStore(ctx) {
-            override fun loadSecret(id: String): String? = "fake-key"
-        }
+        val secretStore = com.sprich.app.storage.ApiSecretStore(ctx, com.sprich.app.storage.FakeSecretCryptoBackend())
+        val credentialRef = secretStore.saveBoundSecret("mock", "https://api.example.com/v1", "test-credential")!!
         val coord = TranscriptionCoordinator(local, mapOf("mock" to mock), secretStore, DeadlinePolicy.TEST_SHORT)
-        val remoteCfg = RemoteSttConfig("mock", "http://mock", "whisper", LanguagePolicy.Automatic, 500L, "ref")
+        val remoteCfg = RemoteSttConfig("mock", "https://api.example.com/v1", "whisper", LanguagePolicy.Automatic, 500L, credentialRef)
         val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(remoteCfg, LocalAsrRoute.AutomaticFastConformer), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
         val result = coord.transcribe(ShortArray(16000), plan)
         assertEquals("local fallback", result.text)
@@ -56,7 +54,7 @@ class RemoteSttMatrixTest {
         val mock = MockRemoteSttProvider()
         val local = FakeLocal(ctx, "local success")
         val coord = TranscriptionCoordinator(local, mapOf("mock" to mock), null, DeadlinePolicy.TEST_SHORT)
-        val remoteCfg = RemoteSttConfig("mock", "http://mock", "whisper", LanguagePolicy.Automatic, 500L, "ref")
+        val remoteCfg = RemoteSttConfig("mock", "https://api.example.com/v1", "whisper", LanguagePolicy.Automatic, 500L, "unused")
         val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AccurateCanary(com.sprich.app.speech.api.Language.EN), remoteCfg), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
         val result = coord.transcribe(ShortArray(16000), plan)
         assertEquals("local success", result.text)
@@ -69,11 +67,10 @@ class RemoteSttMatrixTest {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
         val mock = MockRemoteSttProvider(nextResult = Result.success(RemoteSttResult("remote after blank", ResolvedUtteranceLanguage.Unknown, TranscriptionSourceId.API_MOCK)))
         val local = FakeLocal(ctx, "") // blank
-        val secretStore = object : com.sprich.app.storage.ApiSecretStore(ctx) {
-            override fun loadSecret(id: String): String? = "fake-key"
-        }
+        val secretStore = com.sprich.app.storage.ApiSecretStore(ctx, com.sprich.app.storage.FakeSecretCryptoBackend())
+        val credentialRef = secretStore.saveBoundSecret("mock", "https://api.example.com/v1", "test-credential")!!
         val coord = TranscriptionCoordinator(local, mapOf("mock" to mock), secretStore, DeadlinePolicy.TEST_SHORT)
-        val remoteCfg = RemoteSttConfig("mock", "http://mock", "whisper", LanguagePolicy.Automatic, 500L, "ref")
+        val remoteCfg = RemoteSttConfig("mock", "https://api.example.com/v1", "whisper", LanguagePolicy.Automatic, 500L, credentialRef)
         val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticFastConformer, remoteCfg), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
         val result = coord.transcribe(ShortArray(16000), plan)
         assertEquals("remote after blank", result.text)

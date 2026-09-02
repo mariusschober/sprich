@@ -52,6 +52,14 @@ object SpokenEditingParser {
         "borrar eso" to "__DELETE_LAST__",
     )
 
+    private val frCommands = mapOf(
+        "nouvelle ligne" to "\n", "nouveau paragraphe" to "\n\n",
+        "virgule" to ",", "point" to ".", "point d'interrogation" to "?",
+        "point d’exclamation" to "!", "point d'exclamation" to "!",
+        "deux points" to ":", "point virgule" to ";",
+        "efface ça" to "__DELETE_LAST__", "supprime ça" to "__DELETE_LAST__",
+    )
+
     // Removed correctionTriggers — implicit backtracking was unsafe (substring "no" in "not" etc.)
     // Only explicit whole-utterance delete commands remain. See mission: false positives worse than misses.
 
@@ -73,6 +81,10 @@ object SpokenEditingParser {
 
     /** Preferred: distinguish Known vs Unknown — Unknown uses generic-only processing. */
     fun parse(text: String, resolved: ResolvedUtteranceLanguage, enableCommands: Boolean): EditResult {
+        // The acoustic model can emit punctuation for room noise. It does not establish
+        // spoken command authority. Verbal commands ("period", "neue zeile", etc.)
+        // still pass this check and are converted below, once their language is known.
+        if (!text.codePoints().anyMatch { Character.isLetterOrDigit(it) }) return EditResult("", false)
         if (resolved is ResolvedUtteranceLanguage.Unknown) {
             // Safe generic only — no language-specific spoken commands, no English email ITN.
             // Only generic typography normalization (removes space before . , etc., but not : ; ? !)
@@ -85,10 +97,11 @@ object SpokenEditingParser {
             val normalized = TypographyNormalizer.normalize(raw, lang)
             return EditResult(normalized, false)
         }
-        val lower = text.lowercase().trim()
+        val lower = text.lowercase().trim().trimEnd('.', '!', '?')
         val map = when(lang){
             Language.DE -> deCommands
             Language.ES -> esCommands
+            Language.FR -> frCommands
             else -> enCommands
         }
         // Check if entire utterance is a command — conservative: whole utterance equals command phrase only

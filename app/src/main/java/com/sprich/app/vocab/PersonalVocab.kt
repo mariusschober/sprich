@@ -16,18 +16,27 @@ class PersonalVocabStore {
         else Regex("\\b(?:" + sorted.joinToString("|") { Regex.escape(it.spoken) } + ")\\b", RegexOption.IGNORE_CASE)
     }
 
-    fun add(spoken: String, written: String) {
+    @Synchronized fun add(spoken: String, written: String) {
         entries.removeAll { it.spoken.equals(spoken, ignoreCase = true) }
         entries.add(VocabEntry(spoken, written))
         rebuild()
     }
-    fun remove(spoken: String) { entries.removeAll{ it.spoken.equals(spoken, true)}; rebuild() }
-    fun all(): List<VocabEntry> = entries.toList()
-    fun clear(){ entries.clear(); combined = null; lookup = emptyMap() }
+    @Synchronized fun replace(values: List<VocabEntry>) { entries.clear(); entries.addAll(values); rebuild() }
+    @Synchronized fun remove(spoken: String) { entries.removeAll{ it.spoken.equals(spoken, true)}; rebuild() }
+    @Synchronized fun all(): List<VocabEntry> = entries.toList()
+    @Synchronized fun clear(){ entries.clear(); combined = null; lookup = emptyMap() }
 
-    fun apply(text: String): String {
+    @Synchronized fun snapshot() = VocabSnapshot(combined, lookup.toMap(), entries.toList())
+
+    @Synchronized fun apply(text: String): String {
         val re = combined ?: return text
         if (text.isEmpty()) return text
         return re.replace(text) { m -> lookup[m.value.lowercase()] ?: m.value }
     }
+}
+
+/** Immutable rule set captured at speech onset. Replacements are applied exactly once. */
+class VocabSnapshot internal constructor(private val pattern: Regex?, private val replacements: Map<String, String>, val entries: List<VocabEntry>) {
+    fun apply(text: String): String = pattern?.replace(text) { replacements[it.value.lowercase()] ?: it.value } ?: text
+    companion object { val EMPTY = VocabSnapshot(null, emptyMap(), emptyList()) }
 }

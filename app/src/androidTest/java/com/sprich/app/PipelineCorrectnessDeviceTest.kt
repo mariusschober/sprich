@@ -258,7 +258,6 @@ class PipelineCorrectnessDeviceTest {
         val dur = ReplayHarness.computeDurationMs(pcm)
         assertTrue(rms > 0.001f)
         assertEquals(1000L, dur)
-        assertTrue(ReplayHarness.compareLiveVsReplay(999L, replayText.length, replayText.length, replayText.length, replayText.isBlank(), replayText.isBlank()).contains("Both"))
         file.delete()
         Log.i("PipelineDevice", "germanReplayHarness PASS")
         }

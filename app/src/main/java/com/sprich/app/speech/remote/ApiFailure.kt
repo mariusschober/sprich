@@ -12,8 +12,8 @@ sealed interface ApiFailure {
     data object ModelUnavailable : ApiFailure
     data object ProviderUnavailable : ApiFailure
     data object InvalidResponse : ApiFailure
-    data class Http(val status: Int, val message: String = "") : ApiFailure
-    data class Network(val cause: Throwable) : ApiFailure
+    data class Http(val status: Int) : ApiFailure
+    data class Network(val cause: Throwable) : ApiFailure { override fun toString() = "Network" }
 
     fun toDisplay(): String = when (this) {
         is Cancelled -> "Cancelled"
@@ -29,13 +29,13 @@ sealed interface ApiFailure {
     }
 
     companion object {
-        fun fromHttpCode(code: Int, bodySnippet: String = ""): ApiFailure = when (code) {
+        fun fromHttpCode(code: Int, @Suppress("UNUSED_PARAMETER") bodySnippet: String = ""): ApiFailure = when (code) {
             401, 403 -> Authentication
             404 -> ModelUnavailable
             429 -> RateLimited
-            in 300..399 -> Http(code, "Redirect blocked - redirects disabled for BYOK: $bodySnippet".trim())
+            in 300..399 -> Http(code)
             in 500..599 -> ProviderUnavailable
-            else -> Http(code, bodySnippet)
+            else -> Http(code)
         }
         fun fromException(e: Throwable): ApiFailure {
             val msg = e.message?.lowercase().orEmpty()

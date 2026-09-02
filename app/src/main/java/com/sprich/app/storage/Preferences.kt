@@ -167,7 +167,7 @@ class Preferences(context: Context) {
             instantMode = prefs[KEY_INSTANT_MODE] ?: false,
             commandsEnabled = prefs[KEY_COMMANDS] ?: true,
             hapticsEnabled = prefs[KEY_HAPTICS] ?: true,
-        )
+        ).enforceProviderAvailability()
     }
 
     suspend fun setSttMode(v: SttMode){ context.ds.edit{it[KEY_STT_MODE]= when(v){ SttMode.LOCAL->"local"; SttMode.FALLBACK->"fallback"; SttMode.REMOTE->"remote" }}}

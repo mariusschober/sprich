@@ -31,7 +31,7 @@ class CanaryEngine(
 ) : SpeechEngine {
     override val engineId = "canary-180m-flash-int8"
     override val displayName = "Canary 180M Flash"
-    private var loaded = false
+    @Volatile private var loaded = false
     // Single-threaded inference lane — all recognizer access goes through here.
     private val inferenceDispatcher = Dispatchers.Default.limitedParallelism(1)
     private val inferenceMutex = Mutex()
@@ -78,7 +78,6 @@ class CanaryEngine(
     override suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
         inferenceMutex.withLock {
             if (loaded) return@withContext Result.success(Unit)
-            if (!modelManager.isCanaryReady()) return@withContext Result.failure(Exception("Model not downloaded"))
             if (!isSherpaAvailable()) {
                 Log.w("CanaryEngine", "sherpa not available — no mock, failing load")
                 return@withContext Result.failure(Exception("sherpa not available"))
@@ -88,9 +87,10 @@ class CanaryEngine(
                 recognizerLang = if (langTag == "auto") "en" else when (langTag) {
                     "de", "de-de" -> "de"; "es", "es-es" -> "es"; "fr", "fr-fr" -> "fr"; else -> "en"
                 }
-                recognizer = createSherpaRecognizerLocked()
+                modelManager.withInstalled("accurate") { recognizer = createSherpaRecognizerLocked() }
                 loaded = recognizer != null
                 if (loaded) Result.success(Unit) else Result.failure(Exception("sherpa init failed"))
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
             } catch (e: Throwable) {
                 Log.e("CanaryEngine", "load failed", e)
                 Result.failure(Exception(e.message, e))
@@ -98,7 +98,7 @@ class CanaryEngine(
         }
     }
 
-    override suspend fun unload() {
+    override suspend fun unload() = withContext(Dispatchers.IO) {
         sessionEpoch.incrementAndGet()
         inferenceMutex.withLock {
             job?.cancel()
@@ -313,17 +313,11 @@ class CanaryEngine(
     /** Hot-switches decode language via OfflineRecognizer.setConfig — serialized. */
     private suspend fun switchLanguageLocked(lang: String) {
         if (lang == recognizerLang) return
-        val rec = recognizer ?: return
-        // Must be called with inferenceMutex held
-        try {
-            val recCfg = buildRecognizerConfig(lang) ?: return
-            val cfgClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizerConfig")
-            rec.javaClass.getMethod("setConfig", cfgClass).invoke(rec, recCfg)
-            recognizerLang = lang
-            Log.i("CanaryEngine", "language switched to $lang")
-        } catch (t: Throwable) {
-            Log.w("CanaryEngine", "setConfig language switch to $lang failed", t)
-        }
+        val rec = checkNotNull(recognizer) { "Recognizer unavailable" }
+        val recCfg = checkNotNull(buildRecognizerConfig(lang)) { "Model unavailable" }
+        val cfgClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizerConfig")
+        rec.javaClass.getMethod("setConfig", cfgClass).invoke(rec, recCfg)
+        recognizerLang = lang
     }
 
     // ---- sherpa reflection wiring ----
@@ -413,16 +407,7 @@ class CanaryEngine(
     private suspend fun transcribeLocked(pcm: ShortArray): String {
         if (isSilence(pcm)) return ""
         val rec = recognizer
-        if (rec == null) {
-            // Production: no fabricated transcripts. Empty when native unavailable.
-            // Keep concurrency instrumentation so tests can verify maxConcurrent==1.
-            nativeDecodeStarts++
-            nativeDecodeCurrent++
-            if (nativeDecodeCurrent > nativeDecodeMaxConcurrency) nativeDecodeMaxConcurrency = nativeDecodeCurrent
-            try { kotlinx.coroutines.delay(5) } finally { nativeDecodeCurrent-- }
-            Log.w("CanaryEngine", "transcribeLocked no recognizer — returning empty, no mock")
-            return ""
-        }
+        checkNotNull(rec) { "Recognizer unavailable" }
         return decodeRawLocked(pcm)
     }
 

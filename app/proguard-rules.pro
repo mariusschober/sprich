@@ -1,36 +1,15 @@
-# Sprich proguard
--keep class com.sprich.app.speech.** { *; }
+# Sherpa's Kotlin API is accessed by reflection and JNI. Preserve its names and members.
 -keep class com.k2fsa.sherpa.onnx.** { *; }
--keep class com.sprich.app.models.manager.** { *; }
--keep class com.sprich.app.diagnostics.** { *; }
-# keep jni
--keepclasseswithmembernames class * {
-    native <methods>;
-}
-# Serialization keep
+-keepclasseswithmembernames class * { native <methods>; }
+# Kotlin serialization, DataStore and Compose ship their own consumer rules.
 -keepattributes *Annotation*, InnerClasses, EnclosingMethod, Signature
--keep class com.sprich.app.models.manager.ModelManifest { *; }
--keep class com.sprich.app.models.manager.ModelEntry { *; }
--keep class com.sprich.app.vocab.** { *; }
--keepclassmembers,allowobfuscation class com.sprich.app.models.manager.** {
-    @kotlinx.serialization.Serializable <fields>;
-}
--keepclassmembers,allowobfuscation class com.sprich.app.vocab.** {
-    @kotlinx.serialization.Serializable <fields>;
-}
-# Keep sherpa reflection (Class.forName / getMethod) — do not obfuscate JNI bridge
--keep class com.k2fsa.sherpa.onnx.** { *; }
--keep class com.k2fsa.sherpa.onnx.SherpaOnnx { *; }
-# Keep DataStore / Preferences keys
--keep class androidx.datastore.** { *; }
-# Strip Log in release (all levels). Keep w/e for crash but strip d/v/i.
+# No editor, transcript, endpoint, credential or provider exception data in release logcat.
+# Bounded local crash diagnostics contain exception types and frames only.
 -assumenosideeffects class android.util.Log {
     public static *** d(...);
     public static *** v(...);
     public static *** i(...);
+    public static *** w(...);
+    public static *** e(...);
 }
-# Optional: also strip verbose info in release to reduce noise (keep w/e for triage)
-# -assumenosideeffects class android.util.Log {
-#     public static *** i(...);
-# }
 -dontwarn org.bouncycastle.**

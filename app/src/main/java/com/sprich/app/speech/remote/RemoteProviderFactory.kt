@@ -21,6 +21,7 @@ object RemoteProviderFactory {
             // Allow MockRemoteSttProvider injection for tests regardless of endpoint
             return mock
         }
+        require(ProviderAvailability.isEnabled(config.providerId)) { "Provider is not enabled in this release" }
         // Create fresh provider reflecting frozen endpoint/model/deadline from config
         return when (config.providerId) {
             "meta-muse", "meta-muse-voice-transcribe" -> {

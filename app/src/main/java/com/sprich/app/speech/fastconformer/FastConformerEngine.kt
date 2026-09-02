@@ -13,7 +13,7 @@ import kotlinx.coroutines.sync.withLock
  * NeMo FastConformer CTC EN-DE-ES-FR (14288) — offline CTC, multilingual implicit (no explicit language flag)
  * Model: sherpa-onnx-nemo-fast-conformer-ctc-en-de-es-fr-14288-int8
  * Archive 102,875,642 bytes, extracted model.int8.onnx 126 MB + tokens.txt 23K
- * License: NVIDIA NeMo Apache-2.0
+ * Model terms: NVIDIA NGC Terms of Use; sherpa conversion/runtime: Apache-2.0.
  * Sherpa: OfflineRecognizer with OfflineNemoEncDecCtcModelConfig (model=...), via 1.13.6
  * Semantics: offline, non-streaming, implicit multilingual vocab without prompt_index, CTC beam search
  * Punctuation: to be measured (may be lower-case, punctuation-light)
@@ -23,7 +23,7 @@ class FastConformerEngine(
 ) : SpeechEngine {
     override val engineId = "fastconformer-ctc-en-de-es-fr-14288-int8"
     override val displayName = "FastConformer CTC 4-lang"
-    private var loaded = false
+    @Volatile private var loaded = false
     private val inferenceDispatcher = Dispatchers.Default.limitedParallelism(1)
     private val inferenceMutex = Mutex()
     private var recognizer: Any? = null
@@ -40,25 +40,7 @@ class FastConformerEngine(
     override fun supportedLanguages() = setOf(Language.EN, Language.DE, Language.ES, Language.FR)
     override fun isLoaded() = loaded
 
-    private fun modelDir(): java.io.File? {
-        val d = java.io.File(context.filesDir, "fastconformer")
-        if (d.exists() && java.io.File(d, "model.int8.onnx").exists()) return d
-        val isDebugTest = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
-        if (isDebugTest) {
-            val tmp = java.io.File("/data/local/tmp/fastconformer")
-            if (tmp.exists() && java.io.File(tmp, "model.int8.onnx").exists()) {
-                android.util.Log.w("FastConformer", "debug fallback to /data/local/tmp/fastconformer — not production")
-                return tmp
-            }
-            val tmp2 = java.io.File("/data/local/tmp/model.int8.onnx")
-            if (tmp2.exists()) {
-                android.util.Log.w("FastConformer", "debug fallback to /data/local/tmp — not production")
-                // Return parent so modelDir resolves correctly? Need dir with tokens — use /data/local/tmp
-                return java.io.File("/data/local/tmp")
-            }
-        }
-        return null
-    }
+    private val modelManager = com.sprich.app.models.manager.ModelManager(context)
 
     companion object {
         @Volatile private var cachedOfflineRecognizer: Class<*>? = null
@@ -77,11 +59,11 @@ class FastConformerEngine(
     override suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
         inferenceMutex.withLock {
             if (loaded) return@withContext Result.success(Unit)
-            val dir = modelDir() ?: return@withContext Result.failure(Exception("fastconformer model not found"))
             if (!isSherpaAvailable()) return@withContext Result.failure(Exception("sherpa not available"))
-            val modelPath = java.io.File(dir, "model.int8.onnx").absolutePath
-            val tokensPath = java.io.File(dir, "tokens.txt").absolutePath
             try {
+                modelManager.withInstalled("fastconformer") { dir ->
+                val modelPath = java.io.File(dir, "model.int8.onnx").absolutePath
+                val tokensPath = java.io.File(dir, "tokens.txt").absolutePath
                 val featClass = cachedFeatClass ?: Class.forName("com.k2fsa.sherpa.onnx.FeatureConfig").also { cachedFeatClass = it }
                 val feat = try { featClass.getConstructor(Int::class.java, Int::class.java, Float::class.java).newInstance(16000, 80, 0.0f) } catch (_: Throwable) { featClass.getConstructor(Int::class.java, Int::class.java).newInstance(16000, 80) }
                 val nemoCtcClass = cachedNemoClass ?: Class.forName("com.k2fsa.sherpa.onnx.OfflineNemoEncDecCtcModelConfig").also { cachedNemoClass = it }
@@ -103,6 +85,8 @@ class FastConformerEngine(
                 recognizer = rec
                 loaded = rec != null
                 if (loaded) Result.success(Unit) else Result.failure(Exception("create failed"))
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
             } catch (e: Throwable) {
                 Log.w("FastConformer", "load failed", e)
                 Result.failure(Exception("load failed: ${e.message}", e))
@@ -110,7 +94,7 @@ class FastConformerEngine(
         }
     }
 
-    override suspend fun unload() {
+    override suspend fun unload() = withContext(Dispatchers.IO) {
         inferenceMutex.withLock {
             try { recognizer?.javaClass?.getMethod("release")?.invoke(recognizer) } catch (_: Exception) {}
             recognizer = null; loaded = false; pcmBuffer.clear()

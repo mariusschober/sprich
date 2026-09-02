@@ -176,7 +176,7 @@ class GeminiSttProvider(
                 val bodyStr = readBoundedBody(resp)
                 if (bodyStr == null) throw RemoteSttException(ApiFailure.InvalidResponse, "Gemini oversized > $MAX_RESPONSE_BYTES")
                 if (!resp.isSuccessful) {
-                    val failure = ApiFailure.fromHttpCode(resp.code, bodyStr.take(180))
+                    val failure = ApiFailure.fromHttpCode(resp.code)
                     throw RemoteSttException(failure, "Gemini STT HTTP ${resp.code}")
                 }
                 // Official Interactions response: {steps: [{model_output: {content: [{text: "..."}]}}]} or {output_text}

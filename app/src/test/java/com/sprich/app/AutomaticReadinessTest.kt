@@ -2,8 +2,8 @@ package com.sprich.app
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.sprich.app.models.manager.ModelManager
-import com.sprich.app.models.manager.ModelStatus
+import com.sprich.app.models.manager.*
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -11,110 +11,74 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
 
-/**
- * Phase 7 — Auto readiness must require BOTH Tiny LID and FastConformer.
- * Neither installed, LID only, Fast only, both — verifies fail-closed.
- */
+/** Unit checks for receipt/readiness policy, not native model or device evidence. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class AutomaticReadinessTest {
-
-    private fun ctx(): Context = ApplicationProvider.getApplicationContext()
-    private fun clean() {
-        val c = ctx()
-        File(c.filesDir, "whisper-tiny").deleteRecursively()
-        File(c.filesDir, "fastconformer").deleteRecursively()
-        File(c.filesDir, "canary").deleteRecursively()
-    }
-
-    private fun installLid(c: Context) {
-        val dir = File(c.filesDir, "whisper-tiny")
+    private fun manager(): ModelManager = ModelManager(ApplicationProvider.getApplicationContext<Context>())
+    private suspend fun receiptFixture(mm: ModelManager, id: String) {
+        // Represents the downloader's post-hash, post-extraction receipt boundary.
+        // Actual archive trust and native behavior have separate tests.
+        val e = mm.getManifest().models.single { it.id == id }
+        val dir = mm.directory(id)
         dir.mkdirs()
-        // Production sizes: encoder 12.9M, decoder 89.8M — do not weaken to 6M for fixtures
-        File(dir, "tiny-encoder.int8.onnx").writeBytes(ByteArray(13_000_000))
-        File(dir, "tiny-decoder.int8.onnx").writeBytes(ByteArray(90_000_000))
-        File(dir, "tiny-tokens.txt").writeText("a b")
-        // Write trusted install marker as production pipeline would (SHApinned → extracted → verified → marker)
-        File(dir, ".installed_ok").writeText("test")
+        e.files.forEach { File(dir, it).writeText("unit receipt fixture $it") }
+        mm.writeReceipt(dir, e)
+        assertTrue(mm.verifyInstalled(id))
     }
-
-    private fun installFast(c: Context) {
-        val dir = File(c.filesDir, "fastconformer")
-        dir.mkdirs()
-        File(dir, "model.int8.onnx").writeBytes(ByteArray(51_000_000))
-        File(dir, "tokens.txt").writeText("a b")
-    }
-
-    @Test
-    fun neitherInstalled_notReady() {
-        clean()
-        val mm = ModelManager(ctx())
-        assertFalse(mm.isWhisperTinyReady())
-        assertFalse(mm.isFastConformerReady())
+    @Test fun automaticNeedsBothVerifiedInstallations() = runBlocking {
+        val mm = manager(); mm.deleteAll()
         assertFalse(mm.isAutomaticReady())
-        assertFalse(mm.isAutomaticReadyStatus(ModelStatus.NotDownloaded, ModelStatus.NotDownloaded))
-    }
-
-    @Test
-    fun lidOnly_notReady() {
-        clean()
-        val c = ctx()
-        installLid(c)
-        val mm = ModelManager(c)
-        assertTrue(mm.isWhisperTinyReady())
-        assertFalse(mm.isFastConformerReady())
+        receiptFixture(mm, "lid")
         assertFalse(mm.isAutomaticReady())
-        assertFalse(mm.isAutomaticReadyStatus(ModelStatus.Ready, ModelStatus.NotDownloaded))
-        clean()
-    }
-
-    @Test
-    fun fastOnly_notReady() {
-        clean()
-        val c = ctx()
-        installFast(c)
-        val mm = ModelManager(c)
-        assertFalse(mm.isWhisperTinyReady())
-        assertTrue(mm.isFastConformerReady())
-        assertFalse(mm.isAutomaticReady())
-        assertFalse(mm.isAutomaticReadyStatus(ModelStatus.NotDownloaded, ModelStatus.Ready))
-        clean()
-    }
-
-    @Test
-    fun bothInstalled_ready() {
-        clean()
-        val c = ctx()
-        installLid(c)
-        installFast(c)
-        val mm = ModelManager(c)
-        assertTrue(mm.isWhisperTinyReady())
-        assertTrue(mm.isFastConformerReady())
-        assertTrue(mm.isAutomaticReady())
-        assertTrue(mm.isAutomaticReadyStatus(ModelStatus.Ready, ModelStatus.Ready))
-        clean()
-    }
-
-    @Test
-    fun canaryNotRequiredForAutomatic() {
-        clean()
-        val c = ctx()
-        installLid(c)
-        installFast(c)
-        val mm = ModelManager(c)
+        receiptFixture(mm, "fastconformer")
         assertTrue(mm.isAutomaticReady())
         assertFalse(mm.isCanaryReady())
-        // Automatic must be ready even though Canary absent — hidden dependency removed
-        clean()
+        mm.deleteLid()
+        assertTrue(mm.isFastConformerReady())
+        assertFalse(mm.isAutomaticReady())
     }
-
-    @Test
-    fun statusFlows_agree() {
-        val mm = ModelManager(ctx())
-        // lid Ready + fast Ready => auto Ready, otherwise not — single derived concept
+    @Test fun oldMarkerAndPlausibleSizesAreNotAuthority() = runBlocking {
+        val mm = manager(); mm.deleteAll()
+        val dir = mm.directory("lid"); dir.mkdirs()
+        File(dir, ".installed_ok").writeText("test")
+        mm.getManifest().models.single { it.id == "lid" }.files.forEach {
+            java.io.RandomAccessFile(File(dir, it), "rw").use { f -> f.setLength(90_000_000) }
+        }
+        assertFalse(mm.verifyInstalled("lid"))
+        mm.setReady("lid")
+        assertFalse(mm.isWhisperTinyReady())
+    }
+    @Test fun modificationInvalidatesReceiptAndReadiness() = runBlocking {
+        val mm = manager(); mm.deleteAll(); receiptFixture(mm, "fastconformer")
+        File(mm.directory("fastconformer"), "model.int8.onnx").appendText("corrupt")
+        assertFalse(mm.isFastConformerReady())
+        assertFalse(mm.verifyInstalled("fastconformer"))
+    }
+    @Test fun interruptedReplacementRestoresVerifiedBackup() = runBlocking {
+        val mm = manager(); mm.deleteAll(); receiptFixture(mm, "lid")
+        val dir = mm.directory("lid"); val old = File(dir.path + ".old")
+        assertTrue(dir.renameTo(old))
+        dir.mkdirs(); File(dir, "partial").writeText("incomplete replacement")
+        mm.refresh()
+        assertTrue(mm.isWhisperTinyReady())
+        assertFalse(old.exists())
+        assertFalse(File(dir, "partial").exists())
+    }
+    @Test fun managersShareDownloadAndReadinessState() = runBlocking {
+        val first = manager(); first.deleteAll(); val second = manager()
+        first.updateDownloadProgress("lid", 0.5f, 50, 100)
+        assertEquals(first.lidStatus.value, second.lidStatus.value)
+        receiptFixture(first, "lid")
+        assertTrue(second.isWhisperTinyReady())
+        second.deleteLid()
+        assertFalse(first.isWhisperTinyReady())
+    }
+    @Test fun statusRequiresBothModelsReady() {
+        val mm = manager()
         assertTrue(mm.isAutomaticReadyStatus(ModelStatus.Ready, ModelStatus.Ready))
-        assertFalse(mm.isAutomaticReadyStatus(ModelStatus.Ready, ModelStatus.Downloading(0.5f, 0, 100)))
-        assertFalse(mm.isAutomaticReadyStatus(ModelStatus.Downloading(0.5f, 0, 100), ModelStatus.Ready))
+        assertFalse(mm.isAutomaticReadyStatus(ModelStatus.Ready, ModelStatus.Downloading(0.5f, 50, 100)))
         assertFalse(mm.isAutomaticReadyStatus(ModelStatus.Verifying, ModelStatus.Ready))
+        assertFalse(mm.isAutomaticReadyStatus(ModelStatus.Ready, ModelStatus.NotDownloaded))
     }
 }
