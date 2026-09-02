@@ -1,0 +1,87 @@
+name: Codex production review checkpoint 1
+
+on:
+  push:
+    branches:
+      - codex/sprich-checkpoint-1
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out transport branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct and verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .codex/checkpoint1/part.* > "$RUNNER_TEMP/review.patch.gz.b64"
+          printf '%s  %s\n' '64746daa77a3cf403c6296cb2182db4c6e503c0c57616014a96898904f194d66' "$RUNNER_TEMP/review.patch.gz.b64" | sha256sum --check
+          base64 --decode "$RUNNER_TEMP/review.patch.gz.b64" | gzip --decompress > "$RUNNER_TEMP/review.patch"
+          grep '^Subject: ' "$RUNNER_TEMP/review.patch"
+
+      - name: Materialize clean review branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'OpenAI Codex'
+          git config user.email 'codex@openai.com'
+          git checkout -B codex/sprich-production-fixes-1 95d6d6238737e63f66b68194fa35bcaa6f2f0868
+          git am "$RUNNER_TEMP/review.patch"
+          git status --short --branch
+          git log --oneline -12
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Android lint
+        run: ./gradlew :app:lintDebug --stacktrace
+
+      - name: Assemble debug and instrumentation APKs
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
+
+      - name: Assemble release
+        run: ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Verify model manifest
+        run: ./scripts/verify-models.sh
+
+      - name: Inspect APK
+        run: ./scripts/check-apk.sh
+
+      - name: Verify clean tree
+        run: git status --porcelain=v1
+
+      - name: Publish verified clean branch
+        shell: bash
+        run: git push origin HEAD:refs/heads/codex/sprich-production-fixes-1
+
+      - name: Archive reports and APKs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkpoint-1-output
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+            app/build/reports/lint-results-debug.html
+            app/build/outputs/apk/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 3
