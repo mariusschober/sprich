@@ -498,7 +498,8 @@ class SprichIME : InputMethodService() {
                     topMargin = dp(6)
                 }
             }
-            // Glow: same gradient behind the bar, scaled up — neon halo, no blur cost
+            // Glow: same gradient behind the bar, scaled up — neon halo, no blur cost (palette-aware init)
+            val initIsApi = isApiPalette()
             val glow = View(this).apply {
                 layoutParams = LinearLayout.LayoutParams(dp(36), dp(3)).apply {
                     gravity = Gravity.CENTER
@@ -506,7 +507,7 @@ class SprichIME : InputMethodService() {
                 val bg = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
                     cornerRadius = dp(2).toFloat()
-                    colors = gradientForRms(0f)
+                    colors = gradientForRms(0f, initIsApi)
                     orientation = GradientDrawable.Orientation.LEFT_RIGHT
                 }
                 background = bg
@@ -522,7 +523,7 @@ class SprichIME : InputMethodService() {
                 val bg = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
                     cornerRadius = dp(2).toFloat()
-                    colors = gradientForRms(0f)
+                    colors = gradientForRms(0f, initIsApi)
                     orientation = GradientDrawable.Orientation.LEFT_RIGHT
                 }
                 background = bg
@@ -537,12 +538,13 @@ class SprichIME : InputMethodService() {
             textBlock.addView(hint)
             textBlock.addView(wave)
 
-            // Aura: soft radial halo behind the whole pill, breathes with mic energy
+            // Aura: soft radial halo behind the whole pill, breathes with mic energy (palette-aware)
+            val auraIsApi = isApiPalette()
             val aura = View(this).apply {
                 val bg = GradientDrawable().apply {
                     gradientType = GradientDrawable.RADIAL_GRADIENT
                     setGradientCenter(0.5f, 0.5f)
-                    colors = intArrayOf(0x59FF4D76, 0x00FF4D76)
+                    colors = auraColorsFor(auraIsApi)
                     setGradientRadius(320f)
                 }
                 background = bg
@@ -704,14 +706,23 @@ class SprichIME : InputMethodService() {
             val dark = isDark()
             val hint = statusText?.tag as? TextView
             val statusColor = if (dark) Color.parseColor("#F5F5F3") else Color.parseColor("#111111")
+            // Hint reflects active pipeline: API vs Local — adds quiet trust signal without clutter
+            val apiHint = isApiPalette()
             if (isListening) {
                 statusText?.text = "Listening…"
-                hint?.text = "Tap to stop"
+                hint?.text = if (apiHint) "Listening — cloud" else "Tap to stop"
                 statusText?.setTextColor(statusColor)
-                micContainer?.contentDescription = "Stop listening"
+                micContainer?.contentDescription = if (apiHint) "Stop listening (cloud)" else "Stop listening"
                 waveform?.visibility = View.VISIBLE
                 waveform?.alpha = 0.95f
                 glowView?.alpha = 0.12f
+                // Apply palette immediately on state change (covers idle→listening mode switch)
+                try {
+                    val cols = gradientForRms(0f, apiHint)
+                    liquidBg?.colors = cols; glowBg?.colors = cols
+                    auraView?.background?.let { bg -> (bg as? GradientDrawable)?.colors = auraColorsFor(apiHint) }
+                    pillBgRef?.setStroke(dp(1), strokeForRms(0f, apiHint))
+                } catch (_: Exception) {}
                 visualRms = 0f
                 startVisualLane()
             } else {
@@ -724,11 +735,17 @@ class SprichIME : InputMethodService() {
                 micContainer?.scaleX = 1f; micContainer?.scaleY = 1f
                 waveform?.visibility = View.INVISIBLE
                 waveform?.alpha = 0f
-                // Reset glow, aura and stroke to calm state (no animate fighting)
+                // Reset glow, aura and stroke to calm state (palette-aware, no animate fighting)
                 glowView?.alpha = 0f
                 glowView?.scaleX = 1.6f; glowView?.scaleY = 1.6f
                 auraView?.alpha = 0f
                 lastRms = 0f; visualRms = 0f
+                val calmIsApi = isApiPalette()
+                try {
+                    val cols = gradientForRms(0f, calmIsApi)
+                    liquidBg?.colors = cols; glowBg?.colors = cols
+                    auraView?.background?.let { bg -> (bg as? GradientDrawable)?.colors = auraColorsFor(calmIsApi) }
+                } catch (_: Exception) {}
                 pillBgRef?.setStroke(dp(1), if (dark) Color.parseColor("#2A2A2A") else Color.parseColor("#E8E8E8"))
             }
         } catch (_: Exception) {}
@@ -2457,41 +2474,80 @@ class SprichIME : InputMethodService() {
         return (r shl 16) or (g shl 8) or bch
     }
 
-    /** Pleasure ramp: silence soft grey-violet -> coral -> hot pink -> electric magenta. */
-    private fun gradientForRms(rms: Float): IntArray {
+    // Dual palette: LOCAL pleasure red vs API trustworthy blue — maximal Δ for deuteranopia, cloud semantic
+    private data class BarPalette(val calm:Int, val c0:Int, val c1:Int, val c2:Int, val hot:Int, val aura:Int)
+    private val LOCAL_PALETTE = BarPalette(
+        calm = Color.parseColor("#B9B3C9"),
+        c0 = Color.parseColor("#FF7A67"), c1 = Color.parseColor("#FF4D76"), c2 = Color.parseColor("#E92B8E"),
+        hot = Color.parseColor("#FF4D76"), aura = 0x59FF4D76.toInt()
+    )
+    private val API_PALETTE = BarPalette(
+        calm = Color.parseColor("#9AA4D9"),
+        c0 = Color.parseColor("#5B8DEF"), c1 = Color.parseColor("#3B6BFF"), c2 = Color.parseColor("#1E40AF"),
+        hot = Color.parseColor("#3B6BFF"), aura = 0x593B6BFF.toInt()
+    )
+    private fun isApiPalette(): Boolean {
+        // Truthful: uses frozen ActiveUtterance.plan when utterance active (captured at VAD onset), else current transcriptionMode
+        val active = activeUtterance?.plan?.transcription
+        if (active != null) {
+            return active is TranscriptionPlan.ApiPrimary
+            // LOCAL_API_FALLBACK stays local red during speech (API only on fallback after endpoint → no mid-utterance hue jump)
+        }
+        // Idle fallback: reflect the mode that *will* be used for next utterance (valid remote required)
+        if (transcriptionMode == TranscriptionMode.API_PRIMARY) {
+            // Check remote validity without allocating new object — use cached snapshot state
+            // isValidHttpsUrl on sttBaseUrlState / locked provider bypass
+            val isLocked = sttProviderId == "meta-muse-voice-transcribe" || sttProviderId == "meta-muse" || sttProviderId.startsWith("gemini")
+            return isLocked || isValidHttpsUrl(sttBaseUrlState)
+        }
+        return false
+    }
+    private fun palette(): BarPalette = if (isApiPalette()) API_PALETTE else LOCAL_PALETTE
+    private fun auraColorsFor(isApi: Boolean): IntArray {
+        val p = if (isApi) API_PALETTE else LOCAL_PALETTE
+        return intArrayOf(p.aura, 0x00000000)
+    }
+
+    /** Pleasure ramp (local) / Trust ramp (API blue): silence calm -> c0 -> c1 -> c2. */
+    private fun gradientForRms(rms: Float, isApi: Boolean = isApiPalette()): IntArray {
         // Map 0.0008..0.05 RMS -> t 0..1 (log-ish feel via sqrt for perceptual response)
         val raw = ((rms - 0.0008f) / (0.05f - 0.0008f)).coerceIn(0f, 1f)
         val t = kotlin.math.sqrt(raw)
-        val calm = Color.parseColor("#B9B3C9")
-        val coral = Color.parseColor("#FF7A67")
-        val pink = Color.parseColor("#FF4D76")
-        val magenta = Color.parseColor("#E92B8E")
+        val p = if (isApi) API_PALETTE else LOCAL_PALETTE
         val c0: Int; val c1: Int; val c2: Int
         if (t < 0.5f) {
             val u = (t / 0.5f)
-            c0 = lerpColor(calm, coral, u); c1 = lerpColor(coral, pink, u); c2 = lerpColor(pink, magenta, u * 0.6f)
+            c0 = lerpColor(p.calm, p.c0, u); c1 = lerpColor(p.c0, p.c1, u); c2 = lerpColor(p.c1, p.c2, u * 0.6f)
         } else {
             val u = ((t - 0.5f) / 0.5f)
-            c0 = lerpColor(coral, pink, u); c1 = lerpColor(pink, magenta, u); c2 = magenta
+            c0 = lerpColor(p.c0, p.c1, u); c1 = lerpColor(p.c1, p.c2, u); c2 = p.c2
         }
         return intArrayOf(c0, c1, c2)
     }
 
-    private fun strokeForRms(t: Float): Int {
+    private fun strokeForRms(t: Float, isApi: Boolean = isApiPalette()): Int {
         val dark = isDark()
         val base = if (dark) Color.parseColor("#2A2A2A") else Color.parseColor("#E8E8E8")
-        val hot = Color.parseColor("#FF4D76")
+        val hot = if (isApi) API_PALETTE.hot else LOCAL_PALETTE.hot
         return lerpColor(base, hot, t.coerceIn(0f, 1f))
     }
 
     /** Applies rms to bar, glow, aura and pill stroke on Main thread. Properties only — no requestLayout. */
     private fun updateLiquidVisual(rms: Float) {
         try {
-            val colors = gradientForRms(rms)
+            val isApi = isApiPalette()
+            val colors = gradientForRms(rms, isApi)
             liquidBg?.colors = colors
             glowBg?.colors = colors
             val raw = ((rms - 0.0008f) / (0.05f - 0.0008f)).coerceIn(0f, 1f)
             val t = kotlin.math.sqrt(raw)
+            // Ensure aura tracks palette (rare mode switch mid-utterance → recolor aura)
+            auraView?.background?.let { bg ->
+                try {
+                    val auraColors = auraColorsFor(isApi)
+                    (bg as? GradientDrawable)?.colors = auraColors
+                } catch (_: Exception) {}
+            }
             dotView?.animate()?.cancel()
             dotView?.scaleX = (0.3f + 1.7f * t).coerceIn(0.3f, 2.0f)
             dotView?.alpha = (0.8f + 0.2f * raw).coerceIn(0.8f, 1f)
@@ -2507,17 +2563,21 @@ class SprichIME : InputMethodService() {
                 val s = 1f + 0.06f * t
                 a.scaleX = s; a.scaleY = s
             }
-            pillBgRef?.setStroke(dp(1), strokeForRms(t))
+            pillBgRef?.setStroke(dp(1), strokeForRms(t, isApi))
         } catch (_: Exception) {}
     }
 
-    /** One bright flash + soft pop the moment dictated text lands — the reward beat. */
+    /** One bright flash + soft pop the moment dictated text lands — palette-aware. */
     private fun celebrateCommit() {
         scope.launch(Dispatchers.Main) {
             try {
-                val hot = intArrayOf(Color.parseColor("#FF7A67"), Color.parseColor("#FF4D76"), Color.parseColor("#E92B8E"))
+                val isApi = isApiPalette()
+                val p = if (isApi) API_PALETTE else LOCAL_PALETTE
+                val hot = intArrayOf(p.c0, p.c1, p.c2)
                 liquidBg?.colors = hot
                 glowBg?.colors = hot
+                // Aura flash also in palette
+                auraView?.background?.let { bg -> try { (bg as? GradientDrawable)?.colors = intArrayOf(p.aura, 0x00000000) } catch (_: Exception) {} }
                 dotView?.let { bar ->
                     bar.animate()?.cancel()
                     bar.scaleX = 1.8f

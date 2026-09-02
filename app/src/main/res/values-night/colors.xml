@@ -4,5 +4,11 @@
     <color name="pleasure_mid">#FF4D76</color>
     <color name="pleasure_end">#E92B8E</color>
     <color name="pleasure_mid_12">#1FFF4D76</color>
+    <color name="api_start">#5B8DEF</color>
+    <color name="api_mid">#3B6BFF</color>
+    <color name="api_end">#1E40AF</color>
+    <color name="api_mid_12">#1F3B6BFF</color>
+    <color name="api_calm">#9AA4D9</color>
+    <color name="api_hot">#3B6BFF</color>
     <color name="ic_launcher_background">#121212</color>
 </resources>
