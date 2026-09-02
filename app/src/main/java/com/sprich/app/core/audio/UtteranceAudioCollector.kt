@@ -46,27 +46,38 @@ class UtteranceAudioCollector(
     fun append(samples: ShortArray) = synchronized(lock) {
         if (frozen != null) return
         if (samples.isEmpty()) return
-        appendInternal(samples)
+        appendInternal(samples, 0, samples.size)
     }
 
-    private fun appendInternal(samples: ShortArray) {
+    /** Append with reusable buffer — copies only [offset, offset+length) to avoid extra allocation. Ownership: caller may reuse buffer immediately after return. */
+    fun append(samples: ShortArray, offset: Int, length: Int) = synchronized(lock) {
+        if (frozen != null) return
+        if (length <= 0) return
+        appendInternal(samples, offset, length)
+    }
+
+    private fun appendInternal(samples: ShortArray, offset: Int = 0, length: Int = samples.size - offset) {
         // Strict bound: collector.size() <= maxSamples after EVERY operation, including oversized chunk > maxSamples.
         // Policy: keep final maxSamples portion deterministically.
-        if (samples.size >= maxSamples) {
-            // Oversized chunk — keep only its final maxSamples portion, drop everything else.
+        val effSize = length
+        if (effSize >= maxSamples) {
+            // Oversized window — keep only its final maxSamples portion
             chunks.clear()
             size = 0
-            val tail = samples.copyOfRange(samples.size - maxSamples, samples.size)
+            val tail = ShortArray(maxSamples)
+            System.arraycopy(samples, offset + effSize - maxSamples, tail, 0, maxSamples)
             chunks.addLast(tail)
             size = maxSamples
             return
         }
-        if (size + samples.size > maxSamples) {
-            val overflow = size + samples.size - maxSamples
+        if (size + effSize > maxSamples) {
+            val overflow = size + effSize - maxSamples
             dropOldest(overflow)
         }
-        chunks.addLast(samples.copyOf())
-        size += samples.size
+        val copy = ShortArray(effSize)
+        System.arraycopy(samples, offset, copy, 0, effSize)
+        chunks.addLast(copy)
+        size += effSize
     }
 
     private fun dropOldest(toDrop: Int) {

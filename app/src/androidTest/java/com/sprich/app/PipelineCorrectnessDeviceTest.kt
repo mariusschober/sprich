@@ -119,13 +119,14 @@ class PipelineCorrectnessDeviceTest {
     fun compositionShrinkDoesNotCommitOnDevice() {
         val cm = CompositionManager()
         val ic = FakeIC()
+        // IME-local partials: composing stays null externally
         cm.applyUpdate(ic, "Hello world", "", false)
-        assertEquals("Hello world", ic.composing)
+        assertNull(ic.composing)
         cm.applyUpdate(ic, "Hello", "", false)
-        assertEquals("Hello", ic.composing)
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
         cm.applyUpdate(ic, "Hello there", "", false)
-        assertEquals("Hello there", ic.composing)
+        assertNull(ic.composing)
         cm.applyUpdate(ic, "Hello there", "", true)
         assertEquals("Hello there", ic.committed.toString())
         assertFalse(ic.committed.toString().contains("Hello world"))
@@ -155,11 +156,13 @@ class PipelineCorrectnessDeviceTest {
             assertTrue(cm.applyUpdate(ic, c, "", true))
             assertEquals(c, ic.committed.toString())
         }
-        // Also via live partial
+        // Also via live partial — IME-local, returns false, no external composing
         val cm = CompositionManager()
         val ic = FakeIC()
-        assertTrue(cm.applyUpdate(ic, "very very", "", false))
-        assertTrue(cm.applyUpdate(ic, "very very good", "", false))
+        assertFalse(cm.applyUpdate(ic, "very very", "", false))
+        assertNull(ic.composing)
+        assertFalse(cm.applyUpdate(ic, "very very good", "", false))
+        assertNull(ic.composing)
         assertTrue(cm.applyUpdate(ic, "very very good", "", true))
         assertEquals("very very good", ic.committed.toString())
         Log.i("PipelineDevice", "repetition PASS")

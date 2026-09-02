@@ -840,36 +840,39 @@ class SprichIME : InputMethodService() {
     }
 
     override fun onDestroy() {
-        // Deterministic shutdown ordering (P0-23): stop accepting work, close queue, cancel/join, release native, cancel scope last
-        try { stopDictation(StopReason.SERVICE_DESTROYED) } catch (_: Exception) {}
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        // Synchronous cheap invalidation — no runBlocking on main, ≈ negligible wall time
+        try { startJob?.cancel() } catch (_: Exception) {}
+        startJob = null
+        try { engineJob?.cancel() } catch (_: Exception) {}
+        engineJob = null
+        // Invalidate all generations to make stale callbacks drop immediately
+        try { sessionGeneration.incrementAndGet() } catch (_: Exception) {}
+        try { fieldGeneration.incrementAndGet() } catch (_: Exception) {}
+        // Stop accepting new finalizations
         try { pendingChannel.close() } catch (_: Exception) {}
-        // Cancel and join finalization actor with bounded timeout (avoid indefinite block on main)
-        try {
-            kotlinx.coroutines.runBlocking {
-                kotlinx.coroutines.withTimeoutOrNull(800) {
-                    finalizationActorJob?.cancelAndJoin()
-                }
-            }
-        } catch (_: Exception) {}
-        // Release native resources deterministically before scope cancel (bounded)
-        try {
-            kotlinx.coroutines.runBlocking {
-                kotlinx.coroutines.withTimeoutOrNull(1000) { lidEngine.unload() }
-            }
-        } catch (_: Exception) {}
-        try {
-            kotlinx.coroutines.runBlocking {
-                kotlinx.coroutines.withTimeoutOrNull(1000) { fastConformerEngine.unload() }
-            }
-        } catch (_: Exception) {}
-        try {
-            kotlinx.coroutines.runBlocking {
-                kotlinx.coroutines.withTimeoutOrNull(800) { engine.unload() }
-            }
-        } catch (_: Exception) {}
-        try { utteranceAudio.clear() } catch (_: Exception) {}
-        try { audio.release() } catch (_: Exception) {}
-        try { scope.cancel() } catch (_: Exception) {}
+        // Signal audio stop synchronously without join (join moved off-main)
+        try { audio.requestStop() } catch (_: Exception) {}
+        // Cancel network/work without blocking
+        try { scope.coroutineContext.cancelChildren() } catch (_: Exception) {}
+
+        // Off-main deterministic cleanup — never blocks main, no use-after-free
+        val cleanupScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+        cleanupScope.launch {
+            val ct0 = android.os.SystemClock.elapsedRealtime()
+            try { kotlinx.coroutines.withTimeoutOrNull(800) { finalizationActorJob?.cancelAndJoin() } } catch (_: Exception) {}
+            try { audio.awaitStop(300) } catch (_: Exception) {}
+            try { audio.release() } catch (_: Exception) {}
+            try { kotlinx.coroutines.withTimeoutOrNull(1000) { lidEngine.unload() } } catch (_: Exception) {}
+            try { kotlinx.coroutines.withTimeoutOrNull(1000) { fastConformerEngine.unload() } } catch (_: Exception) {}
+            try { kotlinx.coroutines.withTimeoutOrNull(800) { engine.unload() } } catch (_: Exception) {}
+            try { utteranceAudio.clear() } catch (_: Exception) {}
+            try { composition.discardPartial(null) } catch (_: Exception) {}
+            try { fieldController.cancelActive() } catch (_: Exception) {}
+            try { scope.cancel() } catch (_: Exception) {}
+            android.util.Log.i("SprichIME", "off-main cleanup complete wall=${android.os.SystemClock.elapsedRealtime()-ct0}ms total=${android.os.SystemClock.elapsedRealtime()-t0}ms")
+        }
+        android.util.Log.i("SprichIME", "onDestroy main-thread wall=${android.os.SystemClock.elapsedRealtime()-t0}ms (cleanup off-main)")
         super.onDestroy()
     }
 
@@ -1157,9 +1160,9 @@ class SprichIME : InputMethodService() {
             }
 
             val started = try {
-                audio.start(
-                    onChunk = { samples, timestampNanos ->
-                        handleAudioChunk(generation, samples, timestampNanos)
+                audio.startWithOffset(
+                    onChunkWithOffset = { samples, offset, length, timestampNanos, rms ->
+                        handleAudioChunk(generation, samples, offset, length, timestampNanos, rms)
                     },
                     onFailure = { reason ->
                         scope.launch {
@@ -1200,13 +1203,14 @@ class SprichIME : InputMethodService() {
         }
     }
 
-    private fun handleAudioChunk(generation: Long, samples: ShortArray, timestampNanos: Long) {
+    // Hot-path: single RMS, zero extra PCM allocation (reuses readBuf), offset/length ownership
+    private fun handleAudioChunk(generation: Long, samples: ShortArray, offset: Int, length: Int, timestampNanos: Long, precomputedRms: Float) {
         if (generation != sessionGeneration.get() || !session.requireActive()) { staleCallbackDrops++; return }
         try {
             pipelineChunkCount++
-            pipelineSampleCount += samples.size
-            val durationMs = ((samples.size * 1000L) / SAMPLE_RATE).coerceAtLeast(1L)
-            val result = vad.process(samples, durationMs)
+            pipelineSampleCount += length
+            val durationMs = ((length * 1000L) / SAMPLE_RATE).coerceAtLeast(1L)
+            val result = vad.process(samples, offset, length, durationMs, precomputedRms)
             // Liquid wow: drive color+width from mic energy (throttled ~20fps, no layout)
             lastRms = result.rms
             val nowElapsed = android.os.SystemClock.elapsedRealtime()
@@ -1309,9 +1313,9 @@ class SprichIME : InputMethodService() {
                 utteranceActive.get() &&
                 (result.state == Vad.State.SPEECH || result.state == Vad.State.HESITATION)
             ) {
-                pipelinePushedSampleCount += samples.size
-                // AUTHORITATIVE: collector is single owner — append once.
-                try { utteranceAudio.append(samples) } catch (_: Exception) {}
+                pipelinePushedSampleCount += length
+                // AUTHORITATIVE: collector is single owner — single copy via offset/length, zero extra allocation
+                try { utteranceAudio.append(samples, offset, length) } catch (_: Exception) {}
                 // Consumer split: distinguish primary live consumer from fallback (P0-10). For API_PRIMARY, fallback must stay idle until remote failure.
                 val activePlan = activeUtterance?.plan
                 val routeAtChunk = activeUtterance?.localRoute ?: determineRoute(speechLanguage)
@@ -1319,7 +1323,10 @@ class SprichIME : InputMethodService() {
                 val isLocalFallback = activePlan?.transcription is TranscriptionPlan.LocalApiFallback
                 val shouldPushLive = (isPrimaryLocal || isLocalFallback) && routeAtChunk is LocalAsrRoute.AccurateCanary
                 if (shouldPushLive) {
-                    try { engine.pushAudio(samples, timestampNanos) } catch (_: Exception) {}
+                    try {
+                        val chunkForEngine = if (offset == 0 && length == samples.size) samples.copyOf() else samples.copyOfRange(offset, offset + length)
+                        engine.pushAudio(chunkForEngine, timestampNanos)
+                    } catch (_: Exception) {}
                 }
                 // For Automatic or API_PRIMARY + fallback: no live Canary push — fallback decodes frozen snapshot only on remote failure.
             }
@@ -1375,6 +1382,15 @@ class SprichIME : InputMethodService() {
                 )
             }
         }
+    }
+
+    // Legacy wrapper for old AudioCapture path (tests) — delegates to hot-path with single RMS
+    private fun handleAudioChunk(generation: Long, samples: ShortArray, timestampNanos: Long) {
+        if (samples.isEmpty()) return
+        var sum = 0.0
+        for (s in samples) { val f = s / 32768f; sum += f * f }
+        val rms = kotlin.math.sqrt(sum / samples.size).toFloat()
+        handleAudioChunk(generation, samples, 0, samples.size, timestampNanos, rms)
     }
 
     // ---------- Overlapping utterance queue — single authoritative actor ----------

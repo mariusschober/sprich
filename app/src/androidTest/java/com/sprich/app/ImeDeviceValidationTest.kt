@@ -87,7 +87,8 @@ class ImeDeviceValidationTest {
         val fieldB = FakeIC("B:")
         val idA = controller.onFieldFocused("fieldA", 2, 2)
         controller.applyPartial(idA, fieldA, "hello", "world")
-        assertTrue(fieldA.composing?.contains("hello") == true)
+        // IME-local partials: composing stays null externally
+        assertNull(fieldA.composing)
         controller.onFieldLost("fieldA")
         val idB = controller.onFieldFocused("fieldB", 2, 2)
         val ignored = controller.commitFinal(idA, fieldA, "hello world")
@@ -103,10 +104,11 @@ class ImeDeviceValidationTest {
     fun compositionOnDeviceReplacesPartialAndCommitsOnce() {
         val cm = CompositionManager()
         val ic = FakeIC()
+        // IME-local: partials do not set external composing
         cm.applyUpdate(ic, "Hello", "", false)
-        assertEquals("Hello", ic.composing)
+        assertNull(ic.composing)
         cm.applyUpdate(ic, "Hello world", "", false)
-        assertEquals("Hello world", ic.composing)
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
         cm.applyUpdate(ic, "Hello world", "", true)
         assertTrue(ic.committed.toString().contains("Hello world"))

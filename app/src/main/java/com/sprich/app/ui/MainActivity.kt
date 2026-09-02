@@ -1,5 +1,6 @@
 package com.sprich.app.ui
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
@@ -24,6 +25,7 @@ import com.sprich.app.ui.vocab.VocabScreen
 import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
+    @SuppressLint("WrongStartDestinationType")
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         installSplashScreen()

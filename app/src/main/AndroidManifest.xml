@@ -6,13 +6,9 @@
     <!-- Dictation core: microphone -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Foreground mic for accessibility overlay mode (Android 14+) -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Download optional models (user-initiated only) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- No AD_ID -->
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -65,24 +61,7 @@
                 android:resource="@xml/method" />
         </service>
 
-        <!-- Dictation foreground service (used only for accessibility overlay mode & sustained capture) -->
-        <service
-            android:name=".core.audio.DictationForegroundService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
 
-        <!-- Experimental accessibility companion (opt-in, not exported as default) -->
-        <service
-            android:name=".input.accessibility.SprichAccessibilityService"
-            android:exported="true"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service" />
-        </service>
 
     </application>
 </manifest>
