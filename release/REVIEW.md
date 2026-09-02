@@ -77,7 +77,7 @@ Reworked Home/setup around Automatic and Accurate, truthful offline readiness, o
 
 **PASS, bounded scope:** physical light/dark review, 200% font and larger display settings, app RTL layout, TalkBack service with touch exploration enabled, microphone start/stop and opening the system keyboard picker. Three-button controls were visibly usable in the final pre-fix S23 capture.
 
-The landscape capture produced a concrete fix: disable the framework's extracted full-screen editor for this compact IME. Final artifact verification records the post-fix screenshot separately.
+The landscape capture produced a concrete fix: disable the framework's extracted full-screen editor for this compact IME. **PASS:** the post-fix S23 screenshot and framework state show the compact bar with the original editor visible; the microphone is off and rotation/notification settings were restored. Evidence is retained with the local final artifact.
 
 **NOT MEASURED:** exhaustive TalkBack custom-action menu/speech-output audit, every assistive technology or OEM display variant. Screenshots are evidence for the captured state only. Modified S23 display/accessibility/navigation settings are restored as part of the final device handoff.
 
@@ -119,6 +119,8 @@ The completed TCL run used the same physical phone and real microphone/editor pa
 ## 8. Release artifact and 16 KB evidence
 
 **PASS:** candidate 8 host gate, 323 unit tests with zero failures/errors/skips, release lint, R8 APK/AAB builds, dependency/input verification and actual package verification. The original baseline had 306 passing tests. Required CI failures are no longer suppressed.
+
+The first mandatory hosted run failed before testing because the runner had no `sdkmanager`. The workflow now explicitly installs pinned Android command-line tools instead of assuming runner contents. That failed run is retained; final hosted-CI status is recorded with the generated qualification evidence.
 
 **PASS:** packaged ARM64 ELF LOAD alignment of at least 0x4000, 16 KB ZIP alignment, RELRO and non-executable stacks for all four libraries. **PASS:** candidate 6 native VAD/LID/FastConformer/Canary execution through installed, R8-shrunk device-specific APKs on API 26 and the API 36 ARM64 16 KB emulator. The latter reported PAGE_SIZE=16384 with compatibility fallback disabled. Native fixtures are not physical microphone evidence.
 
