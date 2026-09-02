@@ -19,6 +19,19 @@
 - **Memory:** Automatic target `LID+Fast` (224 MB) not `LID+Fast+Canary`; `maybeUnloadUnused` unloads Canary when Auto active and queue drained, and vice versa. Diagnostics expose `collectorSamples/frozen/canaryLoads/fastLoads`.
 - **Exactly-once preserved:** Bounded `Channel<PendingUtterance>(4)` + `Pending.pcm.copyOf()` isolation ensures endpoint+USER_STOP race at most one commit; field switch zero stale insertion; queue overlap preserves independent PCM (A/B isolation tests still PASS).
 
+## What was fixed on 2026-09-02 ec493f7 — P0 reliability, privacy, security core
+
+- **Editor exactly-once (P0-1):** `CompositionManager` no longer retries `commitText` on `false` (hostile editor append+return false would duplicate) – single irreversible call, `FieldSessionController` typed `CommitResult` claims before mutation, `SprichIME.commitFinalText` never retries `EditorRejected`. `deleteLastWord` single `deleteSurroundingText`. Regression `CompositionAdversarialTest.ambiguousFinal` proves `commitTextCalls==1`.
+- **IME-local partials (P0-2):** `CompositionManager` for `isFinal=false` never calls external `setComposingText` – IME preview only, `HelloHello` impossible for any editor (correct, rejecting, silent-commit-true, throwing, WebView-like, ambiguous final). `CompositionAdversarialTest` 7 editors + `CompositionManagerTest` etc. updated.
+- **FIFO Stop/Endpoint (P0-3):** `pendingChannel(4)` is single lane for `ENDPOINT`/`USER_STOP`/30s/explicit; `USER_STOP` freezes current PCM (`size>8000`) and `enqueuePending` after earlier, `stopRequested` delays `sessionGeneration++` until `queueDepth==0` → `Idle`; `finalizeOnce` always `enqueuePending`. `StopEndpointRaceTest` 7 deterministic FIFO cases.
+- **Isolation (P0-4):** `failUtteranceScoped` for `EditorRejected`/timeout/refinement/blank/stale keeps `Listening` without clearing B's PCM; `failSession` only global (mic/field/service/active-engine). Actor outer `catch` → `failUtteranceScoped`. `UtteranceIsolationTest` 5 cases.
+- **Cancellation never → cloud (P0-5):** `LocalApiFallback` `catch CancellationException → throw`, `LocalTranscriptionCoordinator` respects cancellation, `CancellationNoFallbackTest` 6 cases `remote.calls==0` for WINDOW_HIDDEN etc.
+- **Redirect block (P1-6):** `sharedHttpClient`/`OpenAiCompatible*Provider` `followRedirects(false)`/`followSslRedirects(false)` (pool via `newBuilder()`), 3xx → `Http(Redirect blocked)`, `EndpointValidator` central HTTPS/no userinfo/valid host, `RedirectBlockingTest` 3 cases `307→B 0`.
+- **Diagnostic privacy (P1-7):** `ReplayHarness` moved to `noBackupFilesDir/sprich_replay` (was `filesDir`), `backup_rules.xml`/`data_extraction_rules.xml` exclude `sprich_replay/spich_traces/diagnostics/benchmark` defense-in-depth, paired WAV+`.meta` deletion, `clearAll` for `Clear local data`.
+- **Local-cold (P1-8):** `SprichIME.onCreate` reads `prefs.transcriptionMode.first()` before load; `API_PRIMARY` → `0` `lidLoadAttempts`/`fastLoadAttempts`/`canaryLoadAttempts` until lazy `transcribeSnapshot` on remote failure.
+- **Episode backpressure (item 15):** `handleAudioChunk` `suppressEpisode` marks entire VAD episode suppressed while `catchingUp` counted once, tail never captured even if queue drains mid-speech, cleared on clean `SILENCE/LONG_SILENCE/UTTERANCE_END`.
+- **Host suite now 286 tests (44 suites) 0 failures** – includes 22 new regression tests for above.
+
 ## What was fixed on 2026-09-02
 
 - **Canary Auto architectural fix**: Removed stopword multi-decode (EN/DE/ES 4s window + 30s hard cache) and French omission. Canary has no native `language=auto`; `capabilities.languageDetection=false`, `supportedLanguages` no longer contains `AUTO`, explicit EN/DE/ES/FR only. Auto now requires explicit picker (onboarding EN/DE/ES/FR with locale suggestion, IME blocks Auto with clear prompt, Settings hides Auto for Canary and warns).
@@ -41,17 +54,20 @@
 - Human immediate-speech-after-focus, long pauses (700 ms two sentences), intentional repetitions (`very very`, `no no no`), punctuation/names/numbers, 30-s utterance.
 - Model bake-off: Nemotron 3.5 Streaming 0.6B, Whisper Base/Small, and Tiny LID + Canary have **not** been benchmarked on T807D (see `docs/MODEL_BAKEOFF.md`). Current numbers are Canary-only; other candidates pending sherpa upgrade and model downloads (~650 MB Nemotron). Must not claim WER/battery until measured.
 
-## Product limitations remaining (post-closure)
+## Product limitations remaining (post-closure + ec493f7)
 
 - Corpus still 5/75 measured (need 30+30+10+10 EN/DE + 15+15 ES/FR human WER/CER) — `AUTO_LANGUAGE_RELEASE_READY: NO`.
-- Editor manual matrix (Chrome/Gmail input/textarea/contenteditable) still requires human tap validation (pipeline 12 tests + Ime 5 tests PASS, but real apps not yet fully matrixed).
-- Energy VAD thresholds (45/400/650ms) simple, may need noisy-room tuning.
-- Canary non-streaming windowed partials 350 ms + LCP N=2 (only for Accurate explicit; Automatic is final-only, no wrong-language partials by design).
-- Cursor/manual typing while composing handled via `finishIfActive` but needs cross-editor physical testing.
+- Editor manual matrix (Chrome/Gmail input/textarea/contenteditable) still requires human tap validation (pipeline 12 tests + Ime 5 tests PASS, but real apps not yet fully matrixed). Host now proves `HelloHello` impossible via IME-local partials, but physical WebView still needs Chrome check.
+- Energy VAD thresholds (45/400/650ms) simple, may need noisy-room tuning – 650ms vs 450/500/550 not yet benchmarked on device with natural speech/hesitation/DE/short/whisper/noise (item 10).
+- Canary non-streaming windowed partials 350 ms + LCP N=2 (only for Accurate explicit; Automatic is final-only, no wrong-language partials by design) – item 9 parallel Tiny LID+FastConformer not yet measured (30 utterances p50/p95/thermal).
+- Cursor/manual typing while composing handled via `discardPartial` (IME-local, no external composing) but needs cross-editor physical testing.
 - Personal vocabulary / Learn my corrections UI incomplete.
-- Model diagnostics backup exclusions need release-policy review.
-- Spoken deletion bounded char deletion, not semantic.
+- Model diagnostics backup exclusions **now done** (`noBackupFilesDir` + `backup_rules.xml` + `data_extraction_rules.xml`), `Clear local data` paired deletion – still needs release-policy review for `diagnostics/` vs `benchmark`.
+- Spoken deletion bounded char deletion, not semantic – now single `deleteSurroundingText` no retry (delete command also at-most-once).
 - 15-minute sustained PSS/RSS/NativeHeap via `adb shell dumpsys meminfo` for winner after load + after 20 utterances + after 15m still requires host shell measurement (app dumpsys permission denied, latency stable but exact PSS pending).
+- Audio/PCM hot-path allocations (`AudioCapture.copyOf`, duplicate RMS, `UtteranceAudioCollector` double copy, WAV streaming `RequestBody`, native reflection `Class.forName`) not yet optimized/profiled (items 11-14).
+- Accessibility trust surface (`SprichAccessibilityService` + `DictationForegroundService` perm `FOREGROUND_SERVICE_MICROPHONE`) still present – minimal-privilege removal deferred per item 16.
+- API STT refinement still needs streaming contract and warm-up measurement; `API_STT_RELEASE_READY: NO`.
 
 ## What is intentionally no longer claimed
 

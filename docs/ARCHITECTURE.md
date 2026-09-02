@@ -35,7 +35,7 @@ onStartInput / focus → FieldSessionController.onFieldFocused [sessionId++] →
                          ↘ continuous capture: next onset not blocked by previous final (decode serialized via mutex, live capture via separate PCM buffer/shnapshot)
 ```
 
-## Modules
+ ## Modules
 
 ```
 app/src/main/java/com/sprich/app/
@@ -47,24 +47,26 @@ app/src/main/java/com/sprich/app/
   core/perf/LatencyTracker    monotonic marks p50/p90, BenchmarkRecorder
   core/perf/ThermalMonitor    /sys/class/thermal polling
   core/privacy/PrivacyGuard   log redaction, network-isolation lint
+  core/security/EndpointValidator  central isValidHttpsUrl (HTTPS only, no userinfo, valid host, debug localhost)
   speech/api/SpeechEngine.kt  contract + EngineType + TranscriptionTask.TRANSCRIBE + SpeechLanguage.Auto|Fixed(BCP-47)
   speech/canary/CanaryEngine  Canary 180M Flash INT8 via sherpa-onnx INT8 (primary), serialized JNI, cancellable, src==tgt never translates
   speech/nemotron/NemotronEngine  dormant prototype, runtime not packaged
   speech/remote/RemoteSttEngine  OpenAI-compatible backup (/audio/transcriptions) — opt-in only, isolated in speech/remote
   speech/stabilization/TranscriptStabilizer  LCP of last N=2, word-level
-   input/ime/SprichIME         InputMethodService, Instant/Tap, password guard, haptics, utteranceId monotonic, sessionGeneration/fieldGeneration, frozen snapshot before decode, continuous capture while previous final decodes
-   input/composition/CompositionManager  setComposingText/commitText delta, no duplication, discardPartial vs commitFinal distinct, no destructive silent-commit delete, final-only fallback for unknown editors
+   input/ime/SprichIME         InputMethodService, Instant/Tap, password guard, utteranceId monotonic, sessionGeneration/fieldGeneration, frozen snapshot before decode, continuous capture while previous final decodes, FIFO pendingChannel(4) for ENDPOINT/USER_STOP, stopRequested after drain, suppressEpisode backpressure, local-cold for API_PRIMARY, redirect-blocked pooled OkHttp, exactly-once via finalizedUtterances LRU 128
+   input/composition/CompositionManager  IME-local partials (no external setComposingText → no HelloHello), single irreversible commitText (no retry on ambiguous false), discardPartial vs commitFinal distinct, no destructive silent-commit delete
    input/lifecycle/DictationSession FSM  Idle→Preparing→Listening→Speech→Finalizing→Inserting→Listening (per utterance) →Ending→Idle (field loss only), sessionId per field focus
-   input/lifecycle/FieldSessionController single authoritative field session owner, commitUtterance (Inserting→Listening keeps field alive) vs commitFinal (Ending→Idle), utteranceId exactly-once set, cross-field guard
+   input/lifecycle/FieldSessionController single authoritative field session owner, commitUtterance (Inserting→Listening keeps field alive) vs commitFinal (Ending→Idle), utteranceId exactly-once set, cross-field guard, typed CommitResult (Committed/EditorRejected/Stale etc.)
    input/lifecycle/UtteranceToken immutable (sessionId, generation, utteranceId, fieldId/fieldGeneration, capturedIc) — exactly-once claim
    core/audio/UtterancePcmBuffer primitive bounded (no boxing, O(1), max 30s, frozen immutable) — single authoritative PCM owner (engine), not duplicated in IME
    input/commands/SpokenEditingParser  deterministic EN/DE/ES, word-boundary punctuation, language-aware ITN (EN email only), no substring backtracking
-  input/accessibility/SprichAccessibilityService  TYPE_VIEW_FOCUSED editable node, ACTION_SET_TEXT
+  input/accessibility/SprichAccessibilityService  TYPE_VIEW_FOCUSED editable node, ACTION_SET_TEXT (experimental, if not shipping remove per minimal privilege)
   models/manager/ModelManager+Manifest  BuiltinManifest, SHA, atomic rename, integrity check
   vocab/PersonalVocabStore+Repository  word-boundary replace, DataStore persistence (local only)
   storage/Preferences          DataStore prefs (instant, speechLanguage BCP-47, engine, haptics, commands) — Locale.getDefault() only for first-run suggestion
   ui/*                         Compose Material3 DayNight, onboarding 4 steps, home, settings, benchmark
   diagnostics/Diagnostics      local only, no transcript, no raw audio by default, opt-in export
+  diagnostics/ReplayHarness    debug WAV capture in noBackupFilesDir/sprich_replay (never backed up), paired WAV+.meta deletion, clearAll
 ```
 
 ## Threading
@@ -75,24 +77,25 @@ app/src/main/java/com/sprich/app/
 - No UI-thread inference/model/disk work, no allocations per audio callback beyond 1KB chunk copy; all AudioRecord/model/coroutine jobs released on pause/focus-loss/service-destruction.
 - Structured concurrency: CoroutineScope(SupervisorJob) + limitedParallelism; cancellation via job.cancel() and native abort callback; microphone released <1s after stop.
 
-## Latency-critical path
+ ## Latency-critical path
 
-`onStartInput`  → `audio.start` (within 40ms if instant, ring pre-roll 250ms retains first phoneme) → `VOICE_RECOGNITION` → first phoneme in ring buffer (bounded 30s, circular pre-roll) → VAD onset 45ms (adaptive, hysteresis) → engine push (mono PCM 16k, resampled if needed) → speculative decode 350ms → stabilizer needs 2 agreements → `setComposingText` at cursor (replaces previous partial, never duplicates) → VAD utteranceEnd 650ms → final flush → commitText exactly once (Inserting) → sessionId validated, late callbacks discarded.
+`onStartInput`  → `audio.start` (within 40ms if instant, ring pre-roll 250ms retains first phoneme) → `VOICE_RECOGNITION` → first phoneme in ring buffer (bounded 30s, circular pre-roll) → VAD onset 45ms (adaptive, hysteresis) → engine push (mono PCM 16k, resampled if needed) → speculative decode 350ms → stabilizer needs 2 agreements → IME-local preview (no external `setComposingText` → no HelloHello) → VAD utteranceEnd 650ms → freeze immutable PCM snapshot → FIFO actor → single irreversible `commitText` (Inserting) → sessionId/fieldGeneration/utteranceId validated, stale callbacks discarded, `suppressEpisode` prevents tail capture while `catchingUp`.
 
 Instrumentation marks: focusDetected, sessionId, audioStartRequested, audioActuallyRecording, speechOnset, firstHypothesis, firstVisibleText, endpointDetected, inserting, textCommitted.
 
 Target: warm focus→capturing <100ms, speech→first visible <450ms (stretch 300), endpoint→final <500ms (stretch 250), RTF <0.5.
 TIER BUDGETS: mid Snapdragon 6GB RAM p95 focus→capturing 150ms, p95 endpoint→final 800ms; high-tier p95 focus→capturing 100ms, p95 endpoint→final 500ms; low-tier (3GB) p95 focus→capturing 250ms. P50/P95 and RTF reported honestly via Benchmark screen.
 
-## Security boundaries
+ ## Security boundaries
 
 - `speech/*` except `speech/remote` must not import networking. Lint `check-apk.sh` enforces that only `speech/remote` (opt-in backup STT) may import `okhttp`/`java.net`; all other speech code stays local-first. Remote is LOCAL by default in Preferences (stt_mode=local); cloud path requires explicit baseUrl/apiKey/model and is observable in diagnostics.
+- Credentialed BYOK OkHttp clients `followRedirects(false)` `followSslRedirects(false)` (pool preserved via `newBuilder()`), 3xx treated as typed `Http(Redirect blocked)`, `Authorization`/audio not forwarded – verified via MockWebServer `307→B 0`. `EndpointValidator` is single source for `isValidHttpsUrl` (HTTPS only, no userinfo, valid host, debug localhost).
 - The Canary model is device-side in `files/canary` (encoder.int8.onnx, decoder.int8.onnx, tokens.txt) verified by SHA-256 and atomic rename; prebuilt sherpa libs (`libonnxruntime.so`, `libsherpa-onnx-*.so`) are packaged, model data is not bundled in APK.
-- Internet permission exists only for explicit opt-in remote STT/AI polish (Advanced settings); normal dictation uses no network and airplane mode works identically. `speech/remote` and `ai/GrammarFixer` are isolated and not invoked unless configured.
+- Internet permission exists only for explicit opt-in remote STT/AI polish (Advanced settings); normal dictation uses no network and airplane mode works identically. `speech/remote` and `ai/GrammarFixer` are isolated and not invoked unless configured. `CancellationException` never triggers cloud fallback.
 
-## State machine (DictationSession — reducer)
+ ## State machine (DictationSession — reducer)
 
-Idle → Preparing(Arming) → Listening → Speech → Finalizing → Inserting → Listening (continuous) → Ending → Idle. Also Listening→Finalizing on hesitation. Listening→Suspended/Paused on interruption (call, mic claimed, explicit pause). Any→Error(RecoverableError)→Idle. Suspended→Listening on resume. sessionId increments per start(); late callbacks with old sessionId are ignored. CompositionManager resets on each session start; decoder context is reset/bounded on language/field changes (clear pcmRing, reset stabilizer, clear detectedLanguage cache after 30s silence).
+Idle → Preparing(Arming) → Listening → Speech → Finalizing → Inserting → Listening (continuous) → Ending → Idle. Also Listening→Finalizing on hesitation. Listening→Suspended/Paused on interruption (call, mic claimed, explicit pause). Any→Error(RecoverableError)→Idle. Suspended→Listening on resume. sessionId increments per start(); late callbacks with old sessionId are ignored. CompositionManager resets on each session start; decoder context is reset/bounded on language/field changes (clear pcmRing, reset stabilizer, clear detectedLanguage cache after 30s silence). `USER_STOP` freezes current valid utterance (`collector.size>8000`) and enqueues via same FIFO `pendingChannel` after earlier accepted utterances; actor drains queue then increments `sessionGeneration` → Idle (no loss, no reorder, no new capture after Stop). Utterance-scoped failures (`EditorRejected`, timeout, refinement, blank, stale) call `failUtteranceScoped` and keep field `Listening`; only mic/field/service/active-engine corruption call global `failSession`. Valid `TranscriptionCoordinator` `CancellationException` never falls back to remote.
 
 ## Native
 
