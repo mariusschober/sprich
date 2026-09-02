@@ -23,8 +23,8 @@ jobs:
         run: |
           set -euo pipefail
           cat .codex/checkpoint1/part.* > "$RUNNER_TEMP/review.patch.gz.b64"
-          printf '%s  %s\n' '64746daa77a3cf403c6296cb2182db4c6e503c0c57616014a96898904f194d66' "$RUNNER_TEMP/review.patch.gz.b64" | sha256sum --check
           base64 --decode "$RUNNER_TEMP/review.patch.gz.b64" | gzip --decompress > "$RUNNER_TEMP/review.patch"
+          printf '%s  %s\n' 'd6cb8d02c0ea1ecf09b97e725dbf27defb71032769cf204beea97fd7872da87b' "$RUNNER_TEMP/review.patch" | sha256sum --check
           grep '^Subject: ' "$RUNNER_TEMP/review.patch"
 
       - name: Materialize clean review branch
