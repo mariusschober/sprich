@@ -7,7 +7,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -16,7 +16,6 @@ import com.sprich.app.input.lifecycle.DictationSession
 import com.sprich.app.input.lifecycle.FieldSessionController
 import com.sprich.app.speech.api.SpeechLanguage
 import com.sprich.app.speech.api.SpeechSessionConfig
-import com.sprich.app.ui.MainActivity
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -37,7 +36,7 @@ import androidx.test.espresso.matcher.ViewMatchers
 class EditorMatrixRealTest {
 
     @get:Rule
-    val composeRule = createAndroidComposeRule<MainActivity>()
+    val composeRule = createComposeRule()
 
     private fun makeController(): Pair<DictationSession, FieldSessionController> {
         val s = DictationSession()

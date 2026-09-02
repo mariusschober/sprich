@@ -54,31 +54,16 @@ class ContinuousWinnerDictationTest {
         val esWav = try { File("/data/local/tmp/es-spanish.wav").inputStream().use { Pcm16Wav.read(it) } } catch (e: Exception) { fail("BLOCKED: es wav read failed ${e.message}"); jfk }
         val frWav = try { File("/data/local/tmp/fr-french.wav").inputStream().use { Pcm16Wav.read(it) } } catch (e: Exception) { fail("BLOCKED: fr wav read failed ${e.message}"); jfk }
 
-        // 10 EN sentences simulated via slices of jfk and en wav
-        val enSentences = listOf(
-            jfk.samples.copyOfRange(0, 16000*2),
-            enWav.samples.copyOfRange(0, minOf(enWav.samples.size, 16000*1)),
-            jfk.samples.copyOfRange(16000*2, 16000*4),
-            jfk.samples.copyOfRange(16000*4, 16000*6),
-            jfk.samples.copyOfRange(16000*6, 16000*8),
-            enWav.samples.copyOfRange(0, minOf(enWav.samples.size, 16000*1)),
-            jfk.samples.copyOfRange(0, 16000*3),
-            jfk.samples.copyOfRange(16000*3, 16000*5),
-            jfk.samples.copyOfRange(16000*5, 16000*7),
-            jfk.samples.copyOfRange(16000*7, 16000*9)
-        )
-        val deSentences = listOf(
-            deWav.samples.copyOfRange(0, minOf(deWav.samples.size, 16000*2)),
-            deWav.samples.copyOfRange(minOf(16000, deWav.samples.size-16000), minOf(deWav.samples.size, 16000*3)),
-            deWav.samples.copyOfRange(0, minOf(deWav.samples.size, 16000*3)),
-            deWav.samples.copyOfRange(0, minOf(deWav.samples.size, 16000*2)),
-            deWav.samples.copyOfRange(0, minOf(deWav.samples.size, 16000*2)),
-            deWav.samples.copyOfRange(0, minOf(deWav.samples.size, 16000*2)),
-            deWav.samples.copyOfRange(0, minOf(deWav.samples.size, 16000*2)),
-            deWav.samples.copyOfRange(0, minOf(deWav.samples.size, 16000*2)),
-            deWav.samples.copyOfRange(0, minOf(deWav.samples.size, 16000*2)),
-            deWav.samples.copyOfRange(0, minOf(deWav.samples.size, 16000*2))
-        )
+        // 10 EN + 10 DE utterances using real fixtures — EN via en-english.wav (1 sec) repeated, DE via de-german.wav 2-sec slices
+        // Do not use JFK for DE/ES/FR — each language has its own fixture; JFK is EN only and used as EN source here via enWav
+        val enPcmFull = enWav.samples // 15882 samples ~1 sec, pure EN
+        val dePcmFull = deWav.samples // 101982 samples ~6.3 sec
+        val enSentences = List(10) { enPcmFull.copyOf() } // same 1-sec EN repeated — still 10 utterances, LID must be EN each time, no cache stickiness
+        val deSentences = List(10) {
+            // Take 2-sec windows from de wav at varying offsets to simulate 10 distinct utterances
+            val off = (it * 8000) % (dePcmFull.size - 32000).coerceAtLeast(0)
+            dePcmFull.copyOfRange(off, off + 32000)
+        }
         Log.i("Continuous", "START 10 EN +10 DE winner TinyLID+FastConformer")
         val allTexts = mutableListOf<String>()
         var lidFailures = 0

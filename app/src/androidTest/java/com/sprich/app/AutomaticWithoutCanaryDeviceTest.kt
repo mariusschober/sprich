@@ -179,6 +179,26 @@ class AutomaticWithoutCanaryDeviceTest {
     fun accurateExplicitStillWorksWhenFastAbsentAllowed() = runBlocking {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
         val mm = ModelManager(app)
+        // Ensure Canary installed from /data/local/tmp if missing (like FreshInstall)
+        if (!mm.isCanaryReady()) {
+            try {
+                val destDir = File(app.filesDir, "canary")
+                destDir.mkdirs()
+                val srcEnc = File("/data/local/tmp/canary-encoder.int8.onnx")
+                val srcDec = File("/data/local/tmp/canary-decoder.int8.onnx")
+                val srcTok = File("/data/local/tmp/canary-tokens.txt")
+                // Also try generic encoder/decoder names
+                val enc = if (srcEnc.exists()) srcEnc else File("/data/local/tmp/encoder.int8.onnx")
+                val dec = if (srcDec.exists()) srcDec else File("/data/local/tmp/decoder.int8.onnx")
+                val tok = if (srcTok.exists()) srcTok else File("/data/local/tmp/tokens.txt")
+                if (enc.exists() && dec.exists() && tok.exists()) {
+                    enc.copyTo(File(destDir, "encoder.int8.onnx"), overwrite = true)
+                    dec.copyTo(File(destDir, "decoder.int8.onnx"), overwrite = true)
+                    tok.copyTo(File(destDir, "tokens.txt"), overwrite = true)
+                    mm.setReady("accurate")
+                }
+            } catch (_: Exception) {}
+        }
         val canaryReady = mm.isCanaryReady()
         if (!canaryReady) fail("BLOCKED: canary model not ready — need encoder/decoder >50M")
         val canaryEngine = com.sprich.app.speech.canary.CanaryEngine(app, mm)

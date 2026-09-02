@@ -32,8 +32,22 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
     val scope = rememberCoroutineScope()
     var step by remember { mutableIntStateOf(0) }
     var trialText by remember { mutableStateOf("") }
-    // Hoisted launcher — never inside conditional (Compose hook rule)
-    val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> step = 2 }
+    var micDeniedMessage by remember { mutableStateOf<String?>(null) }
+    // Hoisted launcher — handle granted/denied/permanently denied correctly
+    val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            micDeniedMessage = null
+            step = 2
+        } else {
+            val permanentlyDenied = !androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(ctx as android.app.Activity, Manifest.permission.RECORD_AUDIO)
+            if (permanentlyDenied) {
+                micDeniedMessage = "Microphone permanently denied — open app settings to allow."
+            } else {
+                micDeniedMessage = "Microphone needed for dictation — please allow or try again."
+            }
+            // Stay on step 1, do not advance
+        }
+    }
 
     Column(
         Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(24.dp).imePadding(),
@@ -45,8 +59,8 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                 PleasureDotHero()
                 Spacer(Modifier.height(24.dp))
                 OnboardPage(
-                    title = "Speak. It’s there.",
-                    sub = "Your words appear wherever you type.",
+                    title = "Speak. Written text appears.",
+                    sub = "Dictate into any Android text field.",
                     button = "Continue",
                     onClick = { step = 1 }
                 )
@@ -58,16 +72,58 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                 }
                 OnboardPage(
                     title = "Private by default.",
-                    bullets = listOf("Processed on your phone", "Audio not stored", "Works offline"),
+                    sub = "On-device transcription can run entirely on your phone. Online services are optional.",
+                    bullets = null,
                     button = if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) "Continue" else "Allow microphone",
                     onClick = {
                         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) step = 2
                         else micLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 )
+                if (micDeniedMessage != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(micDeniedMessage!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        TextButton(onClick = { micLauncher.launch(Manifest.permission.RECORD_AUDIO) }) { Text("Try again") }
+                        TextButton(onClick = {
+                            try { ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:${ctx.packageName}"))) } catch (_: Exception) {}
+                        }) { Text("Open app settings") }
+                    }
+                }
             }
-            2 -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
-                // Pleasure accent number illustration
+            2 -> {
+                // Re-check actual enabled/current state on RESUME, not cached remember
+                var isEnabled by remember { mutableStateOf(false) }
+                var isCurrent by remember { mutableStateOf(false) }
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    // Initial check
+                    try {
+                        val imm = ctx.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                        val enabled = imm.enabledInputMethodList.any { it.packageName == ctx.packageName }
+                        val current = android.provider.Settings.Secure.getString(ctx.contentResolver, android.provider.Settings.Secure.DEFAULT_INPUT_METHOD) ?: ""
+                        isEnabled = enabled
+                        isCurrent = current.contains("sprich")
+                    } catch (_: Exception) {}
+                }
+                // Also re-check on resume via lifecycle
+                val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+                androidx.compose.runtime.DisposableEffect(lifecycle) {
+                    val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                        if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                            try {
+                                val imm = ctx.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                                val enabled = imm.enabledInputMethodList.any { it.packageName == ctx.packageName }
+                                val current = android.provider.Settings.Secure.getString(ctx.contentResolver, android.provider.Settings.Secure.DEFAULT_INPUT_METHOD) ?: ""
+                                isEnabled = enabled
+                                isCurrent = current.contains("sprich")
+                            } catch (_: Exception) {}
+                        }
+                    }
+                    lifecycle.addObserver(obs)
+                    onDispose { lifecycle.removeObserver(obs) }
+                }
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Box(Modifier.size(28.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiary), contentAlignment = Alignment.Center) {
                         Text("1", color = MaterialTheme.colorScheme.onTertiary, style = MaterialTheme.typography.labelMedium)
@@ -76,7 +132,11 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                     Text("Enable Sprich keyboard", style = MaterialTheme.typography.headlineSmall)
                 }
                 Spacer(Modifier.height(12.dp))
-                Text("Sprich works as a keyboard so it can insert text where you type. You can switch to Gboard anytime — swipe up.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Sprich works as a keyboard so it can insert text where you type. You can switch keyboards anytime.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                if (isEnabled) Text("✓ Sprich is enabled", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                else Text("Not yet enabled", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                if (isCurrent) Text("✓ Sprich is current keyboard", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.height(20.dp))
                 // Visual guide — pleasure dot + arrow
                 Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
@@ -98,12 +158,13 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                 Spacer(Modifier.height(8.dp))
                 TextButton(onClick = { step = 3 }) { Text("Skip for now") }
             }
+            }
             3 -> LanguagePickerStep(
                 prefs = prefs,
                 onPicked = { tag ->
                     scope.launch {
-                        // Explicit user pick — never infer from locale silently
                         val lang = when(tag){
+                            "auto" -> com.sprich.app.speech.api.SpeechLanguage.Auto
                             "de" -> com.sprich.app.speech.api.SpeechLanguage.Fixed("de")
                             "es" -> com.sprich.app.speech.api.SpeechLanguage.Fixed("es")
                             "fr" -> com.sprich.app.speech.api.SpeechLanguage.Fixed("fr")
@@ -204,17 +265,51 @@ private fun LanguagePickerStep(
             else -> null
         }
     }
+    val ctx2 = androidx.compose.ui.platform.LocalContext.current
+    val scope2 = androidx.compose.runtime.rememberCoroutineScope()
+    var autoStatus by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    // Check if Automatic models are ready
+    val autoReady = androidx.compose.runtime.remember {
+        try {
+            val mm = com.sprich.app.models.manager.ModelManager(ctx2)
+            mm.isAutomaticReady()
+        } catch (_: Exception) { false }
+    }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
         Text("Choose your language", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
-        Text("Choose your main language. You can change it later in Settings. Automatic detection needs an extra download.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Automatic is the recommended product default. On-device, finds the language for you after you add its models (224 MB total).", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (suggestion != null) {
             Spacer(Modifier.height(8.dp))
             Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.tertiary.copy(alpha=0.12f)) {
                 Text("Suggestion from your phone: ${suggestion.uppercase()} — tap to confirm or pick another.", modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
             }
         }
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = { onPicked("auto") },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+        ) { Text("Automatic — recommended" + if (autoReady) " (ready)" else " (needs download)") }
+        if (!autoReady) {
+            OutlinedButton(
+                onClick = {
+                    scope2.launch {
+                        autoStatus = "Downloading…"
+                        try {
+                            val mm = com.sprich.app.models.manager.ModelManager(ctx2)
+                            val dm = com.sprich.app.models.download.DownloadManager(ctx2, mm)
+                            dm.downloadLid()
+                            dm.downloadFastConformer()
+                            autoStatus = "Automatic ready"
+                        } catch (e: Exception) { autoStatus = "Download failed: ${e.message}" }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            ) { Text("Download Automatic") }
+            if (autoStatus != null) Text(autoStatus!!, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            Text("One product setup action — you don't need to know there are two internal models.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+        }
         val options = listOf("en" to "English", "de" to "Deutsch", "es" to "Español", "fr" to "Français")
         options.forEach { (tag, label) ->
             val isSuggested = tag == suggestion
@@ -226,8 +321,8 @@ private fun LanguagePickerStep(
                 Text("$label  ($tag)" + if (isSuggested) " — suggested" else "", style = MaterialTheme.typography.bodyMedium)
             }
         }
-        Spacer(Modifier.height(12.dp))
-        Text("Pick the language you use most. Automatic finds the language for you after you add its models.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        Text("Pick Automatic or your main language. You can change it later in Settings.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

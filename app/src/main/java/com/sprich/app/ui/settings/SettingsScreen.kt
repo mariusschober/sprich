@@ -129,13 +129,13 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
             HorizontalDivider()
             Text("Personalization", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             SettingsRow("Personal vocabulary", "Manage names & terms", onClick = onVocab)
-            SettingsToggle("Learn my corrections", "Off by default", false){}
+            // Learn my corrections removed for this release — no inert control (would require training pipeline)
 
             HorizontalDivider()
             Text("Behavior", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             SettingsToggle("Haptic feedback", "On", haptics){ scope.launch{ prefs.setHaptics(it)} }
             SettingsToggle("Spoken editing", "On", commands){ scope.launch{ prefs.setCommands(it)} }
-            SettingsRow("Stop after silence", "Automatic"){ }
+            // Stop after silence removed — automatic 650ms VAD, not user-configurable this release
 
             HorizontalDivider()
             TranscriptionSection(prefs)
@@ -191,8 +191,16 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
             if (isDebugBenchmark) {
                 SettingsRow("Benchmark", "", actionLabel = "Open", onClick = onBenchmark)
             }
-            SettingsRow("Diagnostics", ""){}
-            SettingsRow("Open-source licenses", ""){}
+            var showDiagnostics by remember { mutableStateOf(false) }
+            SettingsRow("Diagnostics", "View local diagnostics", actionLabel = "Open", onClick = { showDiagnostics = true })
+            if (showDiagnostics) {
+                AlertDialog(onDismissRequest = { showDiagnostics = false }, title = { Text("Diagnostics") }, text = { Text("Diagnostics are stored locally in noBackupFilesDir/sprich_replay and diagnostics/. Use Clear Sprich data to remove.") }, confirmButton = { TextButton(onClick = { showDiagnostics = false }) { Text("Close") } })
+            }
+            var showLicenses by remember { mutableStateOf(false) }
+            SettingsRow("Open-source licenses", "sherpa-onnx Apache-2.0, ONNX Runtime MIT, Whisper Tiny MIT, FastConformer NeMo Apache-2.0, Canary CC-BY-4.0", actionLabel = "View", onClick = { showLicenses = true })
+            if (showLicenses) {
+                AlertDialog(onDismissRequest = { showLicenses = false }, title = { Text("Open-source licenses") }, text = { Text("Sprich MIT\n\nsherpa-onnx Apache-2.0\nONNX Runtime MIT\nWhisper Tiny MIT\nFastConformer (NeMo) Apache-2.0\nCanary 180M Flash CC-BY-4.0\n\nSee https://github.com/mariusschober/sprich/blob/main/LICENSE") }, confirmButton = { TextButton(onClick = { showLicenses = false }) { Text("Close") } })
+            }
             Spacer(Modifier.height(32.dp))
         }
     }
