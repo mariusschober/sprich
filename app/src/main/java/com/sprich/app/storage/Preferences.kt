@@ -125,6 +125,51 @@ class Preferences(context: Context) {
     val debugWavCapture: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_DEBUG_WAV_CAPTURE] ?: false }
     val debugTranscriptTrace: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_DEBUG_TRANSCRIPT_TRACE] ?: false }
 
+    // Single atomic snapshot — one DataStore emission maps to one immutable RuntimeConfigSnapshot.
+    // IME must copy one snapshot at speech onset; Settings mutations affect only next utterance.
+    val runtimeConfigSnapshot: Flow<RuntimeConfigSnapshot> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map { prefs ->
+        val transcriptionMode = prefs[KEY_TRANSCRIPTION_MODE]?.let {
+            try { com.sprich.app.speech.TranscriptionMode.valueOf(it) } catch (_: Exception) { null }
+        } ?: com.sprich.app.speech.TranscriptionMode.fromRaw(prefs[KEY_STT_MODE] ?: "local")
+        val speechLanguage = run {
+            val raw = prefs[KEY_LANGUAGE]?.lowercase()?.trim().orEmpty()
+            when (raw) {
+                "auto", "" -> SpeechLanguage.Auto
+                "en", "en-us", "en-gb" -> SpeechLanguage.Fixed("en")
+                "de", "de-de" -> SpeechLanguage.Fixed("de")
+                "es", "es-es" -> SpeechLanguage.Fixed("es")
+                "fr", "fr-fr" -> SpeechLanguage.Fixed("fr")
+                else -> if (raw.matches(Regex("[a-z]{2}(-[a-z0-9]+)?"))) SpeechLanguage.Fixed(raw) else SpeechLanguage.Auto
+            }
+        }
+        val refinementMode = prefs[KEY_REFINEMENT_MODE]?.let {
+            try { com.sprich.app.speech.refinement.RefinementMode.valueOf(it) } catch (_: Exception) { com.sprich.app.speech.refinement.RefinementMode.fromRaw(it) }
+        } ?: if (prefs[KEY_AI_ENABLED] == true) com.sprich.app.speech.refinement.RefinementMode.CORRECT else com.sprich.app.speech.refinement.RefinementMode.OFF
+        RuntimeConfigSnapshot(
+            transcriptionMode = transcriptionMode,
+            speechLanguage = speechLanguage,
+            refinementMode = refinementMode,
+            sttProviderId = prefs[KEY_STT_PROVIDER_ID] ?: "meta-muse-voice-transcribe",
+            sttBaseUrl = prefs[KEY_STT_BASE_URL] ?: "",
+            sttModel = prefs[KEY_STT_MODEL] ?: "whisper-large-v3",
+            sttCredentialRef = prefs[KEY_STT_CREDENTIAL_REF] ?: "stt_default",
+            sttDeadlineMs = prefs[KEY_STT_DEADLINE_MS] ?: 3500L,
+            sttStreamingEnabled = prefs[KEY_STT_STREAMING_ENABLED] ?: true,
+            sttLanguagePolicyRaw = prefs[KEY_STT_LANGUAGE_POLICY] ?: "auto",
+            refinementProviderId = prefs[KEY_REFINEMENT_PROVIDER_ID] ?: "openai-compatible",
+            refinementCredentialRef = prefs[KEY_REFINEMENT_CREDENTIAL_REF] ?: "refine_default",
+            refinementBaseUrl = prefs[KEY_REFINEMENT_BASE_URL] ?: prefs[KEY_AI_BASE_URL] ?: "",
+            refinementModel = prefs[KEY_REFINEMENT_MODEL] ?: prefs[KEY_AI_MODEL] ?: "",
+            refinementDeadlineMs = prefs[KEY_REFINEMENT_DEADLINE_MS] ?: 1000L,
+            personalVocabHintEnabled = prefs[KEY_PERSONAL_VOCAB_HINT] ?: false,
+            debugWavCapture = prefs[KEY_DEBUG_WAV_CAPTURE] ?: false,
+            debugTranscriptTrace = prefs[KEY_DEBUG_TRANSCRIPT_TRACE] ?: false,
+            instantMode = prefs[KEY_INSTANT_MODE] ?: false,
+            commandsEnabled = prefs[KEY_COMMANDS] ?: true,
+            hapticsEnabled = prefs[KEY_HAPTICS] ?: true,
+        )
+    }
+
     suspend fun setSttMode(v: SttMode){ context.ds.edit{it[KEY_STT_MODE]= when(v){ SttMode.LOCAL->"local"; SttMode.FALLBACK->"fallback"; SttMode.REMOTE->"remote" }}}
     suspend fun setSttBaseUrl(v: String){ context.ds.edit{it[KEY_STT_BASE_URL]=v.trim().trimEnd('/')} }
     @Deprecated("Legacy plaintext — use ApiSecretStore; migration-only")

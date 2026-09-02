@@ -43,13 +43,13 @@ class MetaMuseSttProvider(
 
     override val id = "meta-muse-voice-transcribe"
     override val capabilities = RemoteSttCapabilities(
-        streaming = true,
+        streaming = false, // 7.4: ship batch first; realtime not proven — do not claim streaming
         automaticLanguage = true,
         explicitLanguageHint = true,
         keywordBiasing = true,
         contextBiasing = false,
-        endpointing = true,
-        partialResults = true,
+        endpointing = false,
+        partialResults = false,
     )
 
     companion object {

@@ -43,8 +43,20 @@ class FastConformerEngine(
     private fun modelDir(): java.io.File? {
         val d = java.io.File(context.filesDir, "fastconformer")
         if (d.exists() && java.io.File(d, "model.int8.onnx").exists()) return d
-        val tmp = java.io.File("/data/local/tmp/fastconformer")
-        if (tmp.exists() && java.io.File(tmp, "model.int8.onnx").exists()) return tmp
+        val isDebugTest = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
+        if (isDebugTest) {
+            val tmp = java.io.File("/data/local/tmp/fastconformer")
+            if (tmp.exists() && java.io.File(tmp, "model.int8.onnx").exists()) {
+                android.util.Log.w("FastConformer", "debug fallback to /data/local/tmp/fastconformer — not production")
+                return tmp
+            }
+            val tmp2 = java.io.File("/data/local/tmp/model.int8.onnx")
+            if (tmp2.exists()) {
+                android.util.Log.w("FastConformer", "debug fallback to /data/local/tmp — not production")
+                // Return parent so modelDir resolves correctly? Need dir with tokens — use /data/local/tmp
+                return java.io.File("/data/local/tmp")
+            }
+        }
         return null
     }
 

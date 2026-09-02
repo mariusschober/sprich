@@ -33,13 +33,13 @@ class GeminiSttProvider(
 
     override val id = "gemini"
     override val capabilities = RemoteSttCapabilities(
-        streaming = true,
+        streaming = false, // batch only until live proven
         automaticLanguage = true,
         explicitLanguageHint = true,
-        keywordBiasing = true,
+        keywordBiasing = false,
         contextBiasing = false,
-        endpointing = true,
-        partialResults = true,
+        endpointing = false,
+        partialResults = false,
     )
 
     companion object {
@@ -119,40 +119,45 @@ class GeminiSttProvider(
     }
 
     private suspend fun transcribeViaInteractions(request: RemoteSttRequest): RemoteSttResult = withContext(Dispatchers.IO) {
-        // Step 1: For Gemini, we can send inline base64 audio via generateContent (legacy) or via Interactions API with file upload.
-        // Simplest for single utterance <30s: use Interactions API with inline data (if supported) or fallback to generateContent.
-        // We'll use Interactions API with inline base64: POST https://generativelanguage.googleapis.com/v1beta/interactions
-        // Body: {model, input: [{role:"user", content:[{type:"audio", data: base64, mime_type:"audio/wav"}]}]}
-        // For Sprich, we send WAV bytes base64.
-
+        // Gemini 3.5 Transcribe via Interactions API — documented shape per ai.google.dev (2026)
+        // POST https://generativelanguage.googleapis.com/v1beta/interactions
+        // Body uses typed audio input + transcription_config (verbatim), language_codes, custom_vocabulary
+        // Do NOT prompt model with text like "Transcribe this de audio" — use structured fields.
         val wav = wavBytes(request.pcm, request.sampleRate)
         val base64 = android.util.Base64.encodeToString(wav, android.util.Base64.NO_WRAP)
         val langTag = languageTagFor(request.languagePolicy)
-
-        // Use model gemini-3.5-transcribe (non-streaming) by default
         val useModel = if (model.contains("live")) MODEL_DEFAULT else model
 
         val payload = JSONObject().apply {
             put("model", useModel)
             val input = org.json.JSONArray()
             val content = org.json.JSONArray()
-            // Add language hint as text if fixed
-            if (langTag != null) {
-                content.put(JSONObject().apply {
-                    put("type", "text")
-                    put("text", "Transcribe this $langTag audio. ${if (request.personalVocabularyHints.isNotEmpty()) "Keywords: ${request.personalVocabularyHints.take(10).joinToString(", ")}" else ""}")
-                })
-            }
             content.put(JSONObject().apply {
                 put("type", "audio")
                 put("data", base64)
                 put("mime_type", "audio/wav")
+                put("sample_rate", request.sampleRate)
             })
             input.put(JSONObject().apply {
                 put("role", "user")
                 put("content", content)
             })
             put("input", input)
+            // Structured transcription config — verbatim, language_codes, custom_vocabulary
+            val genConfig = JSONObject()
+            val transConfig = JSONObject()
+            if (langTag != null) transConfig.put("language_codes", org.json.JSONArray().put(langTag))
+            else transConfig.put("language_codes", org.json.JSONArray())
+            if (request.personalVocabularyHints.isNotEmpty()) {
+                transConfig.put("custom_vocabulary", org.json.JSONArray().apply {
+                    request.personalVocabularyHints.take(20).forEach { put(it) }
+                })
+            } else {
+                transConfig.put("custom_vocabulary", org.json.JSONArray())
+            }
+            transConfig.put("mode", "verbatim")
+            genConfig.put("transcription_config", transConfig)
+            put("generation_config", genConfig)
         }
 
         val url = "${baseUrl.trimEnd('/')}/v1beta/interactions"
@@ -174,9 +179,27 @@ class GeminiSttProvider(
                     val failure = ApiFailure.fromHttpCode(resp.code, bodyStr.take(180))
                     throw RemoteSttException(failure, "Gemini STT HTTP ${resp.code}")
                 }
-                // Response: {output_text: "..."} or {output: [{content: [{text: "..."}]}]} or {transcript: "..."}
+                // Official Interactions response: {steps: [{model_output: {content: [{text: "..."}]}}]} or {output_text}
                 val json = JSONObject(bodyStr)
                 val text = when {
+                    json.has("steps") -> {
+                        try {
+                            val steps = json.optJSONArray("steps")
+                            var t = ""
+                            for (i in 0 until (steps?.length() ?: 0)) {
+                                val step = steps?.optJSONObject(i) ?: continue
+                                val mo = step.optJSONObject("model_output") ?: continue
+                                val content = mo.optJSONArray("content") ?: continue
+                                for (j in 0 until content.length()) {
+                                    val c = content.optJSONObject(j) ?: continue
+                                    val txt = c.optString("text", "")
+                                    if (txt.isNotBlank()) { t = txt; break }
+                                }
+                                if (t.isNotBlank()) break
+                            }
+                            if (t.isBlank() && json.has("output_text")) json.optString("output_text") else t
+                        } catch (_: Exception) { json.optString("output_text", "") }
+                    }
                     json.has("output_text") -> json.optString("output_text")
                     json.has("output") -> {
                         try {
@@ -184,7 +207,6 @@ class GeminiSttProvider(
                         } catch (_: Exception) { "" }
                     }
                     json.has("transcript") -> json.optString("transcript")
-                    json.has("text") -> json.optString("text")
                     else -> null
                 } ?: throw RemoteSttException(ApiFailure.InvalidResponse, "Gemini invalid response")
                 if (text.isBlank()) throw RemoteSttException(ApiFailure.InvalidResponse, "Gemini empty transcript")

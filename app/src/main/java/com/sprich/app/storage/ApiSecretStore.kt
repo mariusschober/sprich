@@ -25,10 +25,16 @@ open class ApiSecretStore(
     private val crypto: SecretCryptoBackend = AndroidKeystoreCryptoBackend(),
 ) {
     private fun secretsDir(): File {
-        // noBackupFilesDir is excluded from auto backup
-        val dir = try { context.noBackupFilesDir } catch (_: Exception) { context.filesDir }
+        // Production invariant: Android Keystore AES-GCM + noBackupFilesDir or FAIL CLOSED — never fallback to filesDir
+        val dir = try {
+            context.noBackupFilesDir ?: throw IllegalStateException("noBackupFilesDir unavailable")
+        } catch (e: Exception) {
+            throw IllegalStateException("secure storage unavailable: noBackupFilesDir failed", e)
+        }
         val apiDir = File(dir, "api_secrets")
-        if (!apiDir.exists()) apiDir.mkdirs()
+        if (!apiDir.exists() && !apiDir.mkdirs() && !apiDir.exists()) {
+            throw IllegalStateException("secure storage unavailable: cannot create api_secrets dir")
+        }
         return apiDir
     }
 
@@ -45,13 +51,18 @@ open class ApiSecretStore(
      */
     open fun saveSecret(id: String, plaintext: String): SecretStoreResult {
         if (plaintext.isBlank()) {
-            removeSecret(id)
-            return SecretStoreResult.Success
+            return try {
+                removeSecret(id)
+                SecretStoreResult.Success
+            } catch (e: Exception) {
+                SecretStoreResult.Failure(e.message ?: "secure storage unavailable")
+            }
         }
         return try {
+            // Ensure crypto and dir are verified on IO thread — all file/Keystore ops are IO-confined (caller must use Dispatchers.IO)
             val combined = crypto.encrypt(plaintext.toByteArray(Charsets.UTF_8))
             val b64 = Base64.encodeToString(combined, Base64.NO_WRAP)
-            val f = fileFor(id)
+            val f = fileFor(id) // throws if noBackupFilesDir unavailable → Failure
             // Write atomically via temp + rename where possible
             try {
                 val tmp = File(f.parentFile, "${f.name}.tmp")
@@ -89,15 +100,25 @@ open class ApiSecretStore(
     }
 
     fun removeSecret(id: String) {
-        try { fileFor(id).delete() } catch (_: Exception) {}
+        try {
+            val f = fileFor(id)
+            f.delete()
+        } catch (e: Exception) {
+            // If secretsDir itself fails (FAIL CLOSED), propagate as failure via caller — but remove is best-effort
+            try { File(context.filesDir, "api_secrets/${id.replace(Regex("[^A-Za-z0-9._-]"), "_").take(64)}.enc").delete() } catch (_: Exception) {}
+        }
     }
 
     fun clearAll() {
         try {
             secretsDir().listFiles()?.forEach { try { it.delete() } catch (_: Exception) {} }
-            // Also try to delete key entry if backend supports it
             try { (crypto as? AndroidKeystoreCryptoBackend)?.deleteKey() } catch (_: Exception) {}
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+            // FAIL CLOSED: if dir unavailable, ensure at least fallback delete attempt for legacy filesDir location (defense)
+            try {
+                File(context.filesDir, "api_secrets").listFiles()?.forEach { try { it.delete() } catch (_: Exception) {} }
+            } catch (_: Exception) {}
+        }
     }
 
     /**

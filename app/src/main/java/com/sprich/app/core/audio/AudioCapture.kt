@@ -177,6 +177,11 @@ class AudioCapture(
     }
 
     fun stop() {
+        // Deprecated blocking path — kept for tests only. Production must use requestStop() + awaitStop() off Main.
+        // This still joins up to 300ms and must NEVER be called on Main thread.
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            android.util.Log.w(TAG, "AudioCapture.stop() called on Main — use requestStop() + awaitStop off Main to avoid ANR")
+        }
         val wasCapturing = isCapturing.getAndSet(false)
         val threadToJoin = audioThread
         val rec = record

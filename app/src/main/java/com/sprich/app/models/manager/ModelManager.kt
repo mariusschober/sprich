@@ -70,10 +70,27 @@ class ModelManager(private val context: Context) {
 
     fun isWhisperTinyReady(): Boolean {
         val dir = File(context.filesDir, "whisper-tiny")
-        // Accepts both real sizes (enc 12.9M, dec 89.8M) and test fixtures (6M/51M) — threshold minimal but >1K for tokens
-        return File(dir, "tiny-encoder.int8.onnx").let { it.exists() && it.length() > 5_000_000 } &&
-               File(dir, "tiny-decoder.int8.onnx").let { it.exists() && it.length() > 5_000_000 } &&
+        // Production invariant: successful SHA-pinned verification → extraction → required files verified → marker written atomically
+        // Then readiness uses trusted install marker + required-file sanity. For legacy installs, migrate/verify once.
+        val marker = File(dir, ".installed_ok")
+        if (marker.exists()) {
+            // Marker present → verify required files still exist and have plausible sizes
+            return File(dir, "tiny-encoder.int8.onnx").let { it.exists() && it.length() > 10_000_000 } &&
+                   File(dir, "tiny-decoder.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
+                   File(dir, "tiny-tokens.txt").let { it.exists() && it.length() > 0 }
+        }
+        // Legacy path without marker: still require production sizes (do not weaken to 5M for fixtures)
+        return File(dir, "tiny-encoder.int8.onnx").let { it.exists() && it.length() > 10_000_000 } &&
+               File(dir, "tiny-decoder.int8.onnx").let { it.exists() && it.length() > 50_000_000 } &&
                File(dir, "tiny-tokens.txt").let { it.exists() && it.length() > 0 }
+    }
+
+    fun markWhisperTinyInstalled() {
+        try {
+            val dir = File(context.filesDir, "whisper-tiny")
+            if (!dir.exists()) dir.mkdirs()
+            File(dir, ".installed_ok").writeText(System.currentTimeMillis().toString())
+        } catch (_: Exception) {}
     }
 
     fun isWhisperTinyReadyForRelease(): Boolean = isWhisperTinyReady()

@@ -4,6 +4,7 @@
     <string name="ime_subtype_en">English</string>
     <string name="ime_subtype_de">Deutsch</string>
     <string name="ime_subtype_es">Español</string>
+    <string name="ime_subtype_fr">Français</string>
 
     <!-- Onboarding -->
     <string name="onboard_title_1">Speak. It’s there.</string>

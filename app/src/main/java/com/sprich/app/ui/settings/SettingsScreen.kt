@@ -144,12 +144,33 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 
             HorizontalDivider()
             DynamicPrivacySection(prefs)
-            // Gesture legend — discoverability without clutter
+            // Gesture legend — minimal 3-gesture release (no down newline)
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Gestures", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-                Text("Swipe left to delete • Right to undo • Down for new line • Up to switch keyboard", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Swipe left to delete • Right to undo • Swipe up outside bar to switch keyboard", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            SettingsRow("Clear Sprich data", "Removes models, vocabulary, and keys. Cannot be undone.", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); try { com.sprich.app.storage.ApiSecretStore(ctx).clearAll() } catch (_:Exception){}; try { com.sprich.app.diagnostics.ReplayHarness.clearAll(ctx) } catch (_:Exception){}; try { java.io.File(ctx.filesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.filesDir, "benchmark").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "benchmark").deleteRecursively() } catch (_:Exception){}; mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron() } })
+            var showClearConfirm by remember { mutableStateOf(false) }
+            SettingsRow("Clear Sprich data", "Removes models, vocabulary, and keys. Cannot be undone.", actionLabel = "Clear", onClick = { showClearConfirm = true })
+            if (showClearConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showClearConfirm = false },
+                    title = { Text("Clear Sprich data?") },
+                    text = { Text("This removes downloaded models, personal vocabulary, provider keys and local diagnostics.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showClearConfirm = false
+                            scope.launch{
+                                prefs.clearAll()
+                                try { com.sprich.app.storage.ApiSecretStore(ctx).clearAll() } catch (_:Exception){}
+                                try { com.sprich.app.diagnostics.ReplayHarness.clearAll(ctx) } catch (_:Exception){}
+                                try { java.io.File(ctx.filesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.filesDir, "benchmark").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "benchmark").deleteRecursively() } catch (_:Exception){}
+                                mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron()
+                            }
+                        }) { Text("Clear data") }
+                    },
+                    dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") } }
+                )
+            }
 
             HorizontalDivider()
             Text("Advanced", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
@@ -382,14 +403,17 @@ private fun TranscriptionSection(prefs: Preferences) {
             } else if (isGemini) {
                 Text("Gemini 3.5 Transcribe — locked: generativelanguage.googleapis.com, model gemini-3.5-transcribe. Single key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
-            // Streaming toggle for Muse/Gemini (both support streaming + non-streaming)
-            if (isMuse || isGemini) {
+            // Streaming removed for this release — ships verified frozen-PCM batch only (7.4)
+            // Streaming capability=false until true live streaming proven; hide toggle and Realtime copy
+            if (false && (isMuse || isGemini)) {
                 Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Streaming", style = MaterialTheme.typography.bodyMedium)
                     Switch(checked = streamingEnabled, onCheckedChange = { scope.launch { prefs.setSttStreamingEnabled(it) } })
                     Text(if (streamingEnabled) "Realtime (default)" else "Batch", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text("Streaming: 80ms realtime via WebSocket (ENDPOINTING). Batch: single POST. Toggle as needed.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else if (isMuse || isGemini) {
+                Text("Batch transcription only — streaming not yet available in this release. Audio is sent as one utterance after you stop speaking.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             // API key: single for Muse/Gemini (same key for STT+refinement), separate for Custom
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -438,12 +462,9 @@ private fun TranscriptionSection(prefs: Preferences) {
                                             keyInput = ""
                                             showKeyEntry = false
                                             hasKey = true
-                                            testResult = "Saved — API will be used (on-device fallback if fails)"
+                                            testResult = "Saved — key stored securely. Choose Online provider explicitly to enable cloud."
                                             saveError = null
-                                            // If user just added a key while on-device, activate API primary with on-device fallback
-                                            if (mode == TranscriptionMode.ON_DEVICE) {
-                                                prefs.setTranscriptionMode(TranscriptionMode.API_PRIMARY)
-                                            }
+                                            // 7.7: saving a key ≠ permission to start sending speech online — do NOT auto-switch to API_PRIMARY
                                         }
                                         else -> {
                                             saveError = "Could not securely save API key"
@@ -495,24 +516,23 @@ private fun TranscriptionSection(prefs: Preferences) {
                                 ShortArray(16000) { (kotlin.math.sin(it * 0.01) * 8000).toInt().toShort() }
                             }
                             val trimmedPcm = if (pcm.size > 16000*8) pcm.copyOfRange(0, 16000*8) else pcm
-                            val provider: com.sprich.app.speech.remote.RemoteSttProvider = when {
-                                isMuse -> com.sprich.app.speech.remote.MetaMuseSttProvider(
-                                    com.sprich.app.storage.MuseDefaults.BASE_URL,
-                                    com.sprich.app.storage.MuseDefaults.MODEL,
-                                    sharedClient,
-                                    streamingEnabled
+                            // Use single factory — same path as production (required 7.1)
+                            val provider: com.sprich.app.speech.remote.RemoteSttProvider = run {
+                                val cfg = com.sprich.app.speech.remote.RemoteSttConfig(
+                                    providerId = when { isMuse -> "meta-muse-voice-transcribe"; isGemini -> "gemini"; else -> "openai-compatible" },
+                                    endpoint = when { isMuse -> com.sprich.app.storage.MuseDefaults.BASE_URL; isGemini -> com.sprich.app.storage.GeminiDefaults.BASE_URL; else -> baseUrl },
+                                    model = when { isMuse -> com.sprich.app.storage.MuseDefaults.MODEL; isGemini -> com.sprich.app.storage.GeminiDefaults.MODEL; else -> model },
+                                    languagePolicy = com.sprich.app.speech.LanguagePolicy.Automatic,
+                                    deadlineMs = 3500L,
+                                    credentialRef = "stt_default",
+                                    supportsStreaming = false,
+                                    preferStreaming = false,
                                 )
-                                isGemini -> com.sprich.app.speech.remote.GeminiSttProvider(
-                                    com.sprich.app.storage.GeminiDefaults.BASE_URL,
-                                    com.sprich.app.storage.GeminiDefaults.MODEL,
-                                    sharedClient,
-                                    streamingEnabled
-                                )
-                                else -> {
+                                if (!isMuse && !isGemini) {
                                     if (!isValidProductionHttpsUrl(baseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
                                     if (model.isBlank()) { testResult = "Missing model"; return@launch }
-                                    com.sprich.app.speech.remote.OpenAiCompatibleSttProvider(baseUrl, model, sharedClient)
                                 }
+                                com.sprich.app.speech.remote.RemoteProviderFactory.create(cfg, sharedClient)
                             }
                             val req = com.sprich.app.speech.remote.RemoteSttRequest(trimmedPcm, 16000, com.sprich.app.speech.LanguagePolicy.Automatic, emptyList(), System.nanoTime(), cred, streamingEnabled)
                             val res = provider.transcribe(req)

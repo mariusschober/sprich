@@ -30,9 +30,12 @@ class AutomaticReadinessTest {
     private fun installLid(c: Context) {
         val dir = File(c.filesDir, "whisper-tiny")
         dir.mkdirs()
-        File(dir, "tiny-encoder.int8.onnx").writeBytes(ByteArray(6_000_000))
-        File(dir, "tiny-decoder.int8.onnx").writeBytes(ByteArray(51_000_000))
+        // Production sizes: encoder 12.9M, decoder 89.8M — do not weaken to 6M for fixtures
+        File(dir, "tiny-encoder.int8.onnx").writeBytes(ByteArray(13_000_000))
+        File(dir, "tiny-decoder.int8.onnx").writeBytes(ByteArray(90_000_000))
         File(dir, "tiny-tokens.txt").writeText("a b")
+        // Write trusted install marker as production pipeline would (SHApinned → extracted → verified → marker)
+        File(dir, ".installed_ok").writeText("test")
     }
 
     private fun installFast(c: Context) {

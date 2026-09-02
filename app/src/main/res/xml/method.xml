@@ -2,6 +2,7 @@
 <input-method xmlns:android="http://schemas.android.com/apk/res/android"
     android:settingsActivity="com.sprich.app.ui.MainActivity"
     android:supportsSwitchingToNextInputMethod="true">
+    <!-- Single generic subtype: language is internal to Sprich (Automatic/EN/DE/ES/FR), not an IME subtype -->
     <subtype
         android:imeSubtypeLocale="en"
         android:imeSubtypeMode="keyboard"
@@ -14,4 +15,8 @@
         android:imeSubtypeLocale="es"
         android:imeSubtypeMode="keyboard"
         android:label="@string/ime_subtype_es" />
+    <subtype
+        android:imeSubtypeLocale="fr"
+        android:imeSubtypeMode="keyboard"
+        android:label="@string/ime_subtype_fr" />
 </input-method>

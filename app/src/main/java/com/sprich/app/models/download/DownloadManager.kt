@@ -26,13 +26,29 @@ class DownloadManager(
         .followSslRedirects(false)
         .build()
 
-    @Volatile private var currentCall: okhttp3.Call? = null
-    @Volatile private var cancelled = false
+    // Per-model cancellation — one model's Cancel must not cancel another
+    private val calls = mutableMapOf<String, okhttp3.Call>()
+    private val cancelledIds = mutableSetOf<String>()
+    private val callMutex = Any()
 
     fun cancel(){
-        cancelled = true
-        currentCall?.cancel()
+        synchronized(callMutex) {
+            calls.values.forEach { try { it.cancel() } catch (_: Exception) {} }
+            calls.clear()
+            // legacy global cancel sets all to cancelled
+            cancelledIds.addAll(listOf("accurate","lid","fastconformer","nemotron-560","nemotron-160","streaming","nemotron"))
+        }
     }
+    fun cancelModel(id: String) {
+        synchronized(callMutex) {
+            cancelledIds.add(id)
+            calls[id]?.let { try { it.cancel() } catch (_: Exception) {} }
+            calls.remove(id)
+        }
+    }
+    private fun isCancelled(id: String) = synchronized(callMutex) { cancelledIds.contains(id) }
+    private fun setCall(id: String, call: okhttp3.Call) = synchronized(callMutex) { calls[id] = call }
+    private fun clearCall(id: String) = synchronized(callMutex) { calls.remove(id) }
 
     suspend fun downloadCanary(onProgress: ((Float)->Unit)? = null) = withContext(Dispatchers.IO) {
         val entry = modelManager.getManifest().models.find{ it.id=="accurate"} ?: throw Exception("manifest missing")
@@ -113,16 +129,19 @@ class DownloadManager(
         requiredBytes: Long,
         onProgress: ((Float)->Unit)?,
     ){
-        cancelled = false
+        synchronized(callMutex) { cancelledIds.remove(id) }
         // Space check
         val stat = StatFs(context.filesDir.path)
         if (stat.availableBytes < requiredBytes) {
             modelManager.setFailed(id, "Not enough storage. Need ${requiredBytes/1024/1024} MB free, have ${stat.availableBytes/1024/1024} MB.")
             throw Exception("no space")
         }
-        // Atomic install: download to tmp, verify, extract to .tmp dir, rename — keep tmpFile for resume
+        // Atomic install: download to tmp, verify SHA, extract into staging, verify staging, atomic swap, delete old — never delete old before verified
         val extractTmp = File(context.filesDir, "${destDir.name}.tmp")
         extractTmp.deleteRecursively()
+        // Staging dir for extracted model before swap
+        val stagingDir = File(context.filesDir, "${destDir.name}.staging")
+        stagingDir.deleteRecursively()
         try {
             var downloaded: Long = 0
             var total: Long = -1
@@ -132,11 +151,9 @@ class DownloadManager(
                 reqBuilder.header("Range", "bytes=$downloaded-")
             }
             val call = client.newCall(reqBuilder.build())
-            currentCall = call
+            setCall(id, call)
             call.execute().use { resp ->
-                // Block redirects for model download (integrity via SHA, but avoid following attacker redirects)
                 if (resp.code in 300..399) throw Exception("Redirect blocked ${resp.code}")
-                // If we asked for Range but server answered 200, it doesn't support resume — restart
                 if (downloaded > 0 && resp.code == 200) {
                     tmpFile.delete()
                     downloaded = 0
@@ -151,7 +168,7 @@ class DownloadManager(
                         val buf = ByteArray(64*1024)
                         var n: Int
                         while (inp.read(buf).also{ n=it } != -1) {
-                            if (cancelled) throw Exception("Cancelled")
+                            if (isCancelled(id)) throw Exception("Cancelled")
                             out.write(buf, 0, n)
                             downloaded += n
                             val prog = if (total>0) downloaded.toFloat()/total else 0f
@@ -161,81 +178,120 @@ class DownloadManager(
                     }
                 }
             }
-            currentCall = null
-            if (cancelled) throw Exception("Cancelled")
+            clearCall(id)
+            if (isCancelled(id)) throw Exception("Cancelled")
 
-            // Verify sha if pinned
+            // Verify SHA before extraction
             modelManager.setVerifying(id)
             if (expectedSha.isNotBlank()) {
                 val ok = modelManager.verifySha256(tmpFile, expectedSha)
                 if (!ok) throw Exception("Checksum mismatch")
             }
 
-            extractTmp.mkdirs()
+            // Extract into staging, verify staging, then atomic swap — never delete working model before replacement verified
+            stagingDir.mkdirs()
             if (tmpFile.name.endsWith(".tar.bz2")) {
-                extractTarBz2(tmpFile, extractTmp)
+                extractTarBz2Bounded(tmpFile, stagingDir)
             } else {
-                // Plain GGUF (Nemotron) — map tmp name to expected model file
                 val targetName = if (id == "streaming") "model_q4_k.gguf" else tmpFile.name.removeSuffix(".tmp")
-                tmpFile.copyTo(File(extractTmp, targetName), overwrite = true)
+                tmpFile.copyTo(File(stagingDir, targetName), overwrite = true)
             }
 
-            // Validate needed files exist
+            // Validate needed files exist in staging
             val needed = modelManager.getManifest().models.find{it.id==id}?.files ?: emptyList()
             for (f in needed) {
-                if (!File(extractTmp, f).exists() && !File(extractTmp, extractTmp.list()?.firstOrNull() ?: "").let{ File(it, f).exists() }) {
-                    // Check if nested dir contains it (tar top-level)
-                    val found = extractTmp.walk().any{ it.name==f }
+                if (!File(stagingDir, f).exists() && !File(stagingDir, stagingDir.list()?.firstOrNull() ?: "").let{ File(it, f).exists() }) {
+                    val found = stagingDir.walk().any{ it.name==f }
                     if (!found) throw Exception("Missing $f after extract")
                 }
             }
             // Flatten if tar had top-level dir
-            val top = extractTmp.listFiles()?.firstOrNull { it.isDirectory }
-            val sourceRoot = if (top != null && needed.all{ File(top, it).exists() }) top else extractTmp
+            val top = stagingDir.listFiles()?.firstOrNull { it.isDirectory }
+            val sourceRoot = if (top != null && needed.all{ File(top, it).exists() }) top else stagingDir
 
-            destDir.deleteRecursively()
-            // Atomic rename: move sourceRoot to destDir
-            if (!sourceRoot.renameTo(destDir)) {
-                // fallback copy
+            // Preserve old model until after staging verified — stage verified above, now swap
+            val oldBackup = if (destDir.exists()) File(context.filesDir, "${destDir.name}.old") else null
+            if (oldBackup != null) {
+                oldBackup.deleteRecursively()
+                // Move current to backup atomically
+                destDir.renameTo(oldBackup)
+            }
+            // Move staging to dest
+            val swapped = if (!sourceRoot.renameTo(destDir)) {
                 destDir.mkdirs()
                 sourceRoot.listFiles()?.forEach{ it.copyRecursively(File(destDir, it.name), overwrite=true)}
-                extractTmp.deleteRecursively()
+                stagingDir.deleteRecursively()
+                true
             } else {
-                if (sourceRoot != extractTmp) extractTmp.deleteRecursively()
+                if (sourceRoot != stagingDir) stagingDir.deleteRecursively() else { /* sourceRoot was staging, already moved */ }
+                true
             }
-            tmpFile.delete()
-            modelManager.setReady(id)
+            if (swapped) {
+                // Only now delete old backup and staging residue
+                oldBackup?.deleteRecursively()
+                extractTmp.deleteRecursively()
+                stagingDir.deleteRecursively()
+                tmpFile.delete()
+                modelManager.setReady(id)
+            } else {
+                throw Exception("Atomic swap failed")
+            }
         } catch (e: Exception){
-            currentCall=null
+            clearCall(id)
             if (e.message=="Cancelled") {
                 tmpFile.delete()
+                stagingDir.deleteRecursively()
+                extractTmp.deleteRecursively()
                 modelManager.setFailed(id, "Cancelled")
             } else {
-                // keep tmpFile for resume on network failure
                 modelManager.setFailed(id, e.message ?: "Download failed")
                 extractTmp.deleteRecursively()
+                stagingDir.deleteRecursively()
             }
             throw e
+        } finally {
+            synchronized(callMutex) { cancelledIds.remove(id) }
         }
     }
 
-    private fun extractTarBz2(tarFile: File, dest: File){
+    private fun extractTarBz2(tarFile: File, dest: File) = extractTarBz2Bounded(tarFile, dest)
+
+    private fun extractTarBz2Bounded(tarFile: File, dest: File){
+        val destCanonical = dest.canonicalPath + File.separator
+        var fileCount = 0
+        var totalBytes: Long = 0
+        val maxFiles = 2000
+        val maxTotalBytes = 800L * 1024 * 1024 // 800MB cap for all models (largest 475MB)
+        val maxSingleFile = 350L * 1024 * 1024 // 350MB cap per file
         tarFile.inputStream().use { fis ->
             BufferedInputStream(fis).use { bis ->
                 BZip2CompressorInputStream(bis).use { bzis ->
                     TarArchiveInputStream(bzis).use { tais ->
                         var entry = tais.nextTarEntry
                         while (entry != null) {
+                            // Reject symlinks/hard links/special
+                            if (entry.isSymbolicLink || entry.isLink) throw Exception("Symlink/hardlink rejected: ${entry.name}")
+                            if (!entry.isFile && !entry.isDirectory) throw Exception("Unsupported entry type: ${entry.name}")
                             val name = entry.name.substringAfter('/', "")
                             if (name.isBlank()) { entry = tais.nextTarEntry; continue}
-                            // Only needed files or keep all but skip test_wavs
                             if (name.startsWith("test_wavs/")) { entry = tais.nextTarEntry; continue}
                             val outFile = File(dest, name)
-                            // path traversal guard
-                            if (!outFile.canonicalPath.startsWith(dest.canonicalPath)) throw Exception("Path traversal")
-                            if (entry.isDirectory) outFile.mkdirs() else {
+                            // True normalized path containment — must be under destCanonical
+                            val outCanonical = outFile.canonicalPath
+                            if (!outCanonical.startsWith(destCanonical)) throw Exception("Path traversal: ${entry.name}")
+                            // Reject traversal via symlink in parent path (already canonicalized)
+                            if (entry.isDirectory) {
+                                outFile.mkdirs()
+                            } else {
+                                if (entry.size > maxSingleFile) throw Exception("File too large: ${entry.name} ${entry.size}")
+                                fileCount++
+                                if (fileCount > maxFiles) throw Exception("Too many files: $fileCount")
+                                totalBytes += entry.size
+                                if (totalBytes > maxTotalBytes) throw Exception("Total extraction too large: $totalBytes")
                                 outFile.parentFile?.mkdirs()
                                 FileOutputStream(outFile).use { out -> tais.copyTo(out) }
+                                // Verify written size matches entry size if known
+                                if (entry.size >=0 && outFile.length() != entry.size) throw Exception("Size mismatch: ${entry.name}")
                             }
                             entry = tais.nextTarEntry
                         }

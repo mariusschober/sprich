@@ -83,12 +83,11 @@ class WhisperLidEngine(
                 return@withContext Result.failure(Exception("whisper tiny not ready"))
             }
             val dir = java.io.File(context.filesDir, "whisper-tiny")
-            // Also check /data/local/tmp for instrumentation tests
-            val effectiveDir = when {
-                dir.exists() && java.io.File(dir, "tiny-encoder.int8.onnx").exists() -> dir
-                java.io.File("/data/local/tmp/whisper-tiny").exists() -> java.io.File("/data/local/tmp/whisper-tiny")
-                else -> dir
-            }
+            val isDebugTest = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
+            val effectiveDir = if (isDebugTest && !java.io.File(dir, "tiny-encoder.int8.onnx").exists() && java.io.File("/data/local/tmp/whisper-tiny/tiny-encoder.int8.onnx").exists()) {
+                Log.w("WhisperLid", "debug fallback to /data/local/tmp/whisper-tiny — not production")
+                java.io.File("/data/local/tmp/whisper-tiny")
+            } else dir
             val enc = java.io.File(effectiveDir, "tiny-encoder.int8.onnx").absolutePath
             val dec = java.io.File(effectiveDir, "tiny-decoder.int8.onnx").absolutePath
             // Verify both exist
