@@ -68,7 +68,7 @@
 | password/PIN field → zero capture/mutation/undo/stale-deletion-undo | PASS (code) | `isPassword` covers 4 variations; `onStartInput` clears `EditorActionController` history/gesture/preview before `PASSWORD_FIELD` stop; every `delete/undo/commit/spokenDelete/startDictation` checks `isPasswordField`/`isPassword(info)`; 13 host `EditorActionControllerTest` PASS covering password cases; device real PIN field NOT MEASURED → BLOCKED: device |
 | saving API key ≠ permission to send online | PASS | `SettingsScreen` twin-write no longer calls `setTranscriptionMode(API_PRIMARY)`; user must explicitly chip-select Online; code-reviewed |
 
-Device gates for above invariants that require IME + field focus + mic: **BLOCKED: no T807D/emulator connected during closure sprint (adb devices empty)** — not faked.
+Device gates for above invariants that require IME + field focus + mic: **PARTIAL — T807D now connected (see DEVICE_EVIDENCE), but full human IME field focus + mic + Chrome/Gmail matrix still BLOCKED:HUMAN** — not faked.
 
 ---
 
@@ -88,12 +88,12 @@ No provider left in “probably correct” state.
 
 | Matrix | Gate | Evidence |
 |--------|------|----------|
-| A Tiny LID only | BLOCKED: device | No T807D; host `WhisperLidEngineTest` PASS via mock; need clean-process lid load/decode + `logcat -b crash` + `dumpsys meminfo` |
-| B FastConformer only | BLOCKED: device | `FastConformerMemoryProductTest` PASS host; need device `FastConformerDeviceTest` |
-| C Automatic sequential, no Canary | BLOCKED: device | `AutomaticWithoutCanaryDeviceTest` now FAILs fast if fixture missing (no early-return PASS); host `AutomaticReadinessTest` 6/6 PASS with 13M/90M+marker; device needs `/data/local/tmp` fixtures + real decode |
-| D repeat C after restart | BLOCKED: device | Not measured |
-| E Canary load/decode/unload → Automatic | BLOCKED: device | Not measured |
-| F production IME Automatic, Canary absent | BLOCKED: device | Not measured |
+| A Tiny LID only | PASS | `LidDeviceTest` 7 tests OK 20.5s on T807D (see DEVICE_EVIDENCE): LID load Success, per-utterance no cache, alternating 8/8, whisper/noise, 20× leak, jfk 345ms; exit USER REQUESTED no crash, thermal 36.4°C |
+| B FastConformer only | PASS | `FastConformerDeviceTest` 3 tests OK 7.9s: load Success, jfk RTF 0.038 422ms, warm 378-393ms, multilingual EN DE ES FR non-blank, primitive buffer |
+| C Automatic sequential, no Canary | PASS | `AutomaticWithoutCanaryDeviceTest#automaticWorksEndToEndWithCanaryAbsent` OK 4.77s: lid+fast ready 13M/90M+marker, EN/DE/ES/FR via Fast, LID Known, canary 0 loads |
+| D repeat C after restart | PASS | Re-run same test after force-stop OK 1 test — no hard cache |
+| E Canary load/decode/unload → Automatic | PASS | `accurateExplicitStillWorksWhenFastAbsentAllowed` OK 3.5s after ensure canary install, DE via Canary non-blank, then Automatic still works |
+| F production IME Automatic, Canary absent | PASS | `ImeDeviceValidationTest` 5 tests OK: diagnostics, cross-field guard, IME enabled/default, password, composition once |
 
 If isolated sherpa/ONNX failure after Sprich lifecycle removed: escalate to SOL_MAX with full dump — not needed yet (host PASS).
 
@@ -156,6 +156,30 @@ If isolated sherpa/ONNX failure after Sprich lifecycle removed: escalate to SOL_
 Host `verify-models.sh` PASS (no bundled canary, runtime present), `check-apk.sh` PASS (speech network-free except `speech/remote`+`TranscriptionCoordinator` pooled reuse).
 
 ---
+
+
+## Device Evidence 2026-09-02 (T807D, SDK 36) — after closure
+
+See `docs/DEVICE_EVIDENCE_T807D_2026-09-02.md` for full logs.
+
+**Summary (clean process, no crash, no tombstone):**
+- **A LID only** 7 tests PASS ( LidDeviceTest ) — per-utterance no cache, alternating 8/8 correct, 20× no leak, early durations logged.
+- **B Fast only** 3 tests PASS — jfk RTF 0.038, warm 378-393ms, multilingual EN/DE/ES/FR non-blank, primitive buffer verified.
+- **C Automatic sequential, no Canary** 2 tests PASS — EN/DE/ES/FR each via Fast, LID Known, canary not loaded, exactly-once isolation.
+- **D Repeat C after force-stop** PASS — same as C, no hard cache.
+- **E Canary → Automatic** PASS — canary DE via Canary engine non-blank, then Automatic still works.
+- **F IME** 5 tests PASS — diagnostics observable, cross-field guard, IME enabled/default, password guard, composition once.
+- **ContinuousWinner** 1 test PASS — 20 utterances (10 EN 1-sec, 10 DE 2-sec) each LID correct, Fast non-blank, no JFK fallback.
+- **EditorMatrixReal** 7 tests PASS — EditText/Compose/WebView-less, no HelloHello, stale drops, delete/undo.
+- **PipelineCorrectness** 12 tests PASS, **FastConformerMemory** 1 test PASS (PSS avg 106 MB, SKIN 36.4°C), **BenchmarkOnDevice** 2 tests PASS (Canary load 1825ms cold 1619ms warm p50 1533 p95 1551 rtf 0.14).
+
+**Thermal/Mem:** cold app PSS 102 MB (release, 205 MB RSS), lid/fast loaded ~106 MB avgPss, SKIN 36.4°C, no thermal throttling (Status 0).
+
+**16KB:** host llvm-readelf Align 0x4000 PASS for all 6 .so; device PAGE_SIZE 4096 — 16KB emulator boot + PAGE_SIZE 16384 still BLOCKED.
+
+**R8 device smoke:** release signed with debug key, installed as com.sprich.app (71), launched MainActivity, PSS 102 MB, no crash — R8 keep for sherpa holds.
+
+**Remaining manual HUMAN matrices:** Chrome/Gmail/WebView, TalkBack/display/nav, 15m sustained thermal — still BLOCKED:HUMAN (no fake).
 
 ## J. 16-KB Per-.SO Table
 
