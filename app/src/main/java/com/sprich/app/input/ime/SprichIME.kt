@@ -325,6 +325,9 @@ class SprichIME : InputMethodService() {
 
     private fun isDark(): Boolean = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
 
+    // The compact voice bar leaves room for the real editor, including in landscape.
+    override fun onEvaluateFullscreenMode(): Boolean = false
+
     override fun onCreateInputView(): View {
         return try {
             val dark = isDark()
