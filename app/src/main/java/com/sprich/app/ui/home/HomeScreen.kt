@@ -94,8 +94,10 @@ fun HomeScreen(onSettings: ()->Unit, onBenchmarkTap: ()->Unit) {
         // Release: version from actual package, benchmark hidden (debug-only route); no 1.0.0 hardcode, no 7× tap
         val pkgInfo = try {
             val pm = ctx.packageManager
-            val info = if (android.os.Build.VERSION.SDK_INT >= 33) pm.getPackageInfo(ctx.packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0)) else @Suppress("DEPRECATION") pm.getPackageInfo(ctx.packageName, 0)
-            "${info.versionName} (${info.longVersionCode})"
+            @Suppress("DEPRECATION")
+            val info = if (android.os.Build.VERSION.SDK_INT >= 33) pm.getPackageInfo(ctx.packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0)) else pm.getPackageInfo(ctx.packageName, 0)
+            val code = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else @Suppress("DEPRECATION") info.versionCode.toLong()
+            "${info.versionName} ($code)"
         } catch (_: Exception) { "" }
         val isDebugBenchmark = try { com.sprich.app.BuildConfig.ENABLE_BENCHMARK } catch (_: Exception) { false }
         // Derive status from atomic runtime config (truthful, not always On-device)

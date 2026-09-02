@@ -63,7 +63,8 @@ android {
             isDebuggable = false
             isJniDebuggable = false
             // Signing configured externally via keystore.properties / env — CI unsigned artifact verification separate
-            signingConfig = signingConfigs.getByName("release")
+            // Unsigned CI — real signing requires external keystore.properties (PLAY_SIGNING_READY:NO)
+            // signingConfig intentionally not set until real keystore is provided (separate signed candidate step)
             buildConfigField("boolean", "ENABLE_BENCHMARK", "false")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
