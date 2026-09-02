@@ -81,19 +81,9 @@ class AutomaticWithoutCanaryDeviceTest {
         val fastReady = mm.isFastConformerReady()
         android.util.Log.i("AutoWithoutCanary", "after lidReady=$lidReady fastReady=$fastReady")
 
-        // For CI where models not present, we cannot prove full transcription; but we can at least verify routing logic without Canary.
-        // If models not ready, verify that Automatic is unavailable (fail-closed) and would not load Canary.
-        if (!lidReady || !fastReady) {
-            android.util.Log.w("AutoWithoutCanary", "LID or Fast not Ready — cannot run full EN/DE transcription, but verify gate logic fail-closed")
-            assertFalse("Automatic should be unavailable when any required model missing", mm.isAutomaticReady())
-            // Verify that determineRoute for Auto is AutomaticFastConformer regardless of Canary absence
-            val route = LocalAsrRoute.AutomaticFastConformer
-            assertTrue(route is LocalAsrRoute.AutomaticFastConformer)
-            // Verify Canary not required
-            assertFalse(mm.isCanaryReady())
-            // Canary load attempts should remain 0 if we never load it — we cannot directly measure SprichIME here, but coordinator test below will show no Canary load needed
-            return@runBlocking
-        }
+        // Required fixtures cannot be optional — missing → BLOCKED/FAIL, not successful early return
+        if (!lidReady) fail("BLOCKED: whisper-tiny model not ready — need tiny-encoder.int8.onnx (>10M) + tiny-decoder.int8.onnx (>50M) + tokens + .installed_ok")
+        if (!fastReady) fail("BLOCKED: fastconformer model not ready — need model.int8.onnx (>50M) + tokens.txt")
 
         assertTrue("LID Ready required", lidReady)
         assertTrue("Fast Ready required", fastReady)
@@ -126,42 +116,45 @@ class AutomaticWithoutCanaryDeviceTest {
         assertFalse("Canary must NOT be loaded for Automatic", canaryEngine.isLoaded())
         assertEquals(0L, canaryLoadBefore)
 
-        // Try EN and DE utterances via coordinator (production route)
+        // Required EN/DE/ES/FR audio — no JFK substitution for another language
         val enWavFile = File("/data/local/tmp/en-english.wav")
         val deWavFile = File("/data/local/tmp/de-german.wav")
-        val jfkWavFile = File("/data/local/tmp/jfk.wav")
+        val esWavFile = File("/data/local/tmp/es-spanish.wav")
+        val frWavFile = File("/data/local/tmp/fr-french.wav")
+        if (!enWavFile.exists()) fail("BLOCKED: en-english.wav fixture missing at /data/local/tmp/en-english.wav")
+        if (!deWavFile.exists()) fail("BLOCKED: de-german.wav fixture missing")
+        if (!esWavFile.exists()) fail("BLOCKED: es-spanish.wav fixture missing")
+        if (!frWavFile.exists()) fail("BLOCKED: fr-french.wav fixture missing")
+        val enPcm = try { Pcm16Wav.read(enWavFile.inputStream()).samples } catch (e: Exception) { fail("BLOCKED: en wav read failed ${e.message}"); ShortArray(0) }
+        val dePcm = try { Pcm16Wav.read(deWavFile.inputStream()).samples } catch (e: Exception) { fail("BLOCKED: de wav read failed ${e.message}"); ShortArray(0) }
+        val esPcm = try { Pcm16Wav.read(esWavFile.inputStream()).samples } catch (e: Exception) { fail("BLOCKED: es wav read failed ${e.message}"); ShortArray(0) }
+        val frPcm = try { Pcm16Wav.read(frWavFile.inputStream()).samples } catch (e: Exception) { fail("BLOCKED: fr wav read failed ${e.message}"); ShortArray(0) }
 
-        val enPcm = try {
-            if (enWavFile.exists()) Pcm16Wav.read(enWavFile.inputStream()).samples
-            else if (jfkWavFile.exists()) Pcm16Wav.read(jfkWavFile.inputStream()).samples
-            else null
-        } catch (_: Exception) { null }
+        // EN
+        val enResult = coordinator.transcribe(enPcm, LocalAsrRoute.AutomaticFastConformer, SpeechSessionConfig(speechLanguage = SpeechLanguage.Auto))
+        android.util.Log.i("AutoWithoutCanary", "EN result engine=${enResult.engineId} textLen=${enResult.text.length} resolved=${enResult.resolvedLanguage}")
+        assertTrue("EN Automatic via FastConformer should produce non-blank", enResult.text.isNotBlank())
+        assertEquals(fastEngine.engineId, enResult.engineId)
+        assertTrue("EN LID should be Known", enResult.resolvedLanguage is com.sprich.app.speech.ResolvedUtteranceLanguage.Known)
+        assertFalse(canaryEngine.isLoaded())
 
-        val dePcm = try {
-            if (deWavFile.exists()) Pcm16Wav.read(deWavFile.inputStream()).samples else null
-        } catch (_: Exception) { null }
+        // DE
+        val deResult = coordinator.transcribe(dePcm, LocalAsrRoute.AutomaticFastConformer, SpeechSessionConfig(speechLanguage = SpeechLanguage.Auto))
+        android.util.Log.i("AutoWithoutCanary", "DE result engine=${deResult.engineId} textLen=${deResult.text.length} resolved=${deResult.resolvedLanguage}")
+        assertTrue("DE Automatic via FastConformer should produce non-blank", deResult.text.isNotBlank())
+        assertEquals(fastEngine.engineId, deResult.engineId)
+        assertTrue("DE LID should be Known", deResult.resolvedLanguage is com.sprich.app.speech.ResolvedUtteranceLanguage.Known)
+        assertFalse(canaryEngine.isLoaded())
 
-        if (enPcm != null && enPcm.isNotEmpty()) {
-            val enResult = coordinator.transcribe(enPcm, LocalAsrRoute.AutomaticFastConformer, SpeechSessionConfig(speechLanguage = SpeechLanguage.Auto))
-            android.util.Log.i("AutoWithoutCanary", "EN result engine=${enResult.engineId} textLen=${enResult.text.length} resolved=${enResult.resolvedLanguage}")
-            assertTrue("EN Automatic via FastConformer should produce non-blank", enResult.text.isNotBlank())
-            assertEquals(fastEngine.engineId, enResult.engineId)
-            assertTrue(enResult.resolvedLanguage is com.sprich.app.speech.ResolvedUtteranceLanguage.Known)
-            // Must be via Fast, not Canary
-            assertFalse(canaryEngine.isLoaded())
-        } else {
-            android.util.Log.w("AutoWithoutCanary", "EN wav not found — skipping EN assertion (but route already proven without Canary)")
-        }
+        // ES
+        val esResult = coordinator.transcribe(esPcm, LocalAsrRoute.AutomaticFastConformer, SpeechSessionConfig(speechLanguage = SpeechLanguage.Auto))
+        assertTrue("ES Automatic should produce non-blank", esResult.text.isNotBlank())
+        assertTrue(esResult.resolvedLanguage is com.sprich.app.speech.ResolvedUtteranceLanguage.Known)
 
-        if (dePcm != null && dePcm.isNotEmpty()) {
-            val deResult = coordinator.transcribe(dePcm, LocalAsrRoute.AutomaticFastConformer, SpeechSessionConfig(speechLanguage = SpeechLanguage.Auto))
-            android.util.Log.i("AutoWithoutCanary", "DE result engine=${deResult.engineId} textLen=${deResult.text.length} resolved=${deResult.resolvedLanguage}")
-            assertTrue("DE Automatic via FastConformer should produce non-blank", deResult.text.isNotBlank())
-            assertEquals(fastEngine.engineId, deResult.engineId)
-            assertFalse(canaryEngine.isLoaded())
-        } else {
-            android.util.Log.w("AutoWithoutCanary", "DE wav not found — skipping DE assertion")
-        }
+        // FR
+        val frResult = coordinator.transcribe(frPcm, LocalAsrRoute.AutomaticFastConformer, SpeechSessionConfig(speechLanguage = SpeechLanguage.Auto))
+        assertTrue("FR Automatic should produce non-blank", frResult.text.isNotBlank())
+        assertTrue(frResult.resolvedLanguage is com.sprich.app.speech.ResolvedUtteranceLanguage.Known)
 
         // 5. Verify exactly-once: coordinator for same PCM called twice with same pending should not corrupt, but we test queue isolation via reusing pcm
         if (enPcm != null) {
@@ -186,13 +179,8 @@ class AutomaticWithoutCanaryDeviceTest {
     fun accurateExplicitStillWorksWhenFastAbsentAllowed() = runBlocking {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
         val mm = ModelManager(app)
-        // Accurate should work with Canary alone — Lid/Fast absent allowed
-        // This verifies Phase 6: explicit Canary does not require LID/Fast
         val canaryReady = mm.isCanaryReady()
-        if (!canaryReady) {
-            android.util.Log.w("AutoWithoutCanary", "Canary not ready — skip Accurate explicit check")
-            return@runBlocking
-        }
+        if (!canaryReady) fail("BLOCKED: canary model not ready — need encoder/decoder >50M")
         val canaryEngine = com.sprich.app.speech.canary.CanaryEngine(app, mm)
         val load = canaryEngine.load()
         assertTrue(load.isSuccess)
@@ -206,12 +194,13 @@ class AutomaticWithoutCanaryDeviceTest {
             val f = File("/data/local/tmp/de-german.wav")
             if (f.exists()) Pcm16Wav.read(f.inputStream()).samples else null
         } catch (_: Exception) { null }
-        if (dePcm != null) {
-            val res = coordinator.transcribe(dePcm, LocalAsrRoute.AccurateCanary(com.sprich.app.speech.api.Language.DE), SpeechSessionConfig(speechLanguage = SpeechLanguage.Fixed("de")))
-            android.util.Log.i("AutoWithoutCanary", "Accurate DE result len=${res.text.length}")
-            assertTrue(res.text.isNotBlank())
-            assertEquals(canaryEngine.engineId, res.engineId)
-        }
+        val dePcmFile2 = File("/data/local/tmp/de-german.wav")
+        if (!dePcmFile2.exists()) fail("BLOCKED: de-german.wav missing for Accurate test")
+        val dePcm2 = try { Pcm16Wav.read(dePcmFile2.inputStream()).samples } catch (e: Exception) { fail("BLOCKED: de wav read failed"); ShortArray(0) }
+        val res = coordinator.transcribe(dePcm2, LocalAsrRoute.AccurateCanary(com.sprich.app.speech.api.Language.DE), SpeechSessionConfig(speechLanguage = SpeechLanguage.Fixed("de")))
+        android.util.Log.i("AutoWithoutCanary", "Accurate DE result len=${res.text.length}")
+        assertTrue(res.text.isNotBlank())
+        assertEquals(canaryEngine.engineId, res.engineId)
         canaryEngine.unload()
     }
 }

@@ -50,7 +50,7 @@ class ComparativeBenchmarkDeviceTest {
         Thread.sleep(500)
         val fastLoad = runBlocking { fast.load() }
         Log.i("Comparative", "fast load ${fastLoad.isSuccess} err=${fastLoad.exceptionOrNull()?.message}")
-        assert(fastLoad.isSuccess)
+        org.junit.Assert.assertTrue(fastLoad.isSuccess)
 
         val jfk = app.assets.open("jfk.wav").use { Pcm16Wav.read(it) }
         // FastConformer JFK

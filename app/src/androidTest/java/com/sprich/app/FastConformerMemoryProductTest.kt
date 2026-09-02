@@ -58,8 +58,8 @@ class FastConformerMemoryProductTest {
         val load = runBlocking { engine.load() }
         val loadMs = (System.nanoTime()-tLoad0)/1_000_000
         Log.i("FastConfMem", "load success=${load.isSuccess} err=${load.exceptionOrNull()?.message} ms=$loadMs primitive=${engine.isUsingPrimitiveBuffer()}")
-        assert(load.isSuccess) { "FastConformer load failed" }
-        assert(engine.isUsingPrimitiveBuffer()) { "Must use primitive UtterancePcmBuffer, not MutableList<Short>" }
+        org.junit.Assert.assertTrue("FastConformer load failed", load.isSuccess)
+        org.junit.Assert.assertTrue("Must use primitive UtterancePcmBuffer, not MutableList<Short>", engine.isUsingPrimitiveBuffer())
 
         val memAfterLoad = memInfo()
         Log.i("FastConfMem", "after load mem=$memAfterLoad")
@@ -149,7 +149,7 @@ class FastConformerMemoryProductTest {
                 engine.endUtterance().text
             }
             Log.i("FastConfMem", "lang $lang txtLen=${txt.length} txt=\"${txt.take(50)}\" blank=${txt.isBlank()}")
-            assert(txt.isNotBlank()) { "FastConformer blank for $lang" }
+            org.junit.Assert.assertTrue("FastConformer blank for $lang", txt.isNotBlank())
         }
 
         Log.i("FastConfMem", "Phase 8 FastConformer PSS/RSS/thermal/WER done — see logcat. Primitive buffer verified, 126M vs Canary 198M, RTF ${rtf1} 3x faster expected.")

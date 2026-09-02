@@ -65,10 +65,13 @@ class MainActivity : ComponentActivity() {
                                     onOpenImeSettings = { openImeSettings() }
                                 )
                             }
-                            composable("home") { HomeScreen(onSettings = { nav.navigate("settings") }, onBenchmarkTap = { nav.navigate("benchmark") }) }
-                            composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }, onBenchmark = { nav.navigate("benchmark") }, onVocab = { nav.navigate("vocab") }) }
+                            composable("home") { HomeScreen(onSettings = { nav.navigate("settings") }, onBenchmarkTap = { if (com.sprich.app.BuildConfig.ENABLE_BENCHMARK) nav.navigate("benchmark") }) }
+                            composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }, onBenchmark = { if (com.sprich.app.BuildConfig.ENABLE_BENCHMARK) nav.navigate("benchmark") }, onVocab = { nav.navigate("vocab") }) }
                             composable("vocab") { VocabScreen(onBack = { nav.popBackStack() }) }
-                            composable("benchmark") { BenchmarkScreen(onBack = { nav.popBackStack() }) }
+                            // Benchmark only in debug source set — in release this destination is not reachable (no route)
+                            if (com.sprich.app.BuildConfig.ENABLE_BENCHMARK) {
+                                composable("benchmark") { BenchmarkScreen(onBack = { nav.popBackStack() }) }
+                            }
                         }
                     }
                 }

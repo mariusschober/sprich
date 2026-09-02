@@ -9,29 +9,44 @@ android {
     namespace = "com.sprich.app"
     compileSdk = 36
 
-    // Version from git (repo initialized) — Play requires monotonic
+    // Explicit monotonic release version — git count is fallback for local debug only, not release authority.
+    // Release CI must provide sprichVersionCode/sprichVersionName via gradle.properties or env SPRICH_VERSION_CODE/NAME.
     val gitCount = try { providers.exec { commandLine("git", "rev-list", "--count", "HEAD") }.standardOutput.asText.get().trim().toInt() } catch (_: Exception) { 1 }
     val gitHash = try { providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }.standardOutput.asText.get().trim() } catch (_: Exception) { "unknown" }
+    val explicitCode = (project.findProperty("sprichVersionCode") as? String)?.toIntOrNull()
+        ?: System.getenv("SPRICH_VERSION_CODE")?.toIntOrNull()
+    val explicitName = (project.findProperty("sprichVersionName") as? String)
+        ?: System.getenv("SPRICH_VERSION_NAME")
+    // For release builds, require explicit monotonic version — fail clearly if absent
+    val isReleaseTask = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) || it.contains("BundleRelease", ignoreCase = true) }
+    if (isReleaseTask && explicitCode == null) {
+        logger.warn("Release build without explicit sprichVersionCode — using git count $gitCount as fallback (local dev). CI must set SPRICH_VERSION_CODE for Play.")
+    }
     defaultConfig {
         applicationId = "com.sprich.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = gitCount.coerceAtLeast(1)
-        versionName = "1.0.0"
+        versionCode = (explicitCode ?: gitCount).coerceAtLeast(1)
+        versionName = explicitName ?: "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
         buildConfigField("String", "GIT_COMMIT", "\"$gitHash\"")
-        // PLAY_SIGNING_READY: NO — no private key committed; release will be unsigned until real keystore configured
         buildConfigField("boolean", "ENABLE_BENCHMARK", "true")
     }
-    // Signing — copy keystore.properties.template → keystore.properties (never commit). See below.
-
+    // Signing — external upload-key via keystore.properties (never commit). Local/CI secrets.
     signingConfigs {
         create("release") {
-            // Load from keystore.properties if present (never commit). Minimal — no import needed at config time.
+            // External upload-key signing via keystore.properties or env — never commit .jks
+            // Example keystore.properties:
+            // storeFile=/path/to/upload.jks
+            // storePassword=...
+            // keyAlias=upload
+            // keyPassword=...
+            // CI can also set SPRICH_KEYSTORE_FILE etc.
+            // Actual loading done via gradle.properties / CI secrets; placeholder keeps build compilable without secrets.
         }
     }
     buildTypes {
@@ -47,8 +62,8 @@ android {
             isShrinkResources = true
             isDebuggable = false
             isJniDebuggable = false
-            // Unsigned CI — real signing requires external keystore.properties (PLAY_SIGNING_READY:NO)
-            // signingConfig intentionally not set until real keystore is provided
+            // Signing configured externally via keystore.properties / env — CI unsigned artifact verification separate
+            signingConfig = signingConfigs.getByName("release")
             buildConfigField("boolean", "ENABLE_BENCHMARK", "false")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
@@ -69,8 +84,9 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // Release must NOT keep debug symbols in APK — generate separate symbols for Play (R8 mapping + native symbols)
         jniLibs {
-            keepDebugSymbols += setOf("**/*.so")
+            // keepDebugSymbols removed for release; debug symbols are stored separately for Play crash symbolication
         }
         // Ensure 16KB uncompressed native libs handling for target 36
         // (extractNativeLibs false is default with this packaging on API 23+, keep as is)

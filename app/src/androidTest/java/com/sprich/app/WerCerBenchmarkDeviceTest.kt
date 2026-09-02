@@ -207,9 +207,8 @@ class WerCerBenchmarkDeviceTest {
         // Also report blank/hallucination/repetition counts
         fun blankRate(map: Map<String,String>): Double = if(map.isEmpty()) -1.0 else map.values.count{it.isBlank()}.toDouble()/map.size
         Log.i("WerCer", "blankRate C=${blankRate(canaryResults)} B=${if(fastResults.isEmpty()) -1 else blankRate(fastResults)} A=${if(lidCanaryResults.isEmpty()) -1 else lidCanaryResults.values.count{it.first.isBlank()}.toDouble()/lidCanaryResults.size}")
-        // Assert no blank jfk for baseline
-        assert(canaryResults["jfk"]?.isNotBlank() == true) { "Canary jfk blank — regression" }
-        if (fastResults.isNotEmpty()) assert(fastResults["jfk"]?.isNotBlank() == true) { "FastConformer jfk blank" }
+        org.junit.Assert.assertTrue("Canary jfk blank — regression", canaryResults["jfk"]?.isNotBlank() == true)
+        if (fastResults.isNotEmpty()) org.junit.Assert.assertTrue("FastConformer jfk blank", fastResults["jfk"]?.isNotBlank() == true)
 
         Log.i("WerCer", "Phase 6 formal WER/CER done — see logcat for per-engine/language WER, blank, hallucination. Use this for decision table (NOT MEASURED where engine not loaded).")
     }

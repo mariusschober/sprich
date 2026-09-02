@@ -91,11 +91,47 @@ fun HomeScreen(onSettings: ()->Unit, onBenchmarkTap: ()->Unit) {
             }
         }
         Spacer(Modifier.weight(1f))
-        TextButton(onClick = {
-            versionTap++
-            if (versionTap >= 7) onBenchmarkTap()
-        }) {
-            Text("Sprich 1.0.0  •  tap 7× for benchmark", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.8f))
+        // Release: version from actual package, benchmark hidden (debug-only route); no 1.0.0 hardcode, no 7× tap
+        val pkgInfo = try {
+            val pm = ctx.packageManager
+            val info = if (android.os.Build.VERSION.SDK_INT >= 33) pm.getPackageInfo(ctx.packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0)) else @Suppress("DEPRECATION") pm.getPackageInfo(ctx.packageName, 0)
+            "${info.versionName} (${info.longVersionCode})"
+        } catch (_: Exception) { "" }
+        val isDebugBenchmark = try { com.sprich.app.BuildConfig.ENABLE_BENCHMARK } catch (_: Exception) { false }
+        // Derive status from atomic runtime config (truthful, not always On-device)
+        val runtimeSnap by prefs.runtimeConfigSnapshot.collectAsState(initial = null)
+        val statusTextDerived = run {
+            val snap = runtimeSnap ?: return@run null
+            val mode = snap.transcriptionMode
+            val lang = snap.speechLanguage
+            val provider = snap.sttProviderId
+            when (mode) {
+                com.sprich.app.speech.TranscriptionMode.API_PRIMARY -> when (provider) {
+                    "meta-muse-voice-transcribe", "meta-muse" -> "Online · Muse Voice"
+                    "gemini", "gemini-3.5-transcribe" -> "Online · Gemini"
+                    else -> "Online · Custom"
+                }
+                com.sprich.app.speech.TranscriptionMode.LOCAL_API_FALLBACK -> "Automatic · On device if possible, online if needed"
+                else -> when (lang) {
+                    is com.sprich.app.speech.api.SpeechLanguage.Auto -> "Automatic · On device"
+                    is com.sprich.app.speech.api.SpeechLanguage.Fixed -> when (lang.tag) {
+                        "de" -> "German · On device"; "es" -> "Español · On device"; "fr" -> "Français · On device"; else -> "English · On device"
+                    }
+                }
+            }
+        }
+        if (statusTextDerived != null) {
+            Text(statusTextDerived, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth())
+        }
+        if (isDebugBenchmark) {
+            TextButton(onClick = {
+                versionTap++
+                if (versionTap >= 7) onBenchmarkTap()
+            }) {
+                Text("Sprich $pkgInfo  •  tap 7× for benchmark (debug)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.8f))
+            }
+        } else {
+            Text("Sprich $pkgInfo", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.8f))
         }
         Spacer(Modifier.height(4.dp))
     }

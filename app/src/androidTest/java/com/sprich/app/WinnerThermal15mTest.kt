@@ -112,9 +112,8 @@ class WinnerThermal15mTest {
         Log.i("Thermal15m", "DONE utt=$utterances totalSec=$totalSec avgMs=${if(utterances>0) totalLatency/utterances else -1} min=$minLatency max=$maxLatency")
         Log.i("Thermal15m", "mem final ${memInfo()}")
         Log.i("Thermal15m", "thermal final ${thermal()}")
-        // Assertions: no leak (we check not OOM), latency not degraded catastrophically (max < 2* min maybe)
-        // For now, just ensure we completed 15m without crash
-        assert(utterances > 100) { "should have done >100 utterances in 15m, got $utterances" }
+        // JUnit assertion — Kotlin assert(...) is disabled in release and not a gate; use JUnit
+        org.junit.Assert.assertTrue("should have done >100 utterances in 15m, got $utterances", utterances > 100)
         runBlocking { lid.unload(); fast.unload() }
         Log.i("Thermal15m", "15m thermal test completed, winner stable")
     }
