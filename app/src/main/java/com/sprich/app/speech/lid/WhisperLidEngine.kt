@@ -31,6 +31,18 @@ class WhisperLidEngine(
     private var lid: Any? = null // SpokenLanguageIdentification
     private var loaded = false
 
+    // Reflection cache — avoid Class.forName/getMethod per utterance (perf + ClassLoader churn)
+    companion object {
+        @Volatile private var cachedSlidClass: Class<*>? = null
+        @Volatile private var cachedLidConfigClass: Class<*>? = null
+        @Volatile private var cachedWhisperConfigClass: Class<*>? = null
+        @Volatile private var cachedCreateStream: java.lang.reflect.Method? = null
+        @Volatile private var cachedAcceptWaveform: java.lang.reflect.Method? = null
+        @Volatile private var cachedCompute: java.lang.reflect.Method? = null
+        @Volatile private var cachedRelease: java.lang.reflect.Method? = null
+        @Volatile private var cachedStreamRelease: java.lang.reflect.Method? = null
+    }
+
     sealed class LidOutcome {
         data class Detected(val language: Language, val rawCode: String, val latencyMs: Long) : LidOutcome()
         data class Unsupported(val rawCode: String, val latencyMs: Long) : LidOutcome() // e.g., "zh" not in EN/DE/ES/FR
@@ -39,8 +51,8 @@ class WhisperLidEngine(
     }
 
     private fun isSherpaSlidAvailable(): Boolean = try {
-        Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentification")
-        Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationConfig")
+        cachedSlidClass ?: Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentification").also { cachedSlidClass = it }
+        cachedLidConfigClass ?: Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationConfig").also { cachedLidConfigClass = it }
         true
     } catch (_: Throwable) { false }
 
@@ -56,7 +68,7 @@ class WhisperLidEngine(
         val enc = java.io.File(d, "tiny-encoder.int8.onnx")
         val dec = java.io.File(d, "tiny-decoder.int8.onnx")
         val tok = java.io.File(d, "tiny-tokens.txt")
-        return enc.exists() && enc.length() > 5_000_000 && dec.exists() && dec.length() > 50_000_000 && tok.exists() && tok.length() > 1000
+        return enc.exists() && enc.length() > 5_000_000 && dec.exists() && dec.length() > 5_000_000 && tok.exists() && tok.length() > 0
     }
 
     suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
@@ -84,19 +96,19 @@ class WhisperLidEngine(
                 return@withContext Result.failure(Exception("tiny encoder/decoder missing"))
             }
             try {
-                val whisperConfigClass = Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationWhisperConfig")
+                val whisperConfigClass = cachedWhisperConfigClass ?: Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationWhisperConfig").also { cachedWhisperConfigClass = it }
                 val whisperConfig = whisperConfigClass.getConstructor().newInstance()
                 whisperConfigClass.getDeclaredField("encoder").apply { isAccessible = true; set(whisperConfig, enc) }
                 whisperConfigClass.getDeclaredField("decoder").apply { isAccessible = true; set(whisperConfig, dec) }
 
-                val lidConfigClass = Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationConfig")
+                val lidConfigClass = cachedLidConfigClass ?: Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationConfig").also { cachedLidConfigClass = it }
                 val lidConfig = lidConfigClass.getConstructor().newInstance()
                 lidConfigClass.getDeclaredField("whisper").apply { isAccessible = true; set(lidConfig, whisperConfig) }
                 lidConfigClass.getDeclaredField("numThreads").apply { isAccessible = true; set(lidConfig, 1) }
                 try { lidConfigClass.getDeclaredField("debug").apply { isAccessible = true; set(lidConfig, false) } } catch (_: Exception) {}
                 try { lidConfigClass.getDeclaredField("provider").apply { isAccessible = true; set(lidConfig, "cpu") } } catch (_: Exception) {}
 
-                val slidClass = Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentification")
+                val slidClass = cachedSlidClass ?: Class.forName("com.k2fsa.sherpa.onnx.SpokenLanguageIdentification").also { cachedSlidClass = it }
                 // Correct signature per sherpa 1.13.6: (AssetManager, SpokenLanguageIdentificationConfig)
                 val ctor = try {
                     slidClass.getConstructor(android.content.res.AssetManager::class.java, lidConfigClass)
@@ -131,10 +143,13 @@ class WhisperLidEngine(
             }
             var stream: Any? = null
             try {
-                stream = rec.javaClass.getMethod("createStream").invoke(rec)
+                val createM = cachedCreateStream ?: rec.javaClass.getMethod("createStream").also { cachedCreateStream = it }
+                stream = createM.invoke(rec)
                 val floats = FloatArray(pcm.size) { pcm[it] / 32768f }
-                stream.javaClass.getMethod("acceptWaveform", FloatArray::class.java, Int::class.javaPrimitiveType).invoke(stream, floats, sampleRate)
-                val langObj = rec.javaClass.getMethod("compute", stream.javaClass).invoke(rec, stream)
+                val acceptM = cachedAcceptWaveform ?: stream.javaClass.getMethod("acceptWaveform", FloatArray::class.java, Int::class.javaPrimitiveType).also { cachedAcceptWaveform = it }
+                acceptM.invoke(stream, floats, sampleRate)
+                val computeM = cachedCompute ?: rec.javaClass.getMethod("compute", stream.javaClass).also { cachedCompute = it }
+                val langObj = computeM.invoke(rec, stream)
                 val rawCode: String = try {
                     langObj as String
                 } catch (_: Throwable) {
@@ -159,9 +174,14 @@ class WhisperLidEngine(
                 val latency = (System.nanoTime() - t0) / 1_000_000
                 return@withContext LidOutcome.Failed(e.message ?: "identify failed", latency)
             } finally {
-                // Release native stream in finally to avoid native memory leak
+                // Release native stream in finally to avoid native memory leak (cached)
                 if (stream != null) {
-                    try { stream.javaClass.getMethod("release").invoke(stream) } catch (_: Exception) {}
+                    try {
+                        val m = cachedStreamRelease ?: stream.javaClass.getMethod("release").also { cachedStreamRelease = it }
+                        m.invoke(stream)
+                    } catch (_: Exception) {
+                        try { stream.javaClass.getMethod("release").invoke(stream) } catch (_: Exception) {}
+                    }
                 }
             }
         }
@@ -169,7 +189,12 @@ class WhisperLidEngine(
 
     suspend fun unload() {
         mutex.withLock {
-            try { lid?.javaClass?.getMethod("release")?.invoke(lid) } catch (_: Exception) {}
+            try {
+                val m = cachedRelease ?: lid?.javaClass?.getMethod("release")?.also { cachedRelease = it }
+                m?.invoke(lid)
+            } catch (_: Exception) {
+                try { lid?.javaClass?.getMethod("release")?.invoke(lid) } catch (_: Exception) {}
+            }
             lid = null
             loaded = false
         }

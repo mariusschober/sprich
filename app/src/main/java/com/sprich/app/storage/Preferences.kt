@@ -157,10 +157,7 @@ class Preferences(context: Context) {
     suspend fun setSpeechLanguage(v: SpeechLanguage){ context.ds.edit{it[KEY_LANGUAGE]= v.toBcp47()} }
     /** Explicit first-run suggestion from Locale.getDefault() — only called once during onboarding. */
     suspend fun suggestLanguageFromLocale(localeTag: String){
-        val current = context.ds.data.map { it[KEY_LANGUAGE] }.let {
-            // only suggest if still auto/empty
-            try { kotlinx.coroutines.runBlocking { it.first() } } catch (_: Exception){ null }
-        }
+        val current = try { context.ds.data.map { it[KEY_LANGUAGE] }.first() } catch (_: Exception) { null }
         if (current.isNullOrBlank() || current == "auto") {
             val tag = localeTag.lowercase().take(5)
             val suggested = when {

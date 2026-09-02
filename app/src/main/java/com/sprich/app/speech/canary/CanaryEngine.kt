@@ -43,6 +43,11 @@ class CanaryEngine(
     private var cfg: SpeechSessionConfig? = null
     private var job: Job? = null
 
+    // Reflection cache — avoid Class.forName per decode (hot path)
+    companion object {
+        @Volatile private var cachedOfflineRecognizer: Class<*>? = null
+        @Volatile private var cachedOfflineStream: Class<*>? = null
+    }
     // Reflection-based sherpa loader to avoid hard compile dep
     private var recognizer: Any? = null
     @Volatile private var recognizerLang: String = "en"
@@ -175,6 +180,12 @@ class CanaryEngine(
         utteranceBuffer.append(samples)
     }
 
+    fun pushAudio(samples: ShortArray, offset: Int, length: Int, timestampNanos: Long) {
+        if (length <= 0) return
+        pcmRing.write(samples, offset, length)
+        utteranceBuffer.append(samples, offset, length)
+    }
+
     /**
      * Called by session coordinator at speech onset to seed pre-roll.
      * Ownership contract: this owns seeding preRoll exactly once — caller must NOT pushAudio(preRoll) again.
@@ -293,7 +304,7 @@ class CanaryEngine(
     }
     override fun reset() = cancelSession()
 
-    private fun isSherpaAvailable(): Boolean = try { Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer"); true } catch (_: Throwable){ false }
+    private fun isSherpaAvailable(): Boolean = try { cachedOfflineRecognizer ?: Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer").also { cachedOfflineRecognizer = it }; true } catch (_: Throwable){ false }
 
     private fun langCodeFor(l: Language?): String = when (l) {
         Language.DE -> "de"; Language.ES -> "es"; Language.FR -> "fr"; else -> "en"

@@ -18,10 +18,19 @@
 -keepclassmembers,allowobfuscation class com.sprich.app.vocab.** {
     @kotlinx.serialization.Serializable <fields>;
 }
-# Strip Log in release (R8 will remove Log calls)
+# Keep sherpa reflection (Class.forName / getMethod) — do not obfuscate JNI bridge
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+-keep class com.k2fsa.sherpa.onnx.SherpaOnnx { *; }
+# Keep DataStore / Preferences keys
+-keep class androidx.datastore.** { *; }
+# Strip Log in release (all levels). Keep w/e for crash but strip d/v/i.
 -assumenosideeffects class android.util.Log {
     public static *** d(...);
     public static *** v(...);
     public static *** i(...);
 }
+# Optional: also strip verbose info in release to reduce noise (keep w/e for triage)
+# -assumenosideeffects class android.util.Log {
+#     public static *** i(...);
+# }
 -dontwarn org.bouncycastle.**

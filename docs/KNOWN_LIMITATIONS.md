@@ -77,6 +77,16 @@
 - No claim of duplication fixed from fake InputConnection alone — `CompositionAdversarialTest` plus production `FieldSessionController` path, but real editors still need T807D matrix.
 - No 16 KB or bundle-size claim without `verify-models.sh` / `check-apk.sh`.
 
+## Sprint 3 2026-09-02 — gestures, visual lane, copy/IA, release hardening (code done, device measurement pending on T807D)
+- Gestures: swipe-up → switch keyboard (axis-locked 48dp, TalkBack actions) + left delete/right undo/down newline (one mutation per gesture, reversible). Method supportsSwitchingToNextInputMethod true.
+- Visual: single Choreographer lane (no Math.random, no infinite ValueAnimator, no animate() fighting) with deterministic breath + RMS-driven liquid, immediate ACTION_DOWN press feedback.
+- Correctness: deleteLastWord fallback removed KeyEvent duplication, AudioCapture legacy path delegated to zero-copy, UtterancePcmBuffer zero-copy offset overload, duplicate applyFinalText removed, ModelManager tiny threshold fixed, DownloadManager redirect-blocked, suggestLanguageFromLocale runBlocking removed.
+- Native: WhisperLid/FastConformer/Canary reflection cached, sequential lid→fast (heap bounded) with optional parallel gated off.
+- Lifecycle: onDestroy main wall <50ms assertion + field-tied cleanupScope, VAD String.format gated by Log.isLoggable.
+- Copy/IA: onboarding/home/settings jargon-free, provider fixed endpoints hidden, Automatic consumer language, gesture legend, Nemotron/benchmark gated behind DEBUG.
+- Editor matrix: EditorMatrixRealTest added (EditText/Compose/IME-local vs hostile editors) — real Chrome/WebView still needs human validation.
+- Release: R8 enabled for release (proguard keeps sherpa), 16KB linker flags, adaptive icon, licenses wiring, signing via keystore.properties (unsigned CI remains).
+
 ## Hardware-tier latency budgets (defined, to be measured physically)
 
 - **Mid (6GB RAM, Snapdragon 730 tier)**: focus→capturing p95 <150ms, endpoint→final p95 <800ms, RTF <0.5, first phoneme loss <1/100.

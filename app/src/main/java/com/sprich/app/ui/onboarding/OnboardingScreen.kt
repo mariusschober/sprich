@@ -46,7 +46,7 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                 Spacer(Modifier.height(24.dp))
                 OnboardPage(
                     title = "Speak. It’s there.",
-                    sub = "Local speech-to-text for every text field.",
+                    sub = "Your words appear wherever you type.",
                     button = "Continue",
                     onClick = { step = 1 }
                 )
@@ -57,8 +57,8 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                     Spacer(Modifier.height(16.dp))
                 }
                 OnboardPage(
-                    title = "Nothing leaves your phone.",
-                    bullets = listOf("Speech is processed locally", "Audio is not saved", "Works offline"),
+                    title = "Private by default.",
+                    bullets = listOf("Processed on your phone", "Audio not stored", "Works offline"),
                     button = if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) "Continue" else "Allow microphone",
                     onClick = {
                         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) step = 2
@@ -76,7 +76,7 @@ fun OnboardingScreen(onDone: ()->Unit, onOpenImeSettings: ()->Unit) {
                     Text("Enable Sprich keyboard", style = MaterialTheme.typography.headlineSmall)
                 }
                 Spacer(Modifier.height(12.dp))
-                Text("Sprich works as a keyboard so it can insert text at the cursor. You can still switch to Gboard anytime.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Sprich works as a keyboard so it can insert text where you type. You can switch to Gboard anytime — swipe up.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(20.dp))
                 // Visual guide — pleasure dot + arrow
                 Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
@@ -207,7 +207,7 @@ private fun LanguagePickerStep(
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
         Text("Choose your language", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
-        Text("Pick the language you speak most. This is required — Canary has no native Automatic detection. You can change it later in Settings.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Choose your main language. You can change it later in Settings. Automatic detection needs an extra download.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (suggestion != null) {
             Spacer(Modifier.height(8.dp))
             Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.tertiary.copy(alpha=0.12f)) {
@@ -227,7 +227,7 @@ private fun LanguagePickerStep(
             }
         }
         Spacer(Modifier.height(12.dp))
-        Text("Automatic detection is not available on-device for Canary. An explicit language ensures accurate transcription.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Pick the language you use most. Automatic finds the language for you after you add its models.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

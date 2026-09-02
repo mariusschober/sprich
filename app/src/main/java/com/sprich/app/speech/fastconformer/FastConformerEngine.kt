@@ -48,7 +48,19 @@ class FastConformerEngine(
         return null
     }
 
-    private fun isSherpaAvailable(): Boolean = try { Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer"); true } catch (_: Throwable) { false }
+    companion object {
+        @Volatile private var cachedOfflineRecognizer: Class<*>? = null
+        @Volatile private var cachedFeatClass: Class<*>? = null
+        @Volatile private var cachedNemoClass: Class<*>? = null
+        @Volatile private var cachedModelConfigClass: Class<*>? = null
+        @Volatile private var cachedRecConfigClass: Class<*>? = null
+        @Volatile private var cachedRecClass: Class<*>? = null
+        @Volatile private var cachedStreamClass: Class<*>? = null
+    }
+    private fun isSherpaAvailable(): Boolean = try {
+        cachedRecClass ?: Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer").also { cachedRecClass = it }
+        true
+    } catch (_: Throwable) { false }
 
     override suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
         inferenceMutex.withLock {
@@ -58,23 +70,23 @@ class FastConformerEngine(
             val modelPath = java.io.File(dir, "model.int8.onnx").absolutePath
             val tokensPath = java.io.File(dir, "tokens.txt").absolutePath
             try {
-                val featClass = Class.forName("com.k2fsa.sherpa.onnx.FeatureConfig")
+                val featClass = cachedFeatClass ?: Class.forName("com.k2fsa.sherpa.onnx.FeatureConfig").also { cachedFeatClass = it }
                 val feat = try { featClass.getConstructor(Int::class.java, Int::class.java, Float::class.java).newInstance(16000, 80, 0.0f) } catch (_: Throwable) { featClass.getConstructor(Int::class.java, Int::class.java).newInstance(16000, 80) }
-                val nemoCtcClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineNemoEncDecCtcModelConfig")
+                val nemoCtcClass = cachedNemoClass ?: Class.forName("com.k2fsa.sherpa.onnx.OfflineNemoEncDecCtcModelConfig").also { cachedNemoClass = it }
                 val nemo = nemoCtcClass.getConstructor(String::class.java).newInstance(modelPath)
-                val modelConfigClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineModelConfig")
+                val modelConfigClass = cachedModelConfigClass ?: Class.forName("com.k2fsa.sherpa.onnx.OfflineModelConfig").also { cachedModelConfigClass = it }
                 val modelCfg = modelConfigClass.getConstructor().newInstance()
                 modelConfigClass.getDeclaredField("nemo").apply { isAccessible = true; set(modelCfg, nemo) }
                 modelConfigClass.getDeclaredField("tokens").apply { isAccessible = true; set(modelCfg, tokensPath) }
                 modelConfigClass.getDeclaredField("numThreads").apply { isAccessible = true; set(modelCfg, 2) }
                 modelConfigClass.getDeclaredField("provider").apply { isAccessible = true; set(modelCfg, "cpu") }
                 modelConfigClass.getDeclaredField("modelType").apply { isAccessible = true; set(modelCfg, "") }
-                val recConfigClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizerConfig")
+                val recConfigClass = cachedRecConfigClass ?: Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizerConfig").also { cachedRecConfigClass = it }
                 val recCfg = recConfigClass.getConstructor().newInstance()
                 recConfigClass.getDeclaredField("featConfig").apply { isAccessible = true; set(recCfg, feat) }
                 recConfigClass.getDeclaredField("modelConfig").apply { isAccessible = true; set(recCfg, modelCfg) }
-                // Absolute path requires null AssetManager (https://github.com/k2-fsa/sherpa-onnx/issues/2562)
-                val recClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer")
+                // Absolute path requires null AssetManager
+                val recClass = cachedRecClass ?: Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer").also { cachedRecClass = it }
                 val rec = recClass.getConstructor(android.content.res.AssetManager::class.java, Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizerConfig")).newInstance(null, recCfg)
                 recognizer = rec
                 loaded = rec != null
@@ -142,7 +154,7 @@ class FastConformerEngine(
             var stream: Any? = null
             try {
                 val floats = FloatArray(pcm.size) { pcm[it]/32768f }
-                val streamClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineStream")
+                val streamClass = cachedStreamClass ?: Class.forName("com.k2fsa.sherpa.onnx.OfflineStream").also { cachedStreamClass = it }
                 stream = rec.javaClass.getMethod("createStream").invoke(rec)
                 stream.javaClass.getMethod("acceptWaveform", FloatArray::class.java, Int::class.javaPrimitiveType).invoke(stream, floats, 16000)
                 rec.javaClass.getMethod("decode", streamClass).invoke(rec, stream)

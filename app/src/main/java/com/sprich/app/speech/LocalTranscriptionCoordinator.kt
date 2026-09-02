@@ -99,11 +99,13 @@ open class LocalTranscriptionCoordinator(
             lidRaw = "exception"
         }
 
-        // FastConformer is primary for Automatic — no Canary fallback, language-implicit.
+        // FastConformer is primary for Automatic — sequential after LID to bound peak heap (lid 98M + fast 126M).
+        // Parallel would spike PSS (3 threads + 224M mmap). Keep sequential unless device proves >100ms median win.
         if (!fast.isLoaded()) {
             val fLoad = fast.load()
             Log.i("Coordinator", "FastConformer load success=${fLoad.isSuccess} pcm=${pcm.size}")
         }
+        // Sequential heap-safe path (parallel gated off until device proves >100ms median win)
         val ft: FinalTranscript = try {
             fast.transcribeSnapshot(pcm, effectiveConfig)
         } catch (e: kotlinx.coroutines.CancellationException) {

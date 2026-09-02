@@ -248,14 +248,20 @@ class SprichIME : InputMethodService() {
     private var transcriptionCoordinator: TranscriptionCoordinator? = null
     private var refinementProvider: TranscriptRefinementProvider? = null
     private val thermalMonitor = ThermalMonitor { temp -> Log.w("SprichIME", "thermal throttle $temp°C") }
-    // Swipe-to-delete state (right-to-left deletes words, hold repeats accelerating; left-to-right undoes)
+    // Swipe editing state: axis-locked, thresholds, one mutation per gesture
     private var downX = 0f
     private var downY = 0f
     private var isSwipeDelete = false
     private var isSwipeUndo = false
+    private var isSwipeUpSwitch = false
+    private var isSwipeDownNewline = false
+    private var touchAxisLocked: String? = null // "h" or "v"
     private var deleteRepeatJob: Job? = null
     private val undoStack = ArrayDeque<String>(10)
     private val touchSlop by lazy { android.view.ViewConfiguration.get(this).scaledTouchSlop }
+    private val swipeDeleteThreshold by lazy { (32 * resources.displayMetrics.density) } // 32dp
+    private val swipeSwitchThreshold by lazy { (48 * resources.displayMetrics.density) } // 48dp
+    private val swipeNewlineThreshold by lazy { (48 * resources.displayMetrics.density) }
     // Liquid visual state driven by mic RMS
     @Volatile private var lastRms = 0f
     private var lastVisualUpdateElapsed = 0L
@@ -472,7 +478,7 @@ class SprichIME : InputMethodService() {
                 ellipsize = android.text.TextUtils.TruncateAt.END
             }
             val hint = TextView(this).apply {
-                text = "Words appear at cursor"
+                text = "Text appears where you type"
                 setTextColor(hintColor)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
                 gravity = Gravity.CENTER
@@ -551,43 +557,107 @@ class SprichIME : InputMethodService() {
             }
             auraView = aura
 
-            // Touch: tap toggles dictation, swipe right-to-left deletes words (hold repeats), left-to-right undoes.
+            // Touch: axis-locked gestures — tap toggles, horizontal delete/undo, vertical switch/newline, immediate press feedback
             pill.setOnTouchListener { v, ev ->
                 when (ev.actionMasked) {
                     android.view.MotionEvent.ACTION_DOWN -> {
                         downX = ev.x; downY = ev.y
-                        isSwipeDelete = false; isSwipeUndo = false
+                        isSwipeDelete = false; isSwipeUndo = false; isSwipeUpSwitch = false; isSwipeDownNewline = false
+                        touchAxisLocked = null
+                        // Immediate physical acknowledgement — 2% press on next frame
+                        try {
+                            v.animate().cancel()
+                            v.scaleX = 1f; v.scaleY = 1f
+                            v.animate().scaleX(1.02f).scaleY(1.02f).setDuration(80).setInterpolator(android.view.animation.DecelerateInterpolator()).withEndAction {
+                                v.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+                            }.start()
+                            if (hapticsEnabled) {
+                                try {
+                                    val vib = if (android.os.Build.VERSION.SDK_INT >= 31) getSystemService(VibratorManager::class.java).defaultVibrator else getSystemService(Vibrator::class.java)
+                                    if (android.os.Build.VERSION.SDK_INT >= 29) vib.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)) else @Suppress("DEPRECATION") vib.vibrate(20)
+                                } catch (_: Exception) {}
+                            }
+                        } catch (_: Exception) {}
                         true
                     }
                     android.view.MotionEvent.ACTION_MOVE -> {
                         val dx = ev.x - downX
-                        if (!isSwipeDelete && !isSwipeUndo && dx <= -touchSlop) {
-                            isSwipeDelete = true
-                            vibrateHeavy()
-                            deleteLastWord()
-                            startDeleteRepeat()
-                        } else if (!isSwipeDelete && !isSwipeUndo && dx >= touchSlop && undoStack.isNotEmpty()) {
-                            isSwipeUndo = true
-                            vibrateTick()
-                            undoLastDelete()
+                        val dy = ev.y - downY
+                        val absDx = kotlin.math.abs(dx); val absDy = kotlin.math.abs(dy)
+                        // Axis lock after touchSlop
+                        if (touchAxisLocked == null && (absDx > touchSlop || absDy > touchSlop)) {
+                            touchAxisLocked = if (absDx > absDy * 1.2f) "h" else if (absDy > absDx * 1.2f) "v" else null
+                        }
+                        if (touchAxisLocked == "h" && !isSwipeDelete && !isSwipeUndo && !isSwipeUpSwitch && !isSwipeDownNewline) {
+                            if (dx <= -swipeDeleteThreshold && absDx > absDy * 1.8f) {
+                                isSwipeDelete = true
+                                vibrateHeavy()
+                                deleteLastWord()
+                                startDeleteRepeat()
+                            } else if (dx >= swipeDeleteThreshold && absDx > absDy * 1.8f && undoStack.isNotEmpty()) {
+                                isSwipeUndo = true
+                                vibrateTick()
+                                undoLastDelete()
+                            }
+                        } else if (touchAxisLocked == "v" && !isSwipeDelete && !isSwipeUndo && !isSwipeDownNewline && !isSwipeUpSwitch) {
+                            if (dy <= -swipeSwitchThreshold && absDy > absDx * 1.6f) {
+                                isSwipeUpSwitch = true
+                                vibrateTick()
+                                // Visual: subtle fade immediate
+                                try { pill.alpha = 0.92f } catch (_: Exception) {}
+                            } else if (dy >= swipeNewlineThreshold && absDy > absDx * 1.6f) {
+                                isSwipeDownNewline = true
+                                vibrateTick()
+                                insertNewline()
+                            }
                         }
                         true
                     }
                     android.view.MotionEvent.ACTION_UP -> {
                         stopDeleteRepeat()
-                        val wasSwipe = isSwipeDelete || isSwipeUndo
-                        isSwipeDelete = false; isSwipeUndo = false
-                        if (!wasSwipe) toggleDictation()
+                        try { pill.alpha = 1f } catch (_: Exception) {}
+                        val wasSwipe = isSwipeDelete || isSwipeUndo || isSwipeUpSwitch || isSwipeDownNewline
+                        val doSwitchUp = isSwipeUpSwitch
+                        val doNewlineDone = isSwipeDownNewline // already inserted on MOVE
+                        isSwipeDelete = false; isSwipeUndo = false; isSwipeUpSwitch = false; isSwipeDownNewline = false; touchAxisLocked = null
+                        if (doSwitchUp) {
+                            // One irreversible switch — prefer previous IME
+                            try {
+                                val switched = switchToPreviousKeyboard()
+                                if (!switched) switchToNextKeyboard()
+                                // visual celebrate
+                                try {
+                                    pill.animate().cancel()
+                                    pill.scaleX = 0.98f; pill.scaleY = 0.98f
+                                    pill.animate().scaleX(1f).scaleY(1f).setDuration(180).start()
+                                } catch (_: Exception) {}
+                            } catch (_: Exception) { try { switchToNextKeyboard() } catch (_: Exception) {} }
+                        } else if (!wasSwipe) {
+                            // Ensure TalkBack performClick contract
+                            try { v.performClick() } catch (_: Exception) {}
+                            toggleDictation()
+                        } else if (doNewlineDone) {
+                            // newline already inserted, no toggle
+                        }
                         true
                     }
                     android.view.MotionEvent.ACTION_CANCEL -> {
                         stopDeleteRepeat()
-                        isSwipeDelete = false; isSwipeUndo = false
+                        try { pill.alpha = 1f } catch (_: Exception) {}
+                        isSwipeDelete = false; isSwipeUndo = false; isSwipeUpSwitch = false; isSwipeDownNewline = false; touchAxisLocked = null
                         true
                     }
                     else -> false
                 }
             }
+            // TalkBack: double-tap triggers performClick -> toggle; add custom actions
+            try {
+                pill.isClickable = true; pill.isFocusable = true
+                androidx.core.view.ViewCompat.addAccessibilityAction(pill, "Delete last word") { _, _ -> deleteLastWord(); true }
+                androidx.core.view.ViewCompat.addAccessibilityAction(pill, "Undo delete") { _, _ -> undoLastDelete(); true }
+                androidx.core.view.ViewCompat.addAccessibilityAction(pill, "New line") { _, _ -> insertNewline(); true }
+                androidx.core.view.ViewCompat.addAccessibilityAction(pill, "Switch keyboard") { _, _ -> switchToNextKeyboard(); true }
+            } catch (_: Exception) {}
 
             pillBgRef = pillBg
             // Allow glow/aura to draw beyond bounds
@@ -624,6 +694,11 @@ class SprichIME : InputMethodService() {
         }
     }
 
+    // Single coalesced visual lane — one frame callback, no ValueAnimator infinite, no Math.random
+    @Volatile private var visualRms: Float = 0f
+    private var visualFrameCallback: android.view.Choreographer.FrameCallback? = null
+    private var visualRunning = false
+
     private fun updateImeUi(isListening: Boolean) {
         try {
             val dark = isDark()
@@ -634,87 +709,81 @@ class SprichIME : InputMethodService() {
                 hint?.text = "Tap to stop"
                 statusText?.setTextColor(statusColor)
                 micContainer?.contentDescription = "Stop listening"
-                micContainer?.animate()?.cancel()
-                micContainer?.scaleX = 1f; micContainer?.scaleY = 1f
-                // Extremely subtle liquid press — 2% scale, no overshoot, no wobble
-                micContainer?.animate()?.scaleX(1.02f)?.scaleY(1.02f)?.setDuration(140)?.setInterpolator(android.view.animation.DecelerateInterpolator())?.withEndAction {
-                    micContainer?.animate()?.scaleX(1f)?.scaleY(1f)?.setDuration(180)?.start()
-                }?.start()
                 waveform?.visibility = View.VISIBLE
                 waveform?.alpha = 0.95f
-                // Glow fades in softly when listening starts
-                glowView?.animate()?.cancel()
-                glowView?.animate()?.alpha(0.12f)?.setDuration(300)?.start()
-                startWaveform()
-                pulseAnimator?.cancel()
-                pulseAnimator = android.animation.ValueAnimator.ofFloat(0.9f, 1f).apply {
-                    duration = 1100
-                    repeatCount = android.animation.ValueAnimator.INFINITE
-                    repeatMode = android.animation.ValueAnimator.REVERSE
-                    addUpdateListener { anim -> waveform?.alpha = anim.animatedValue as Float }
-                    start()
-                }
+                glowView?.alpha = 0.12f
+                visualRms = 0f
+                startVisualLane()
             } else {
+                stopVisualLane()
                 statusText?.text = "Tap to speak"
-                hint?.text = "Words appear at cursor"
+                hint?.text = "Text appears where you type"
                 statusText?.setTextColor(statusColor)
                 micContainer?.contentDescription = "Tap to speak"
                 micContainer?.animate()?.cancel()
                 micContainer?.scaleX = 1f; micContainer?.scaleY = 1f
                 waveform?.visibility = View.INVISIBLE
                 waveform?.alpha = 0f
-                // Reset glow, aura and stroke to calm state
-                glowView?.animate()?.cancel()
+                // Reset glow, aura and stroke to calm state (no animate fighting)
                 glowView?.alpha = 0f
                 glowView?.scaleX = 1.6f; glowView?.scaleY = 1.6f
-                auraView?.animate()?.cancel()
                 auraView?.alpha = 0f
-                lastRms = 0f
+                lastRms = 0f; visualRms = 0f
                 pillBgRef?.setStroke(dp(1), if (dark) Color.parseColor("#2A2A2A") else Color.parseColor("#E8E8E8"))
-                pulseAnimator?.cancel()
-                stopWaveform()
             }
         } catch (_: Exception) {}
     }
 
-    private fun startWaveform() {
-        waveformJob?.cancel()
-        waveformJob = scope.launch {
-            val bars = waveformBars
-            // Base breath; live speech energy overrides via updateLiquidVisual (RMS-driven wow).
-            while (isActive) {
+    private fun startVisualLane() {
+        if (visualRunning) return
+        visualRunning = true
+        val cb = object : android.view.Choreographer.FrameCallback {
+            var t0 = android.os.SystemClock.elapsedRealtime()
+            var breathPhase = 0f
+            override fun doFrame(frameTimeNanos: Long) {
+                if (!visualRunning) return
                 try {
-                    if (lastRms > 0.0012f) {
-                        updateLiquidVisual(lastRms)
+                    val rms = visualRms
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    val dt = (now - t0) / 1000f
+                    breathPhase += dt * 1.8f // ~0.9Hz breath when silent
+                    t0 = now
+                    if (rms > 0.0012f) {
+                        updateLiquidVisual(rms)
                     } else {
-                        bars.forEach { bar ->
-                            val targetScale = 0.75f + (Math.random().toFloat() * 0.5f)
-                            bar.animate().cancel()
-                            bar.animate().scaleX(targetScale.coerceIn(0.7f, 1.4f)).setDuration(220).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
-                            bar.alpha = 0.85f + (Math.random().toFloat() * 0.15f)
-                        }
-                        // Glow breathes softly with the bar while listening in silence
-                        glowView?.let { g ->
-                            g.animate().cancel()
-                            g.alpha = 0.07f + (Math.random().toFloat() * 0.09f)
-                        }
+                        // Deterministic breath — sine, not random
+                        val breath = 0.5f + 0.5f * kotlin.math.sin(breathPhase * 2f * kotlin.math.PI.toFloat())
+                        val s = 0.88f + breath * 0.14f
+                        dotView?.scaleX = s
+                        dotView?.alpha = 0.88f + breath * 0.12f
+                        glowView?.alpha = 0.06f + breath * 0.06f
+                        // subtle aura breath
+                        auraView?.alpha = 0.04f + breath * 0.04f
                     }
-                    delay(220)
-                } catch (_: Exception) { delay(220) }
+                    // waveform breath when listening silently
+                    waveform?.alpha = if (rms > 0.0012f) 0.95f else 0.92f + breathPhase.let { 0.04f * kotlin.math.sin(it) }
+                } catch (_: Exception) {}
+                try { android.view.Choreographer.getInstance().postFrameCallback(this) } catch (_: Exception) {}
             }
         }
+        visualFrameCallback = cb
+        try { android.view.Choreographer.getInstance().postFrameCallback(cb) } catch (_: Exception) {}
     }
-    private fun stopWaveform() {
+
+    private fun stopVisualLane() {
+        visualRunning = false
+        try { visualFrameCallback?.let { android.view.Choreographer.getInstance().removeFrameCallback(it) } } catch (_: Exception) {}
+        visualFrameCallback = null
         try { waveformJob?.cancel() } catch (_: Exception) {}
         waveformJob = null
-        try {
-            waveformBars.forEach { bar ->
-                bar.animate().cancel()
-                bar.scaleY = 1f
-                bar.alpha = 0.85f
-            }
-        } catch (_: Exception) {}
+        try { pulseAnimator?.cancel() } catch (_: Exception) {}
+        pulseAnimator = null
     }
+
+    @Deprecated("Use startVisualLane/stopVisualLane — single lane, deterministic, no random")
+    private fun startWaveform() { startVisualLane() }
+    @Deprecated("Use stopVisualLane")
+    private fun stopWaveform() { stopVisualLane() }
 
     override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
         try {
@@ -823,6 +892,7 @@ class SprichIME : InputMethodService() {
 
     override fun onWindowHidden() {
         super.onWindowHidden()
+        try { stopVisualLane() } catch (_: Exception) {}
         try { stopDictation(StopReason.WINDOW_HIDDEN) } catch (_: Exception) {}
         try { thermalMonitor.stop() } catch (_: Exception) {}
     }
@@ -841,6 +911,13 @@ class SprichIME : InputMethodService() {
         }
     }
 
+    override fun onFinishInputView(finishingInput: Boolean) {
+        try { stopVisualLane() } catch (_: Exception) {}
+        super.onFinishInputView(finishingInput)
+    }
+
+    @Volatile private var cleanupScope: kotlinx.coroutines.CoroutineScope? = null
+
     override fun onDestroy() {
         val t0 = android.os.SystemClock.elapsedRealtime()
         // Synchronous cheap invalidation — no runBlocking on main, ≈ negligible wall time
@@ -858,9 +935,10 @@ class SprichIME : InputMethodService() {
         // Cancel network/work without blocking
         try { scope.coroutineContext.cancelChildren() } catch (_: Exception) {}
 
-        // Off-main deterministic cleanup — never blocks main, no use-after-free
-        val cleanupScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
-        cleanupScope.launch {
+        // Off-main deterministic cleanup — never blocks main, no use-after-free, field-tied scope
+        try { cleanupScope?.let { try { it.cancel() } catch (_: Exception) {} } } catch (_: Exception) {}
+        cleanupScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+        cleanupScope!!.launch {
             val ct0 = android.os.SystemClock.elapsedRealtime()
             try { kotlinx.coroutines.withTimeoutOrNull(800) { finalizationActorJob?.cancelAndJoin() } } catch (_: Exception) {}
             try { audio.awaitStop(300) } catch (_: Exception) {}
@@ -874,7 +952,9 @@ class SprichIME : InputMethodService() {
             try { scope.cancel() } catch (_: Exception) {}
             android.util.Log.i("SprichIME", "off-main cleanup complete wall=${android.os.SystemClock.elapsedRealtime()-ct0}ms total=${android.os.SystemClock.elapsedRealtime()-t0}ms")
         }
-        android.util.Log.i("SprichIME", "onDestroy main-thread wall=${android.os.SystemClock.elapsedRealtime()-t0}ms (cleanup off-main)")
+        val mainWall = android.os.SystemClock.elapsedRealtime() - t0
+        android.util.Log.i("SprichIME", "onDestroy main-thread wall=${mainWall}ms (cleanup off-main)")
+        if (mainWall > 50) android.util.Log.w("SprichIME", "onDestroy main wall >50ms — investigate ANR risk")
         super.onDestroy()
     }
 
@@ -928,8 +1008,8 @@ class SprichIME : InputMethodService() {
                 if (!lidReady) {
                     Log.w("SprichIME", "Auto language requested but Tiny LID not downloaded — explicit selection required.")
                     try { session.error("language auto not supported without LID") } catch (_: Exception) {}
-                    statusText?.text = "Tap to choose language"
-                    (statusText?.tag as? TextView)?.text = "Open Sprich app → Settings → Language (EN/DE/ES/FR) or download Tiny LID (98M)"
+                    statusText?.text = "Choose a language"
+                    (statusText?.tag as? TextView)?.text = "Open Sprich Settings to pick a language or add Automatic."
                     try { vibrateTick() } catch (_: Exception) {}
                     writeDiagnostics("blocked Auto (no LID) resolved=${activeConfig.resolvedLanguageTag()} speechLanguage=$speechLanguage")
                     return
@@ -937,8 +1017,8 @@ class SprichIME : InputMethodService() {
                 if (!fastReady) {
                     Log.w("SprichIME", "Auto (winner FastConformer) requested but FastConformer 126M not downloaded — download required.")
                     try { session.error("auto not supported without FastConformer") } catch (_: Exception) {}
-                    statusText?.text = "Tap to choose language"
-                    (statusText?.tag as? TextView)?.text = "Open Sprich app → Settings → Download FastConformer 126M (or Accurate Canary)"
+                    statusText?.text = "Choose a language"
+                    (statusText?.tag as? TextView)?.text = "Open Sprich Settings — add Fast transcription to enable Automatic."
                     try { vibrateTick() } catch (_: Exception) {}
                     writeDiagnostics("blocked Auto (no FastConformer) speechLanguage=$speechLanguage")
                     return
@@ -956,8 +1036,8 @@ class SprichIME : InputMethodService() {
             if (!permissionGranted) {
                 Log.w("SprichIME", "RECORD_AUDIO not granted, abort dictation")
                 try { session.error("mic permission") } catch (_: Exception) {}
-                statusText?.text = "Mic permission needed"
-                (statusText?.tag as? TextView)?.text = "Grant in Sprich app → Settings"
+                statusText?.text = "Microphone needed"
+                (statusText?.tag as? TextView)?.text = "Allow in Sprich Settings"
                 // Vibrate error
                 try { vibrateTick() } catch (_: Exception) {}
                 return
@@ -1213,22 +1293,29 @@ class SprichIME : InputMethodService() {
             pipelineSampleCount += length
             val durationMs = ((length * 1000L) / SAMPLE_RATE).coerceAtLeast(1L)
             val result = vad.process(samples, offset, length, durationMs, precomputedRms)
-            // Liquid wow: drive color+width from mic energy (throttled ~20fps, no layout)
+            // Coalesced lane: set latest RMS, visual lane reads at frame rate (~60fps), throttled 50ms gate kept for safety
             lastRms = result.rms
-            val nowElapsed = android.os.SystemClock.elapsedRealtime()
-            if (utteranceActive.get() && nowElapsed - lastVisualUpdateElapsed >= 50) {
-                lastVisualUpdateElapsed = nowElapsed
-                scope.launch(kotlinx.coroutines.Dispatchers.Main) { updateLiquidVisual(result.rms) }
+            visualRms = result.rms
+            // Keep 50ms gate only as secondary throttle if lane is running, otherwise direct
+            if (!visualRunning && utteranceActive.get()) {
+                val nowElapsed = android.os.SystemClock.elapsedRealtime()
+                if (nowElapsed - lastVisualUpdateElapsed >= 50) {
+                    lastVisualUpdateElapsed = nowElapsed
+                    try { updateLiquidVisual(result.rms) } catch (_: Exception) {}
+                }
             }
             if (result.state != lastVadState) {
-                Log.i(
-                    "SprichIME",
-                    "vad ${lastVadState.name}->${result.state.name} rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} threshold=${String.format(java.util.Locale.US,"%.5f", vad.currentThreshold())} noiseFloor=${String.format(java.util.Locale.US,"%.5f", vad.noiseFloorValue())} chunks=$pipelineChunkCount samples=$pipelineSampleCount pushed=$pipelinePushedSampleCount generation=$generation",
-                )
+                if (android.util.Log.isLoggable("SprichIME", android.util.Log.DEBUG)) {
+                    android.util.Log.d(
+                        "SprichIME",
+                        "vad ${lastVadState.name}->${result.state.name} rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} threshold=${String.format(java.util.Locale.US,"%.5f", vad.currentThreshold())} noiseFloor=${String.format(java.util.Locale.US,"%.5f", vad.noiseFloorValue())} chunks=$pipelineChunkCount samples=$pipelineSampleCount pushed=$pipelinePushedSampleCount generation=$generation",
+                    )
+                }
                 lastVadState = result.state
             } else if (pipelineChunkCount % 16L == 0L) {
-                // Periodic quiet-alive diagnostics without spamming (every ~1s). Never audio.
-                Log.i("SprichIME", "vad alive state=${result.state.name} rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} chunks=$pipelineChunkCount pushed=$pipelinePushedSampleCount")
+                if (android.util.Log.isLoggable("SprichIME", android.util.Log.DEBUG)) {
+                    android.util.Log.d("SprichIME", "vad alive state=${result.state.name} rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} chunks=$pipelineChunkCount pushed=$pipelinePushedSampleCount")
+                }
             }
 
             // Backpressure: speech episode suppression — if already suppressing, ignore entire episode until clean silence/end
@@ -1310,7 +1397,7 @@ class SprichIME : InputMethodService() {
                     } catch (_: Exception) {}
                 }
                 vibrateHeavy()
-                Log.i("SprichIME", "speech onset preRollSamples=${preRoll.size} pushedTotal=$pipelinePushedSampleCount rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} elapsedMs=${android.os.SystemClock.elapsedRealtime() - pipelineStartElapsed}")
+                if (android.util.Log.isLoggable("SprichIME", android.util.Log.DEBUG)) android.util.Log.d("SprichIME", "speech onset preRollSamples=${preRoll.size} pushedTotal=$pipelinePushedSampleCount rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} elapsedMs=${android.os.SystemClock.elapsedRealtime() - pipelineStartElapsed}")
             } else if (
                 utteranceActive.get() &&
                 (result.state == Vad.State.SPEECH || result.state == Vad.State.HESITATION)
@@ -1326,9 +1413,14 @@ class SprichIME : InputMethodService() {
                 val shouldPushLive = (isPrimaryLocal || isLocalFallback) && routeAtChunk is LocalAsrRoute.AccurateCanary
                 if (shouldPushLive) {
                     try {
-                        val chunkForEngine = if (offset == 0 && length == samples.size) samples.copyOf() else samples.copyOfRange(offset, offset + length)
-                        engine.pushAudio(chunkForEngine, timestampNanos)
-                    } catch (_: Exception) {}
+                        engine.pushAudio(samples, offset, length, timestampNanos)
+                    } catch (_: Exception) {
+                        // Fallback to legacy copy if offset overload not available
+                        try {
+                            val c = if (offset == 0 && length == samples.size) samples.copyOf() else samples.copyOfRange(offset, offset + length)
+                            engine.pushAudio(c, timestampNanos)
+                        } catch (_: Exception) {}
+                    }
                 }
                 // For Automatic or API_PRIMARY + fallback: no live Canary push — fallback decodes frozen snapshot only on remote failure.
             }
@@ -1502,18 +1594,17 @@ class SprichIME : InputMethodService() {
     }
 
     private fun updateCatchUpUi(isCatchingUp: Boolean) {
-        // Surface explicit Catching Up state — truthful, not silent drop. Shows "Catching up…" instead of pretending all speech captured.
+        // Truthful, not silent drop. Human copy, no utterance jargon.
         scope.launch(Dispatchers.Main) {
             try {
                 if (isCatchingUp) {
                     statusText?.text = "Catching up…"
-                    (statusText?.tag as? TextView)?.text = "Please pause briefly — processing ${queueDepth.get()} utterances"
+                    (statusText?.tag as? TextView)?.text = "Brief pause — finishing what you said"
                     Log.w("SprichIME", "UI Catching up — suppressed=${catchingUpSuppressedOnsets.get()} rejected=${catchingUpRejectedOnsets.get()} depth=${queueDepth.get()}")
                 } else {
-                    // Recovery: restore listening hint if still active, otherwise normal idle will be set by state collector
                     if (session.state.value is SessionState.Listening || session.state.value is com.sprich.app.input.lifecycle.SessionState.Speech || session.state.value is com.sprich.app.input.lifecycle.SessionState.Finalizing) {
                         statusText?.text = "Listening…"
-                        (statusText?.tag as? TextView)?.text = "Words will appear at the cursor"
+                        (statusText?.tag as? TextView)?.text = "Text appears where you type"
                     }
                 }
             } catch (_: Exception) {}
@@ -1587,7 +1678,8 @@ class SprichIME : InputMethodService() {
             // Per-utterance metrics for German blank triage (debug, not transcript content)
             val pcmDurationMs = (pending.pcm.size * 1000L) / SAMPLE_RATE
             val pcmRms = ReplayHarness.computeRms(pending.pcm)
-            Log.i("SprichIME", "utteranceMetrics id=${token.utteranceId} durationMs=$pcmDurationMs rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)} samples=${pending.pcm.size} lang=${pending.config.resolvedLanguageTag()} pushed=${pending.pushedSamples}")
+            if (android.util.Log.isLoggable("SprichIME", android.util.Log.DEBUG))
+                android.util.Log.d("SprichIME", "utteranceMetrics id=${token.utteranceId} durationMs=$pcmDurationMs rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)} samples=${pending.pcm.size} lang=${pending.config.resolvedLanguageTag()} pushed=${pending.pushedSamples}")
             // Opt-in WAV capture: save exact frozen PCM for offline replay harness
             try {
                 val wavEnabled = try { prefs.debugWavCapture.first() } catch (_: Exception) { false }
@@ -1639,7 +1731,9 @@ class SprichIME : InputMethodService() {
             if (debugTraceEnabled) {
                 Log.i("SprichIME", "RAW_ASR token=${token.utteranceId} source=${transcriptionResult.source} text=\"${transcriptionResult.text.take(80)}\"")
             } else {
-                Log.i("SprichIME", "finalizePending decoded token=$token source=${transcriptionResult.source} elapsedMs=$elapsed textLen=${transcriptionResult.text.length} queueDepth=${lastQueueDepth} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)} durationMs=$pcmDurationMs")
+                if (android.util.Log.isLoggable("SprichIME", android.util.Log.DEBUG))
+                    android.util.Log.d("SprichIME", "finalizePending decoded token=$token source=${transcriptionResult.source} elapsedMs=$elapsed textLen=${transcriptionResult.text.length} queueDepth=${lastQueueDepth} rms=${String.format(java.util.Locale.US,"%.5f", pcmRms)} durationMs=$pcmDurationMs")
+                else Log.i("SprichIME", "finalizePending token=$token source=${transcriptionResult.source} elapsedMs=$elapsed textLen=${transcriptionResult.text.length}")
             }
 
             // Re-validate all conditions immediately before insertion — still without corrupting B if A is stale
@@ -1963,71 +2057,12 @@ class SprichIME : InputMethodService() {
         }
     }
 
-    private fun applyFinalText(token: UtteranceToken, text: String, language: Language = activeConfig.language): Boolean {
-        val inputConnection = currentInputConnection ?: return false
-        // Validate token still owns this insertion immediately before commit
-        if (token.generation != sessionGeneration.get()) { staleCallbackDrops++; return false }
-        if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) { staleCallbackDrops++; return false }
-        if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) { staleCallbackDrops++; return false }
-        if (!fieldController.isCurrentSession(token.sessionId)) { staleCallbackDrops++; return false }
-        // Verify IC still current
-        if (inputConnection != token.capturedIc && token.capturedIc != null) {
-            // Allow if IC hash matches field token but object identity changed (Android may recreate IC)
-            if (inputConnection.hashCode() != currentFieldTokenIcHash && currentFieldTokenIcHash != 0) {
-                Log.w("SprichIME", "applyFinalText IC mismatch token=$token")
-                staleCallbackDrops++
-                return false
-            }
-        }
-        val langForParser = language
-        val parsed = try {
-            SpokenEditingParser.parse(text, langForParser, commandsEnabled)
-        } catch (_: Exception) {
-            SpokenEditingParser.EditResult(text, false)
-        }
-        return if (SpokenEditingParser.isDeleteCommand(parsed.text)) {
-            val toDelete = if (parsed.text == "__DELETE_SENTENCE__") 120 else 40
-            val deleted = inputConnection.deleteSurroundingText(toDelete, 0)
-            // Delete command is a per-utterance operation — mark finalized via both coordinators (best-effort, ignore null IC result)
-            try { fieldController.commitUtterance(token.sessionId, token.utteranceId, inputConnection, "") } catch (_: Exception) {}
-            // Also ensure SprichIME's authoritative set contains this utterance (already claimed in finalizePending)
-            try { composition.discardPartial(inputConnection) } catch (_: Exception) { composition.finishIfActive(inputConnection) }
-            deleted
-        } else {
-            val finalText = try { vocabStore.apply(parsed.text) } catch (_: Exception) { parsed.text }
-            // One authoritative exactly-once owner: SprichIME.finalizedUtterances is primary, FieldSessionController secondary.
-            // Use typed result to avoid dangerous fallback that treated stale/duplicate as editor rejection.
-            val result = try { fieldController.commitUtteranceTyped(token.sessionId, token.utteranceId, inputConnection, finalText) } catch (_: Exception) { FieldSessionController.CommitResult.StaleSession }
-            return when (result) {
-                is FieldSessionController.CommitResult.Committed -> true
-                is FieldSessionController.CommitResult.EditorRejected -> {
-                    Log.w("SprichIME", "controller EditorRejected (ambiguous) — NOT retrying token=$token")
-                    false
-                }
-                is FieldSessionController.CommitResult.AlreadyFinalized -> {
-                    Log.w("SprichIME", "AlreadyFinalized token=$token — never direct-commit")
-                    false
-                }
-                is FieldSessionController.CommitResult.StaleSession -> {
-                    Log.w("SprichIME", "StaleSession token=$token — never direct-commit")
-                    false
-                }
-                is FieldSessionController.CommitResult.WrongField -> {
-                    Log.w("SprichIME", "WrongField token=$token — never direct-commit")
-                    false
-                }
-                is FieldSessionController.CommitResult.NoInputConnection -> {
-                    Log.w("SprichIME", "NoInputConnection token=$token — never direct-commit")
-                    false
-                }
-            }
-        }
-    }
-
+    // Legacy applyFinalText(Language) removed — only ResolvedUtteranceLanguage variant remains (duplicate deleted)
     // Backwards compat for non-token call sites
     private fun applyFinalText(text: String): Boolean {
         val token = currentUtteranceToken ?: return false
-        return applyFinalText(token, text)
+        // Route through ResolvedUnknown to keep single code path
+        return applyFinalText(token, text, ResolvedUtteranceLanguage.Unknown)
     }
 
     private fun failSession(
@@ -2227,11 +2262,40 @@ class SprichIME : InputMethodService() {
         }
     }
 
+    @Suppress("NewApi")
     private fun switchToNextKeyboard() {
+        // Prefer previous IME (restores Gboard user was typing with), fallback to next, then picker
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                val previous = try { switchToPreviousInputMethod() } catch (_: Exception) { false }
+                if (previous) {
+                    Log.i("SprichIME", "switchToPreviousInputMethod success")
+                    return
+                }
+            }
+        } catch (_: Exception) {}
+        try {
+            val next = try { switchToNextInputMethod(false) } catch (_: Exception) { false }
+            if (next) {
+                Log.i("SprichIME", "switchToNextInputMethod success")
+                return
+            }
+        } catch (_: Exception) {}
         try {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
             imm.showInputMethodPicker()
+            Log.i("SprichIME", "showInputMethodPicker shown (no previous/next IME)")
         } catch (_: Exception) {}
+    }
+
+    @Suppress("NewApi")
+    private fun switchToPreviousKeyboard(): Boolean {
+        return try {
+            if (android.os.Build.VERSION.SDK_INT < 28) return false
+            val ok = switchToPreviousInputMethod()
+            if (ok) Log.i("SprichIME", "switchToPreviousKeyboard success")
+            ok
+        } catch (_: Exception) { false }
     }
 
     private fun vibrateTick() {
@@ -2269,6 +2333,28 @@ class SprichIME : InputMethodService() {
 
     // ---- Swipe-to-delete editing -------------------------------------------------
 
+    private fun insertNewline(): Boolean {
+        val ic = currentInputConnection ?: return false
+        return try {
+            // Single-line fields must not insert newline
+            val info = try { currentInputEditorInfo } catch (_: Exception) { null }
+            val isSingleLine = info?.let { (it.inputType and android.view.inputmethod.EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) == 0 && (it.inputType and android.view.inputmethod.EditorInfo.TYPE_MASK_CLASS) == android.view.inputmethod.EditorInfo.TYPE_CLASS_TEXT } ?: false
+            // If editor is singleLine, ignore but give heavy haptic failure
+            if (isSingleLine) {
+                try { vibrateHeavy() } catch (_: Exception) {}
+                Log.i("SprichIME", "newline ignored singleLine")
+                return false
+            }
+            ic.beginBatchEdit()
+            try { composition.discardPartial(ic) } catch (_: Exception) {}
+            val ok = try { ic.commitText("\n", 1) } catch (_: Exception) { false }
+            ic.endBatchEdit()
+            if (ok) { try { vibrateTick() } catch (_: Exception) {} }
+            Log.i("SprichIME", "swipeNewline ok=$ok")
+            ok
+        } catch (_: Exception) { try { ic.endBatchEdit() } catch (_: Exception) {}; false }
+    }
+
     /** Deletes the last word before the cursor. Returns true when something was deleted. */
     private fun deleteLastWord(): Boolean {
         val ic = currentInputConnection ?: return false
@@ -2277,13 +2363,12 @@ class SprichIME : InputMethodService() {
             try { composition.discardPartial(ic) } catch (_: Exception) {}
             val before = try { ic.getTextBeforeCursor(160, 0)?.toString() } catch (_: Exception) { null }.orEmpty()
             if (before.isEmpty()) {
-                // Editors that block getTextBeforeCursor: fall back to one key event per repeat tick.
-                ic.sendKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DEL))
-                ic.sendKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_DEL))
+                // Editors that block getTextBeforeCursor: single deleteSurroundingText(1,0), never KeyEvent duplication
+                val ok = try { ic.deleteSurroundingText(1, 0) } catch (_: Exception) { false }
                 ic.endBatchEdit()
-                vibrateTick()
-                Log.i("SprichIME", "swipeDelete fallback DEL")
-                return true
+                if (ok) vibrateTick()
+                Log.i("SprichIME", "swipeDelete fallback single-char delete ok=$ok")
+                return ok
             }
             val trimmed = before.trimEnd()
             if (trimmed.isEmpty()) {

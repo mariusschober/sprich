@@ -7,19 +7,19 @@
 
     <!-- Onboarding -->
     <string name="onboard_title_1">Speak. It’s there.</string>
-    <string name="onboard_sub_1">Local speech-to-text for every text field.</string>
-    <string name="onboard_title_2">Nothing leaves your phone.</string>
-    <string name="onboard_bullet_1">Speech is processed locally</string>
-    <string name="onboard_bullet_2">Audio is not saved</string>
+    <string name="onboard_sub_1">Your words appear wherever you type.</string>
+    <string name="onboard_title_2">Private by default.</string>
+    <string name="onboard_bullet_1">Processed on your phone</string>
+    <string name="onboard_bullet_2">Audio not stored</string>
     <string name="onboard_bullet_3">Works offline</string>
     <string name="onboard_ime_title">Enable Sprich keyboard</string>
-    <string name="onboard_ime_desc">Sprich works as a keyboard so it can insert text at the cursor. You can still switch to Gboard anytime.</string>
+    <string name="onboard_ime_desc">Sprich works as a keyboard so it can insert text where you type. You can switch to Gboard anytime — swipe up.</string>
     <string name="onboard_try_title">Try it.</string>
     <string name="onboard_try_hint">Tap the field and say: “This is much faster than typing.”</string>
 
     <!-- Home -->
-    <string name="home_ready">Ready</string>
-    <string name="home_sub">Fast · English / Deutsch / Español · Offline</string>
+    <string name="home_ready">Ready to speak</string>
+    <string name="home_sub">English · Deutsch · Español · Français · On-device</string>
     <string name="home_try">Try dictation</string>
 
     <!-- Settings -->
@@ -44,16 +44,16 @@
     <string name="settings_diagnostics">Diagnostics</string>
     <string name="settings_licenses">Open-source licenses</string>
 
-    <!-- Model -->
+    <!-- Model — consumer copy, arch details secondary -->
     <string name="model_fast">Fast</string>
-    <string name="model_fast_sub">57 MB · Included</string>
-    <string name="model_fast_desc">Fastest compatibility and lowest resource use.</string>
+    <string name="model_fast_sub">On-device · Always available</string>
+    <string name="model_fast_desc">Quick and reliable for everyday typing.</string>
     <string name="model_accurate">Accurate</string>
-    <string name="model_accurate_sub">~198 MB · Download</string>
-    <string name="model_accurate_desc">Higher recognition quality.</string>
-    <string name="model_streaming">Instant Streaming</string>
-    <string name="model_streaming_sub">~500–700 MB · Download</string>
-    <string name="model_streaming_desc">Lowest potential live latency on capable phones.</string>
+    <string name="model_accurate_sub">198 MB · Manual language</string>
+    <string name="model_accurate_desc">Higher accuracy when you choose the language.</string>
+    <string name="model_streaming">Streaming (experimental)</string>
+    <string name="model_streaming_sub">475 MB · Not for everyday use</string>
+    <string name="model_streaming_desc">Experimental low-latency streaming.</string>
 
     <!-- Errors -->
     <string name="err_mic_busy">Microphone is being used by another app.</string>

@@ -72,18 +72,18 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
         Column(Modifier.fillMaxSize().padding(innerPadding).consumeWindowInsets(innerPadding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp).navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(20.dp)) {
 
             Text("Dictation", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            SettingsToggle("Instant Dictation", "Start when a text field is focused", instant){ scope.launch{ prefs.setInstantMode(it)} }
+            SettingsToggle("Start automatically", "Begin listening when you tap a text field", instant){ scope.launch{ prefs.setInstantMode(it)} }
             LanguageRow(lang, onSelect = { scope.launch{ prefs.setLanguage(it)} }, lidStatus = lidStatus, fastStatus = fastStatus)
             if (lang == Language.AUTO) {
                 when {
-                    autoReady -> Text("Automatic language — Detects English, German, Spanish and French automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    autoReady -> Text("Automatic — finds the language for you. Fast, on-device.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     lidStatus is ModelStatus.Downloading || fastStatus is ModelStatus.Downloading -> Text("Downloading Automatic models… Will be ready when both complete.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     else -> {
                         val missing = buildList {
                             if (lidStatus !is ModelStatus.Ready) add("Language detector")
                             if (fastStatus !is ModelStatus.Ready) add("Fast transcription model")
                         }.joinToString(" + ")
-                        Text("Automatic — Requires two on-device models: Language detector + Fast transcription model. Missing: $missing", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        Text("Automatic needs two on-device models. Missing: $missing", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
                 }
                 if (!autoReady) {
@@ -144,23 +144,32 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 
             HorizontalDivider()
             DynamicPrivacySection(prefs)
-            SettingsRow("Clear local data", "", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); try { com.sprich.app.storage.ApiSecretStore(ctx).clearAll() } catch (_:Exception){}; try { com.sprich.app.diagnostics.ReplayHarness.clearAll(ctx) } catch (_:Exception){}; try { java.io.File(ctx.filesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.filesDir, "benchmark").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "benchmark").deleteRecursively() } catch (_:Exception){}; mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron() } })
+            // Gesture legend — discoverability without clutter
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Gestures", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Text("Swipe left to delete • Right to undo • Down for new line • Up to switch keyboard", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            SettingsRow("Clear Sprich data", "Removes models, vocabulary, and keys. Cannot be undone.", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); try { com.sprich.app.storage.ApiSecretStore(ctx).clearAll() } catch (_:Exception){}; try { com.sprich.app.diagnostics.ReplayHarness.clearAll(ctx) } catch (_:Exception){}; try { java.io.File(ctx.filesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.filesDir, "benchmark").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "benchmark").deleteRecursively() } catch (_:Exception){}; mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron() } })
 
             HorizontalDivider()
             Text("Advanced", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             val transcriptionLabel = when {
-                lang == Language.AUTO && autoReady -> "Current transcription — Automatic · Fast on-device"
-                lang == Language.AUTO && !autoReady -> "Current transcription — Automatic unavailable (missing models)"
-                canaryStatus is ModelStatus.Ready -> "Current transcription — Accurate · ${lang.code.uppercase()}"
-                else -> "Current transcription — Accurate · ${lang.code.uppercase()} (model not Ready)"
+                lang == Language.AUTO && autoReady -> "Currently using — Automatic"
+                lang == Language.AUTO && !autoReady -> "Currently using — Automatic (add models)"
+                canaryStatus is ModelStatus.Ready -> "Currently using — ${lang.code.uppercase()}"
+                else -> "Currently using — ${lang.code.uppercase()} (add model)"
             }
             val transcriptionDetail = when {
-                lang == Language.AUTO && autoReady -> "Language ID: Whisper Tiny · ASR: FastConformer CTC · 224 MB total"
-                lang == Language.AUTO -> "Requires Tiny LID + FastConformer"
-                else -> "ASR: Canary 180M Flash INT8 · ${if (canaryStatus is ModelStatus.Ready) "Ready" else "Not downloaded"}"
+                lang == Language.AUTO && autoReady -> "On-device · 224 MB"
+                lang == Language.AUTO -> "Add models to enable Automatic"
+                else -> if (canaryStatus is ModelStatus.Ready) "On-device · Ready" else "Add Accurate model"
             }
             SettingsRow(transcriptionLabel, transcriptionDetail) {}
-            SettingsRow("Benchmark", "", actionLabel = "Open", onClick = onBenchmark)
+            // Advanced rows — only benchmark/diagnostics/licenses, model size details hidden here
+            val isDebugBenchmark = try { com.sprich.app.BuildConfig.ENABLE_BENCHMARK } catch (_: Exception) { false }
+            if (isDebugBenchmark) {
+                SettingsRow("Benchmark", "", actionLabel = "Open", onClick = onBenchmark)
+            }
             SettingsRow("Diagnostics", ""){}
             SettingsRow("Open-source licenses", ""){}
             Spacer(Modifier.height(32.dp))
@@ -210,9 +219,9 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
             }
         }
         when {
-            autoReadyRow -> Text("Automatic language — Detects English, German, Spanish and French automatically. Fast on-device.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            autoReadyRow -> Text("Automatic — finds the language for you. Fast, on-device.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             showDownloading -> Text("Downloading Automatic models…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-            else -> Text("Automatic requires two models: Language detector + Fast transcription model — download below.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            else -> Text("Automatic needs two models — add them below.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
         }
     }
 }
@@ -240,14 +249,17 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 ){
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)){
         Text("Speech model", style = MaterialTheme.typography.bodyMedium)
-        Text("Automatic language — Detects English, German, Spanish and French automatically. 224 MB total (98 + 126).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        ModelCardAdvanced("Canary 180M Flash", "198 MB · On-device", "Accurate — Choose language manually for the accurate model.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
-        ModelCardAdvanced("Whisper Tiny — Language detector", "98 MB · On-device", "Automatic language detection.", selected = false, status = lidStatus, onClick = {}, onDownload = onDownloadLid, onDelete = onDeleteLid, onCancel = onCancel, totalMb = 98)
-        ModelCardAdvanced("FastConformer CTC", "126 MB · On-device", "Automatic — Fast on-device transcription.", selected = false, status = fastStatus, onClick = {}, onDownload = onDownloadFast, onDelete = onDeleteFast, onCancel = onCancel, totalMb = 126)
-        ModelCardAdvanced("Nemotron 3.5 Streaming 560ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream (40 locales, `auto` strips tag). Accuracy-oriented. Independent of 160.", selected = false, status = nemotron560Status, onClick = {}, onDownload = onDownloadNemotron560, onDelete = onDeleteNemotron560, onCancel = onCancel, totalMb = 475)
-        ModelCardAdvanced("Nemotron 3.5 Streaming 160ms", "475 MB archive → ~500M extracted", "True streaming Auto per-stream, low-latency (160ms chunk). Independent of 560.", selected = false, status = nemotron160Status, onClick = {}, onDownload = onDownloadNemotron160, onDelete = onDeleteNemotron160, onCancel = onCancel, totalMb = 475)
-        if (nemotron560Status is ModelStatus.Ready || nemotron160Status is ModelStatus.Ready) {
-            TextButton(onClick = onDeleteAllNemotron) { Text("Delete all Nemotron variants", style = MaterialTheme.typography.labelSmall) }
+        Text("Automatic finds the language for you after you add its models (224 MB total).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ModelCardAdvanced("Accurate — manual language", "198 MB · On-device", "Higher accuracy when you choose the language.", selected = engine==EngineType.ACCURATE, status = canaryStatus, onClick = { onSelect(EngineType.ACCURATE) }, onDownload = onDownloadCanary, onDelete = onDeleteCanary, onCancel = onCancel, totalMb = 198)
+        ModelCardAdvanced("Language detection", "98 MB · On-device", "Needed for Automatic.", selected = false, status = lidStatus, onClick = {}, onDownload = onDownloadLid, onDelete = onDeleteLid, onCancel = onCancel, totalMb = 98)
+        ModelCardAdvanced("Fast transcription", "126 MB · On-device", "Fast on-device transcription for Automatic.", selected = false, status = fastStatus, onClick = {}, onDownload = onDownloadFast, onDelete = onDeleteFast, onCancel = onCancel, totalMb = 126)
+        val isDebugModels = try { com.sprich.app.BuildConfig.ENABLE_BENCHMARK } catch (_: Exception) { false }
+        if (isDebugModels) {
+            ModelCardAdvanced("Streaming (experimental) — 560ms", "475 MB · Experimental", "Not needed for everyday use.", selected = false, status = nemotron560Status, onClick = {}, onDownload = onDownloadNemotron560, onDelete = onDeleteNemotron560, onCancel = onCancel, totalMb = 475)
+            ModelCardAdvanced("Streaming (experimental) — 160ms", "475 MB · Experimental", "Not needed for everyday use.", selected = false, status = nemotron160Status, onClick = {}, onDownload = onDownloadNemotron160, onDelete = onDeleteNemotron160, onCancel = onCancel, totalMb = 475)
+            if (nemotron560Status is ModelStatus.Ready || nemotron160Status is ModelStatus.Ready) {
+                TextButton(onClick = onDeleteAllNemotron) { Text("Delete all Nemotron variants", style = MaterialTheme.typography.labelSmall) }
+            }
         }
     }
 }

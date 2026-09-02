@@ -8,4 +8,5 @@
     <!-- Quiet base stays #FAFAF8/#121212, accent is pleasure -->
     <color name="surface_quiet_light">#FAFAF8</color>
     <color name="surface_quiet_dark">#121212</color>
+    <color name="ic_launcher_background">#FFFFFF</color>
 </resources>

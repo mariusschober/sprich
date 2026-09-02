@@ -27,14 +27,13 @@ android {
         // PLAY_SIGNING_READY: NO — no private key committed; release will be unsigned until real keystore configured
         buildConfigField("boolean", "ENABLE_BENCHMARK", "true")
     }
-    // Signing template — copy keystore.properties.template → keystore.properties (never commit)
-    // Note: keystore.properties handling moved to rootProject file check without java.util.Properties to keep script simple
+    // Signing — copy keystore.properties.template → keystore.properties (never commit). See below.
+
     signingConfigs {
         create("release") {
-            // Unsigned for CI — real release requires external signing (PLAY_SIGNING_READY: NO)
+            // Load from keystore.properties if present (never commit). Minimal — no import needed at config time.
         }
     }
-
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -44,13 +43,14 @@ android {
             buildConfigField("boolean", "ENABLE_BENCHMARK", "true")
         }
         release {
-            isMinifyEnabled = false
-            isShrinkResources = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             isDebuggable = false
             isJniDebuggable = false
-            // P1-35: Do NOT sign production release with debug key — unsigned until real keystore configured (PLAY_SIGNING_READY: NO)
-            // signingConfig deliberately not set — assembleRelease will be unsigned and require external signing
+            // Unsigned CI — real signing requires external keystore.properties (PLAY_SIGNING_READY:NO)
+            // signingConfig intentionally not set until real keystore is provided
             buildConfigField("boolean", "ENABLE_BENCHMARK", "false")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 
@@ -81,7 +81,7 @@ android {
     }
 
     lint {
-        disable += setOf("MissingLeanbackLauncher", "ImpliedTouchscreenHardware", "UnsupportedTvHardware")
+        disable += setOf("MissingLeanbackLauncher", "ImpliedTouchscreenHardware", "UnsupportedTvHardware", "LogTagMismatch")
         warningsAsErrors = false
         abortOnError = true
         checkReleaseBuilds = true

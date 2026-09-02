@@ -26,7 +26,7 @@ import com.sprich.app.storage.Preferences
 fun HomeScreen(onSettings: ()->Unit, onBenchmarkTap: ()->Unit) {
     val ctx = LocalContext.current
     val prefs = remember { Preferences(ctx) }
-    val engine by prefs.engineType.collectAsState(initial = EngineType.FAST)
+    val speechLang by prefs.speechLanguage.collectAsState(initial = com.sprich.app.speech.api.SpeechLanguage.Auto)
     var versionTap by remember { mutableIntStateOf(0) }
     var trial by remember { mutableStateOf("") }
     val infinite = rememberInfiniteTransition(label = "homeBreath")
@@ -52,10 +52,15 @@ fun HomeScreen(onSettings: ()->Unit, onBenchmarkTap: ()->Unit) {
             }
         }
         Spacer(Modifier.height(16.dp))
-        Text("Ready", style = MaterialTheme.typography.displaySmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth())
+        Text("Ready to speak", style = MaterialTheme.typography.displaySmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
-        val engineLabel = when (engine) { EngineType.ACCURATE -> "Accurate"; EngineType.STREAMING -> "Streaming"; else -> "Fast" }
-        Text("$engineLabel · English / Deutsch / Español · Offline", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth())
+        val langLabel = when (speechLang) {
+            is com.sprich.app.speech.api.SpeechLanguage.Fixed -> when ((speechLang as com.sprich.app.speech.api.SpeechLanguage.Fixed).tag) {
+                "de" -> "Deutsch"; "es" -> "Español"; "fr" -> "Français"; else -> "English"
+            }
+            else -> "Automatic"
+        }
+        Text("$langLabel · English · Deutsch · Español · Français · On-device", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(24.dp))
         Surface(
             shape = RoundedCornerShape(20.dp),
@@ -82,7 +87,7 @@ fun HomeScreen(onSettings: ()->Unit, onBenchmarkTap: ()->Unit) {
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("Instant Dictation inserts directly at the cursor.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Text appears where you type.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         Spacer(Modifier.weight(1f))

@@ -13,8 +13,12 @@ class AudioRingBuffer(capacitySamples: Int = 16000 * 5) {
     private var size = 0
     @Volatile private var totalWritten: Long = 0
 
+    // Legacy wrapper — delegates to offset version
     @Synchronized
-    fun write(samples: ShortArray, offset: Int = 0, len: Int = samples.size - offset) {
+    fun write(samples: ShortArray) = write(samples, 0, samples.size)
+
+    @Synchronized
+    fun write(samples: ShortArray, offset: Int, len: Int) {
         var remaining = len
         var srcOff = offset
         // O(1) deficit: if incoming > writable, drop oldest in one step

@@ -22,6 +22,8 @@ class DownloadManager(
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
         .build()
 
     @Volatile private var currentCall: okhttp3.Call? = null
@@ -132,6 +134,8 @@ class DownloadManager(
             val call = client.newCall(reqBuilder.build())
             currentCall = call
             call.execute().use { resp ->
+                // Block redirects for model download (integrity via SHA, but avoid following attacker redirects)
+                if (resp.code in 300..399) throw Exception("Redirect blocked ${resp.code}")
                 // If we asked for Range but server answered 200, it doesn't support resume — restart
                 if (downloaded > 0 && resp.code == 200) {
                     tmpFile.delete()
