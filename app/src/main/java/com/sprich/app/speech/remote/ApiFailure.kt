@@ -33,6 +33,7 @@ sealed interface ApiFailure {
             401, 403 -> Authentication
             404 -> ModelUnavailable
             429 -> RateLimited
+            in 300..399 -> Http(code, "Redirect blocked - redirects disabled for BYOK: $bodySnippet".trim())
             in 500..599 -> ProviderUnavailable
             else -> Http(code, bodySnippet)
         }

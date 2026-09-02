@@ -8,6 +8,11 @@
     <exclude domain="file" path="fastconformer/" />
     <exclude domain="file" path="whisper-tiny/" />
     <exclude domain="file" path="vocab/" />
+    <!-- Diagnostic audio must never enter backup — defense-in-depth even though stored in noBackupFilesDir -->
+    <exclude domain="file" path="sprich_replay/" />
+    <exclude domain="file" path="sprich_traces/" />
+    <exclude domain="file" path="diagnostics/" />
+    <exclude domain="file" path="benchmark/" />
     <!-- BYOK secrets: encrypted in noBackupFilesDir/api_secrets — never backed up. DataStore contains only refs, not plaintext. -->
     <exclude domain="file" path="api_secrets/" />
     <!-- DataStore is the real prefs location, not SharedPreferences. Exclude its file explicitly. -->

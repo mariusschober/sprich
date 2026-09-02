@@ -63,30 +63,14 @@ class OpenAiCompatibleSttProvider(
                 .connectTimeout(policy.socketConnectMs, TimeUnit.MILLISECONDS)
                 .readTimeout(policy.socketReadMs, TimeUnit.MILLISECONDS)
                 .writeTimeout(policy.socketWriteMs, TimeUnit.MILLISECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .build()
 
         fun createWithDefaultClient(baseUrl: String, model: String, policy: DeadlinePolicy = DeadlinePolicy.DEFAULT): OpenAiCompatibleSttProvider =
             OpenAiCompatibleSttProvider(baseUrl, model, createClient(policy))
 
-        private fun isValidHttpsUrl(url: String): Boolean {
-            if (url.isBlank()) return false
-            return try {
-                val uri = java.net.URI(url.trim())
-                val scheme = uri.scheme?.lowercase() ?: return false
-                if (scheme != "https") {
-                    if (scheme == "http") {
-                        val host = uri.host?.lowercase() ?: return false
-                        val isDebug = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
-                        if (!isDebug) return false
-                        if (host != "localhost" && host != "127.0.0.1" && host != "10.0.2.2") return false
-                    } else return false
-                }
-                val host = uri.host ?: return false
-                if (host.isBlank()) return false
-                if (uri.userInfo != null) return false
-                true
-            } catch (_: Exception) { false }
-        }
+        private fun isValidHttpsUrl(url: String): Boolean = com.sprich.app.core.security.EndpointValidator.isValidHttpsUrl(url)
 
         private fun readBoundedBody(resp: okhttp3.Response): String? {
             val body = resp.body ?: return ""

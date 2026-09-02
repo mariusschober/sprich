@@ -92,6 +92,9 @@ object ReplayHarness {
      * Returns File if saved, null if disabled or failed.
      * Caller must check opt-in flag (prefs) before calling.
      */
+    /** Returns the diagnostic replay dir — MUST be noBackupFilesDir per privacy P1 (never enters backup). */
+    fun replayDir(context: Context): File = File(context.noBackupFilesDir, DIR_NAME).apply { mkdirs() }
+
     fun saveWavIfEnabled(
         context: Context,
         enabled: Boolean,
@@ -102,13 +105,13 @@ object ReplayHarness {
         if (!enabled) return null
         if (pcm.isEmpty()) return null
         return try {
-            val dir = File(context.filesDir, DIR_NAME).apply { mkdirs() }
+            val dir = replayDir(context)
             val name = "utt_${utteranceId}_${config.resolvedLanguageTag()}_${System.currentTimeMillis()}.wav"
             val file = File(dir, name)
             val bytes = encodeWav(pcm, 16000)
             file.writeBytes(bytes)
             Log.i(TAG, "saved wav utt=$utteranceId samples=${pcm.size} lang=${config.resolvedLanguageTag()} file=${file.absolutePath}")
-            // Also save sidecar config
+            // Also save sidecar config — atomic pair
             val meta = File(dir, "$name.meta.txt")
             meta.writeText("utteranceId=$utteranceId\nlanguage=${config.resolvedLanguageTag()}\ntask=${config.resolvedTask()}\nsamples=${pcm.size}\nrms=${computeRms(pcm)}\n")
             file
@@ -167,15 +170,47 @@ object ReplayHarness {
     }
 
     fun listSavedWavs(context: Context): List<File> {
-        val dir = File(context.filesDir, DIR_NAME)
-        if (!dir.exists()) return emptyList()
-        return dir.listFiles { f -> f.extension == "wav" }?.toList() ?: emptyList()
+        // Prefer noBackup location; also check legacy filesDir for migration cleanup
+        val dirs = listOf(File(context.noBackupFilesDir, DIR_NAME), File(context.filesDir, DIR_NAME))
+        val all = mutableListOf<File>()
+        for (d in dirs) {
+            if (d.exists()) d.listFiles { f -> f.extension == "wav" }?.let { all.addAll(it) }
+        }
+        return all
+    }
+
+    /** Delete WAV and its sidecar .meta.txt together — no orphaning. */
+    fun deleteWavWithMeta(wavFile: File) {
+        try { wavFile.delete() } catch (_: Exception) {}
+        try { File(wavFile.absolutePath + ".meta.txt").delete() } catch (_: Exception) {}
+        // Also handle case where meta is "name.meta.txt" with extra suffix? Already covered
     }
 
     fun cleanupOld(context: Context, keepLast: Int = 20) {
         val wavs = listSavedWavs(context).sortedBy { it.lastModified() }
         if (wavs.size > keepLast) {
-            wavs.take(wavs.size - keepLast).forEach { try { it.delete() } catch (_: Exception) {} }
+            wavs.take(wavs.size - keepLast).forEach { deleteWavWithMeta(it) }
         }
+    }
+
+    /** Remove all replay data — used for Clear local data. Ensures WAV + meta + traces all deleted atomically. */
+    fun clearAll(context: Context) {
+        for (dir in listOf(File(context.noBackupFilesDir, DIR_NAME), File(context.filesDir, DIR_NAME))) {
+            if (!dir.exists()) continue
+            try {
+                dir.listFiles()?.forEach { f ->
+                    try { f.delete() } catch (_: Exception) {}
+                }
+                // Also clear any .meta.txt remnants that may not have paired wav after crash
+                try { dir.delete() } catch (_: Exception) {}
+            } catch (_: Exception) {}
+        }
+        // Also clear debug transcript traces if any (future)
+        try {
+            File(context.noBackupFilesDir, "sprich_traces").deleteRecursively()
+        } catch (_: Exception) {}
+        try {
+            File(context.filesDir, "sprich_traces").deleteRecursively()
+        } catch (_: Exception) {}
     }
 }

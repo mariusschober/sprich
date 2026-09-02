@@ -89,35 +89,36 @@ class CompositionTypographyTest {
     @Test fun stableShrinkDoesNotCommitSpeculative() {
         val cm = CompositionManager()
         val ic = FakeIC()
+        // IME-local partials: composing stays null externally
         cm.applyUpdate(ic, "Hello world", "", false)
-        assertEquals("Hello world", ic.composing)
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
-        // Hypothesis shrinks to "Hello"
+        // Hypothesis shrinks to "Hello" — still IME-local
         cm.applyUpdate(ic, "Hello", "", false)
-        assertEquals("Hello", ic.composing)
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
         // Grows again
         cm.applyUpdate(ic, "Hello there", "", false)
-        assertEquals("Hello there", ic.composing)
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
-        // Final
+        // Final enters exactly once
         cm.applyUpdate(ic, "Hello there", "", true)
         assertEquals("Hello there", ic.committed.toString())
         assertFalse(ic.committed.toString().contains("Hello world"))
-        assertEquals(0, ic.committed.toString().windowed("Hello world".length, 1, false).count { it == "Hello world" }.let { if (it>1) 1 else it })
     }
 
     @Test fun emptyPartialDiscardsNotCommits() {
         val cm = CompositionManager()
         val ic = FakeIC("before ")
         cm.applyUpdate(ic, "temporary words", "", false)
-        assertEquals("temporary words", ic.composing)
+        assertNull(ic.composing) // IME-local, no external composing
         // Empty partial should discard, not commit
         cm.applyUpdate(ic, "", "", false)
         assertNull(ic.composing)
         assertEquals("before ", ic.committed.toString())
         // Empty final also discards
         cm.applyUpdate(ic, "something", "", false)
+        assertNull(ic.composing)
         cm.applyUpdate(ic, "", "", true)
         assertEquals("before ", ic.committed.toString())
         assertNull(ic.composing)
@@ -126,14 +127,14 @@ class CompositionTypographyTest {
     @Test fun repetitionDoesNotTriggerSilentCommitFallback() {
         val cm = CompositionManager()
         val ic = FakeIC()
-        // Simulate compliant editor that correctly replaces composing
-        assertTrue(cm.applyUpdate(ic, "very very", "", false))
-        assertEquals("very very", ic.composing)
-        // Second partial with intentional repetition - must NOT be treated as silent-commit
-        assertTrue(cm.applyUpdate(ic, "very very good", "", false))
-        assertEquals("very very good", ic.composing)
+        // IME-local policy: partials never trigger silent-commit fallback, intentional repetition preserved
+        assertFalse(cm.applyUpdate(ic, "very very", "", false))
+        assertNull(ic.composing)
+        // Second partial with intentional repetition — still IME-local, no duplication
+        assertFalse(cm.applyUpdate(ic, "very very good", "", false))
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
-        // Final
+        // Final must preserve intentional repetition exactly once
         assertTrue(cm.applyUpdate(ic, "very very good", "", true))
         assertEquals("very very good", ic.committed.toString())
     }

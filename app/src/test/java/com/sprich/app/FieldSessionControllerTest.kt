@@ -64,9 +64,9 @@ class FieldSessionControllerTest {
         val fieldB = FakeIC("B:")
         val idA = controller.onFieldFocused("fieldA", 2, 2)
         controller.applyPartial(idA, fieldA, "hello", "world")
-        // Field already has "A:" so composition adds leading space per spacing rule
-        assertTrue(fieldA.composing?.trim() == "hello world")
-        assertTrue(fieldA.composing?.contains("hello world") == true)
+        // IME-local policy: partials do not set external composing, so composing stays null
+        assertNull(fieldA.composing)
+        assertEquals(0, fieldA.committed.length - "A:".length)
         // Rapid switch to B before final
         controller.onFieldLost("fieldA")
         val idB = controller.onFieldFocused("fieldB", 2, 2)
@@ -88,10 +88,11 @@ class FieldSessionControllerTest {
         val controller = FieldSessionController(session, comp)
         val field = FakeIC()
         val id = controller.onFieldFocused("f1", 0, 0)
+        // IME-local: partials stay inside Sprich, composing stays null externally
         controller.applyPartial(id, field, "Let's meet", "tomorrow")
-        assertEquals("Let's meet tomorrow", field.composing)
+        assertNull(field.composing)
         controller.applyPartial(id, field, "Let's meet", "Friday")
-        assertEquals("Let's meet Friday", field.composing)
+        assertNull(field.composing)
         assertEquals(0, field.committed.length)
     }
 

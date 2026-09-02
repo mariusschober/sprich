@@ -87,9 +87,11 @@ class TranscriptionCoordinator(
                 }
             }
             is TranscriptionPlan.LocalApiFallback -> {
-                // Local first, remote only on objective failure
+                // Local first, remote only on objective failure — Cancellation must NEVER trigger fallback/upload
                 val localResult = try {
                     local.transcribe(pcm, tp.local, plan.speechConfig)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w("TranscriptionCoordinator", "local failed, attempting fallback", e)
                     null

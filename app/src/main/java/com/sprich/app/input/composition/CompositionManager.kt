@@ -75,19 +75,19 @@ class CompositionManager {
                 // the first partial so finalization cannot invent a leading space.
                 val needsSpace = leadingSpaceNeeded ?: needsSpaceBeforeCursor(ic, finalText)
                 val toCommit = if (needsSpace) " $finalText" else finalText
+                // ONE irreversible editor mutation — never retry automatically. Android returning false does not prove no mutation; hostile editor may append and return false, retry would duplicate.
+                // Authority already claimed via FieldSessionController exactly-once set before this call. Ambiguous stays ambiguous.
                 val commitOk = if (composingActive) {
-                    val ok = ic.commitText(toCommit, 1)
+                    val ok = try { ic.commitText(toCommit, 1) } catch (_: Exception) { false }
                     composingActive = false
                     ok
                 } else {
-                    ic.commitText(toCommit, 1)
+                    try { ic.commitText(toCommit, 1) } catch (_: Exception) { false }
                 }
                 Log.i("Composition", "commitText chars=${toCommit.length} needsSpace=$needsSpace composingActiveBefore=${composingActive} commitOk=$commitOk")
                 if (!commitOk) {
-                    // Fallback: try commit without composing state if editor rejected.
-                    val fallbackOk = try { ic.commitText(toCommit, 1) } catch (_: Exception) { false }
-                    Log.w("Composition", "commitText fallback fallbackOk=$fallbackOk")
-                    if (!fallbackOk) return false
+                    Log.w("Composition", "commitText ambiguous failure (returned false) — NOT retrying to avoid duplication")
+                    return false
                 }
                 lastComposing = null
                 lastStable = ""; lastUnstable = ""
@@ -95,51 +95,27 @@ class CompositionManager {
                 return true
             }
 
-            // Live update: set composing text = stable + unstable — dedupe to prevent flicker + spam
+            // P0 Fix: Partials stay inside Sprich IME — never via external setComposingText.
+            // Reliability is more important than flashy external partial text. Transport safety via InputConnection
+            // cannot be established reliably (silent-commit, WebView, throwing editors), so we keep partials IME-local.
+            // Final enters editor exactly once via single commitText. No HelloHello duplication possible.
             val composing = when {
                 stable.isNotEmpty() && unstable.isNotEmpty() -> "$stable $unstable"
                 stable.isNotEmpty() -> stable
                 else -> unstable
             }.trim()
             if (composing.isEmpty()) {
-                // Empty partial means discard/clear speculative composition, not commit it.
-                if (composingActive) {
-                    try { ic.setComposingText("", 1) } catch (_: Exception) {}
-                    try { ic.finishComposingText() } catch (_: Exception) {}
-                    composingActive = false
-                }
                 lastStable = stable; lastUnstable = unstable; lastComposing = null
                 leadingSpaceNeeded = null
                 return true
             }
-            // Some editors reject composing spans. Do not commit every partial as a fallback;
-            // doing so duplicates the growing hypothesis. The final update will commit once.
-            if (compositionRejected) return false
-            // Silent-commit heuristic REMOVED per reliability invariant: transcript repetition (e.g. "very very good")
-            // must never be treated as editor incompatibility. Intentional repetition is orthogonal to transport reliability.
-            // Fallback to FINAL_ONLY only when setComposingText() explicitly rejects the operation (returns false).
-            // If detecting silent commits robustly is impossible from InputConnection APIs, prefer FINAL_ONLY over heuristic inspection.
-            // See mission P0/P1 — first-word duplicate and exact repetition heuristics based solely on content are removed.
-            // Dedupe: don't re-set same composing text nonstop (HelloHello spam)
-            if (composing == lastComposing) return true
-            // Punctuation-aware spacing: punctuation-only composing like "," should attach, handled via needsSpaceBeforeCursor.
-            // For regular composing, cache cursor decision once per utterance to avoid hypothesis-invented space.
+            if (composing == lastComposing) return true // internal dedup, still IME-local
             if (leadingSpaceNeeded == null) {
                 leadingSpaceNeeded = needsSpaceBeforeCursor(ic, composing)
             }
-            val visibleComposing = if (leadingSpaceNeeded == true) " $composing" else composing
-            val ok = ic.setComposingText(visibleComposing, 1)
-            if (!ok) {
-                compositionRejected = true
-                lastStable = stable
-                lastUnstable = unstable
-                lastComposing = null
-                return false
-            } else {
-                composingActive = true
-            }
             lastStable = stable; lastUnstable = unstable; lastComposing = composing
-            return true
+            // Do NOT call ic.setComposingText — IME preview only. Return false to signal caller to use IME-local preview.
+            return false
         } catch (e: Exception) {
             Log.w("Composition", "applyUpdate failed", e)
             return false

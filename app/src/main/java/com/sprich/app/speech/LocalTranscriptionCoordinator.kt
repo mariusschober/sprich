@@ -91,6 +91,8 @@ open class LocalTranscriptionCoordinator(
                     Log.w("Coordinator", "LID unavailable reason=${outcome.reason} — Unknown")
                 }
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w("Coordinator", "LID exception", e)
             resolved = ResolvedUtteranceLanguage.Unknown
@@ -104,6 +106,8 @@ open class LocalTranscriptionCoordinator(
         }
         val ft: FinalTranscript = try {
             fast.transcribeSnapshot(pcm, effectiveConfig)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w("Coordinator", "FastConformer transcribeSnapshot failed", e)
             FinalTranscript("")
@@ -135,6 +139,8 @@ open class LocalTranscriptionCoordinator(
         )
         val ft = try {
             canary.transcribeSnapshot(pcm, accurateConfig)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w("Coordinator", "Canary transcribeSnapshot failed", e)
             FinalTranscript("")

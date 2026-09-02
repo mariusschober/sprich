@@ -226,9 +226,9 @@ class ExactlyOnceStressTest {
         val idB = controller.onFieldFocused("fieldB", 2, 2)
         // Old partial replay attempt with old sessionId must be ignored
         assertFalse(controller.applyPartial(idA, fieldA, "old partial", ""))
-        // New session's fresh partial should succeed
-        assertTrue(controller.applyPartial(idB, fieldB, "new", "partial"))
-        assertTrue(fieldB.composing?.contains("new") == true)
+        // New session's fresh partial: under IME-local policy, partials are preview-only (return false, no external composing)
+        assertFalse(controller.applyPartial(idB, fieldB, "new", "partial"))
+        assertNull(fieldB.composing)
         assertFalse(fieldA.committed.toString().contains("new"))
     }
 
@@ -361,40 +361,32 @@ class ExactlyOnceStressTest {
     @Test
     fun editorSilentlyCommitsIsDetectedAndFallbackPreventsDuplication() {
         val comp = CompositionManager()
-        // New policy: transcript-content-based silent-commit detection removed per P1.
-        // Only explicit rejection via setComposingText returning false triggers FINAL_ONLY.
-        // This fake returns false on second call to simulate explicit rejection (reliable signal).
+        // New IME-local policy: partials never go externally, so silent-commit hostiles never get a chance to duplicate.
+        val tmpIc = FakeIc()
+        assertFalse(comp.applyUpdate(tmpIc, "Hello", "", false))
+        comp.reset()
+        // Direct test with explicit rejecting fake — still IME-local, no external composing
         val ic = object : FakeIc() {
             var calls = 0
             override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
                 calls++
-                if (calls == 1) {
-                    // First call succeeds (compliant)
-                    composing = text?.toString()
-                    setComposingCalls++
-                    return true
-                }
-                // Second call explicitly rejects — manager must fallback to IME preview + final-only
+                composing = text?.toString()
                 setComposingCalls++
-                return false
+                return true
             }
-            override fun finishComposingText(): Boolean { composing = null; return true }
         }
-        // First partial succeeds
-        comp.applyUpdate(ic, "Hello", "", false)
-        assertEquals("Hello", ic.composing)
-        // Second partial — explicit rejection triggers fallback
+        // First partial — IME-local, should return false regardless of editor capability
+        assertFalse(comp.applyUpdate(ic, "Hello", "", false))
+        assertNull(ic.composing)
+        // Second partial — still IME-local
         val second = comp.applyUpdate(ic, "Hello world", "", false)
-        assertFalse(second) // rejected due to explicit false, fallback to IME bar
-        // After fallback, further partials should stay rejected until reset
-        assertFalse(comp.applyUpdate(ic, "Hello world again", "", false))
-        // Final must still commit exactly once via fallback path after reset or via compositionRejected logic
+        assertFalse(second)
+        // Final must still commit exactly once
         ic.composing = null
         comp.reset()
         assertTrue(comp.applyUpdate(ic, "final", "", true))
         assertEquals("final", ic.committed.toString())
-        // Also verify that a silently-committing editor that returns true (content-based) is NO LONGER detected via heuristic —
-        // intentional repetitions like "very very good" must survive without false fallback. See CompositionTypographyTest.
+        // Silent-commit editor: with IME-local, duplication never happens because partials never externally committed
         val comp2 = CompositionManager()
         val silentIc = object : FakeIc() {
             override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
@@ -403,22 +395,26 @@ class ExactlyOnceStressTest {
                 setComposingCalls++
                 return true
             }
-            override fun finishComposingText(): Boolean { composing = null; return true }
         }
-        // With heuristic removed, this will NOT be rejected (content inspection removed)
-        assertTrue(comp2.applyUpdate(silentIc, "Hello", "", false))
-        assertTrue(comp2.applyUpdate(silentIc, "Hello world", "", false))
-        // Manager now trusts explicit return value only; duplication risk accepted to preserve intentional repetitions.
+        // Partials are IME-local, so silentIc never gets to append via partial
+        assertFalse(comp2.applyUpdate(silentIc, "Hello", "", false))
+        assertEquals(0, silentIc.committed.length)
+        assertFalse(comp2.applyUpdate(silentIc, "Hello world", "", false))
+        assertEquals(0, silentIc.committed.length)
+        // Only final commits
+        assertTrue(comp2.applyUpdate(silentIc, "Hello world final", "", true))
+        assertEquals("Hello world final", silentIc.committed.toString())
     }
 
     @Test
     fun editorReplacesComposingCorrectly() {
         val cm = CompositionManager()
         val ic = FakeIc()
+        // IME-local partials: composing stays null externally, but final still merges correctly
         cm.applyUpdate(ic, "Hello", "", false)
-        assertEquals("Hello", ic.composing)
+        assertNull(ic.composing)
         cm.applyUpdate(ic, "Hello world", "", false)
-        assertEquals("Hello world", ic.composing)
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
         cm.applyUpdate(ic, "Hello world", "", true)
         assertEquals("Hello world", ic.committed.toString())

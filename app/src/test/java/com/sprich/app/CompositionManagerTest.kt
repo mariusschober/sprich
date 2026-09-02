@@ -31,7 +31,7 @@ class CompositionManagerTest {
             et.selectionEnd = et.text.length
             return et
         }
-        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean { committed.delete(committed.length - beforeLength, committed.length); return true }
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean { if (committed.isNotEmpty() && beforeLength <= committed.length) committed.delete(committed.length - beforeLength, committed.length); return true }
         override fun deleteSurroundingTextInCodePoints(b: Int, a: Int): Boolean = deleteSurroundingText(b,a)
         override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
             if (!acceptsComposition) return false
@@ -66,8 +66,10 @@ class CompositionManagerTest {
     fun applyUpdateSetsComposing() {
         val cm = CompositionManager()
         val ic = FakeIC()
-        cm.applyUpdate(ic, "Hello", "world", false)
-        assertEquals("Hello world", ic.composing)
+        // P0: partials are IME-local — never externally set composing, no duplication risk
+        val res = cm.applyUpdate(ic, "Hello", "world", false)
+        assertFalse(res)
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
     }
 
@@ -76,6 +78,8 @@ class CompositionManagerTest {
         val cm = CompositionManager()
         val ic = FakeIC()
         cm.applyUpdate(ic, "Hello", "world", false)
+        // Partial is IME-local, composing stays null
+        assertNull(ic.composing)
         cm.applyUpdate(ic, "Hello world", "", true)
         assertEquals("Hello world", ic.committed.toString())
         assertNull(ic.composing)
@@ -86,10 +90,15 @@ class CompositionManagerTest {
         val cm = CompositionManager()
         val ic = FakeIC()
         cm.applyUpdate(ic, "Let's meet", "tomorrow", false)
-        assertEquals("Let's meet tomorrow", ic.composing)
+        // IME-local, no external composing
+        assertNull(ic.composing)
         cm.applyUpdate(ic, "Let's meet", "Friday", false)
-        assertEquals("Let's meet Friday", ic.composing)
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
+        // Final must not duplicate
+        cm.applyUpdate(ic, "Let's meet Friday", "", true)
+        assertEquals("Let's meet Friday", ic.committed.toString())
+        assertFalse(ic.committed.toString().contains("Let's meetLet's meet"))
     }
 
     @Test
@@ -104,6 +113,7 @@ class CompositionManagerTest {
         val cm = CompositionManager()
         val ic = FakeIC()
         cm.applyUpdate(ic, "a", "b", false)
+        // composing never active externally, still clears internal state
         cm.finishIfActive(ic)
         assertNull(ic.composing)
     }
@@ -125,13 +135,16 @@ class CompositionManagerTest {
         val cm = CompositionManager()
         val emptyField = FakeIC()
         cm.applyUpdate(emptyField, "Hello", "", false)
+        // Partial IME-local, no composing externally
+        assertNull(emptyField.composing)
         cm.applyUpdate(emptyField, "Hello world", "", true)
         assertEquals("Hello world", emptyField.committed.toString())
 
         val populatedField = FakeIC().apply { committed.append("Before") }
         cm.reset()
         cm.applyUpdate(populatedField, "hello", "", false)
-        assertEquals(" hello", populatedField.composing)
+        // Partial IME-local, so composing stays null, but leadingSpaceNeeded cached
+        assertNull(populatedField.composing)
         cm.applyUpdate(populatedField, "hello world", "", true)
         assertEquals("Before hello world", populatedField.committed.toString())
     }

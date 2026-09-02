@@ -181,13 +181,11 @@ class FieldSessionUtteranceLifecycleTest {
         val ic = makeIc()
         val id = controller.onFieldFocused("field", 0, 0)
         session.onAudioStarted()
+        // IME-local partial: external composing stays null
         controller.applyPartial(id, ic, "This is only a par", "")
-        assertNotNull(ic.composing)
-        // FIELD_LOST must discard, not commit
+        assertNull(ic.composing)
+        // FIELD_LOST must discard, not commit — still no committed text
         controller.onFieldLost("field")
-        // Simulate what IME does: discardPartial should have cleared composing without committing
-        // Our FakeIc's finishComposingText would have committed, but discardPartial uses setComposingText("",1)
-        // So committed should not contain the partial
         assertFalse(ic.committed.toString().contains("This is only a par"))
         // And session should be Idle
         assertTrue(session.state.value is SessionState.Idle)

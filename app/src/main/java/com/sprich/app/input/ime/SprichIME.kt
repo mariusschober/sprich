@@ -182,6 +182,11 @@ class SprichIME : InputMethodService() {
     private var finalizationActorJob: Job? = null
     @Volatile var lastQueueDepth: Int = 0
         private set
+    // USER_STOP serialization — freeze and enqueue after earlier, stop after queue drains (FIFO lane)
+    @Volatile private var stopRequested = false
+    @Volatile private var stopRequestedGeneration: Long = 0L
+    // Backpressure: speech episode suppression — mark entire VAD episode suppressed while unavailable
+    @Volatile private var suppressEpisode = false
 
     // Exactly-once diagnostic counters (debug/test builds, transcript-free)
     @Volatile var finalizationClaims: Long = 0
@@ -235,6 +240,8 @@ class SprichIME : InputMethodService() {
             .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
             .build()
     }
     private var transcriptionCoordinator: TranscriptionCoordinator? = null
@@ -328,26 +335,36 @@ class SprichIME : InputMethodService() {
             scope.launch { try { prefs.personalVocabHintEnabled.collect { personalVocabHintEnabled = it } } catch (e: Exception) {} }
             // One-time legacy credential migration (P0-3 fail-closed)
             scope.launch { try { com.sprich.app.storage.LegacyApiCredentialMigrator.migrateIfNeeded(prefs, ApiSecretStore(this@SprichIME)) } catch (e: Exception) { Log.w("SprichIME", "legacy migration failed", e) } }
-            // Selectively preload only the currently selected route — do NOT load Canary when Automatic uses FastConformer
+            // Preload: keep onCreate cheap — only warm local engine AFTER mode is resolved. API_PRIMARY stays local-cold until remote failure.
+            // Do not load any native model here if API_PRIMARY, even before first field focus. Wait for mode resolution.
             scope.launch {
                 try {
                     val mm = try { com.sprich.app.models.manager.ModelManager(this@SprichIME) } catch (_: Exception) { null }
+                    // Wait for persisted mode — cheap suspend, no blocking DataStore on audio path
+                    val persistedMode = try { prefs.transcriptionMode.first() } catch (_: Exception) { TranscriptionMode.ON_DEVICE }
+                    if (persistedMode == TranscriptionMode.API_PRIMARY) {
+                        Log.i("SprichIME", "onCreate: API_PRIMARY persisted — staying local-cold (0 loads) until remote failure")
+                        if (localCoordinator == null) {
+                            localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+                        }
+                        return@launch
+                    }
                     val st = try { prefs.speechLanguage.first() } catch (_: Exception) { com.sprich.app.speech.api.SpeechLanguage.Auto }
                     val route = determineRoute(st)
                     when (route) {
                         is LocalAsrRoute.AutomaticFastConformer -> {
                             if (mm?.isAutomaticReady() == true) {
                                 val lidRes = lidEngine.load().also { lidLoadAttempts.incrementAndGet() }
-                                if (lidRes.isSuccess) Log.i("SprichIME", "Auto preload: Tiny LID success")
+                                if (lidRes.isSuccess) Log.i("SprichIME", "Auto preload after mode resolved: Tiny LID success")
                                 val fastRes = fastConformerEngine.load().also { fastLoadAttempts.incrementAndGet() }
-                                if (fastRes.isSuccess) Log.i("SprichIME", "Auto preload: FastConformer success")
+                                if (fastRes.isSuccess) Log.i("SprichIME", "Auto preload after mode resolved: FastConformer success")
                             } else {
                                 Log.i("SprichIME", "Auto preload skipped — Automatic not ready (needs Tiny LID + FastConformer)")
                             }
                         }
                         is LocalAsrRoute.AccurateCanary -> {
                             val res = engine.load().also { canaryLoadAttempts.incrementAndGet() }
-                            if (res.isSuccess) Log.i("SprichIME", "Accurate preload: Canary success for ${route.language}")
+                            if (res.isSuccess) Log.i("SprichIME", "Accurate preload after mode resolved: Canary success for ${route.language}")
                             else Log.i("SprichIME", "Accurate preload not ready for ${route.language}")
                         }
                     }
@@ -1208,12 +1225,23 @@ class SprichIME : InputMethodService() {
                 Log.i("SprichIME", "vad alive state=${result.state.name} rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} chunks=$pipelineChunkCount pushed=$pipelinePushedSampleCount")
             }
 
-            if (catchingUp && result.state == Vad.State.SPEECH) {
+            // Backpressure: speech episode suppression — if already suppressing, ignore entire episode until clean silence/end
+            if (suppressEpisode) {
+                if (result.state == Vad.State.SILENCE || result.state == Vad.State.LONG_SILENCE || result.state == Vad.State.UTTERANCE_END) {
+                    suppressEpisode = false
+                    Log.i("SprichIME", "Suppressed episode ended with ${result.state.name} — ready for next clean utterance")
+                    // Do not treat suppressed UTTERANCE_END as endpoint
+                    return
+                }
+                // Still in suppressed speech/hesitation — ignore tail, never capture partial
+                return
+            }
+            if (catchingUp && (result.state == Vad.State.SPEECH || result.state == Vad.State.HESITATION)) {
+                // Start of suppressed episode — count once per episode, not per chunk
+                suppressEpisode = true
                 catchingUpSuppressedOnsets.incrementAndGet()
-                Log.w("SprichIME", "CatchingUp suppressing new utterance onset depth=${queueDepth.get()} max=$maxPendingQueueDepth suppressed=${catchingUpSuppressedOnsets.get()} rejected=${catchingUpRejectedOnsets.get()}")
+                Log.w("SprichIME", "CatchingUp suppressing new utterance onset depth=${queueDepth.get()} max=$maxPendingQueueDepth suppressed=${catchingUpSuppressedOnsets.get()} rejected=${catchingUpRejectedOnsets.get()} — marking entire episode suppressed")
                 updateCatchUpUi(true)
-                // Explicit backpressure: do not start new utterance until queue recovers; count as suppressed onset, surface Catching up UI.
-                // Degrade speculative partials while catching up — Finals only.
                 return
             }
             if (
@@ -1365,8 +1393,9 @@ class SprichIME : InputMethodService() {
                     Log.i("SprichIME", "finalization actor cancelled pending=$pending")
                     throw e
                 } catch (t: Throwable) {
-                    Log.e("SprichIME", "finalizePending failed $pending", t)
-                    failSession(pending.token.generation, "finalization failed token=${pending.token} reason=${pending.reason}", "Transcription failed", "Tap to retry", t)
+                    Log.e("SprichIME", "finalizePending outer failed $pending", t)
+                    // Utterance-scoped — do NOT destroy B
+                    try { failUtteranceScoped(pending.token, "finalization outer failed ${pending.token}", t) } catch (_: Exception) {}
                 } finally {
                     val newDepth = queueDepth.decrementAndGet()
                     lastQueueDepth = newDepth
@@ -1380,8 +1409,33 @@ class SprichIME : InputMethodService() {
                         endpointPending.set(false)
                         // Ensure UI cleared when fully drained
                         if (!catchingUp) updateCatchUpUi(false)
+                        // USER_STOP FIFO termination — stop after queue drains, preserving FIFO order, no loss
+                        if (stopRequested && newDepth == 0) {
+                            val prevGen = stopRequestedGeneration
+                            stopRequested = false
+                            // Bump generation after queue drained to prevent new stale callbacks, but not before FIFO drained
+                            val newGen = sessionGeneration.incrementAndGet()
+                            fieldGeneration.incrementAndGet()
+                            try { engineJob?.cancel() } catch (_: Exception) {}
+                            engineJob = null
+                            // Ensure audio stopped (already stopped at STOP request, but ensure)
+                            // Do not clear utteranceAudio if B already cleared? It's already empty after freeze, safe
+                            utteranceActive.set(false)
+                            endpointPending.set(false)
+                            lastPartialText = ""
+                            frozenUtterancePcm = null
+                            currentUtteranceToken = null
+                            activeUtterance = null
+                            vad.reset()
+                            lastVadState = Vad.State.SILENCE
+                            try { composition.discardPartial(currentInputConnection) } catch (_: Exception) {}
+                            try { if (session.state.value !is SessionState.Idle) session.end() } catch (_: Exception) { try { session.idle() } catch (_: Exception) {} }
+                            updateImeUi(false)
+                            Log.i("SprichIME", "USER_STOP drained termination prevGen=$prevGen newGen=$newGen")
+                            writeDiagnostics("stopped USER_STOP drained prevGen=$prevGen newGen=$newGen claims=$finalizationClaims commits=$finalCommitCount")
+                        }
                     }
-                    Log.i("SprichIME", "actor processed pending=${pending.token.utteranceId} depthBefore=$depthBefore newDepth=$newDepth catchingUp=$catchingUp")
+                    Log.i("SprichIME", "actor processed pending=${pending.token.utteranceId} depthBefore=$depthBefore newDepth=$newDepth catchingUp=$catchingUp stopRequested=$stopRequested")
                 }
             }
             Log.i("SprichIME", "finalization actor completed (channel closed)")
@@ -1706,7 +1760,8 @@ class SprichIME : InputMethodService() {
                 }
             }
             if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isNotBlank() && !applied) {
-                failSession(token.generation, "final text insertion failed token=$token", "Could not insert text", "Refocus the field and retry", null)
+                // UTTERANCE-SCOPED: editor ambiguous must NOT destroy active B
+                failUtteranceScoped(token, "final text insertion ambiguous token=$token", null)
                 return
             }
             if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isBlank() && !applied) {
@@ -1755,7 +1810,8 @@ class SprichIME : InputMethodService() {
                     finishedWithRetry = true
                 } catch (t: Throwable) {
                     Log.e("SprichIME", "beginSession after ENDPOINT finalize failed token=$token", t)
-                    failSession(token.generation, "begin after finalize failed", "Speech engine stopped", "Tap to retry", t)
+                    // Utterance-scoped re-arm failure — do not destroy B if active; keep session alive
+                    failUtteranceScoped(token, "begin after finalize failed token=$token", t)
                 }
             } else if (reason == StopReason.USER_STOP) {
                 Log.i("SprichIME", "finalizePending USER_STOP committed token=$token awaiting termination")
@@ -1767,7 +1823,9 @@ class SprichIME : InputMethodService() {
             maybeClearActiveStateForToken(pending.token)
             throw e
         } catch (t: Throwable) {
-            failSession(token.generation, "finalization failed token=$token reason=$reason", "Transcription failed", "Tap to retry", t)
+            // UTTERANCE-SCOPED: do not destroy B — only currently active engine corruption / mic/field/service would be global
+            Log.w("SprichIME", "finalizePending isolated failure token=$token", t)
+            failUtteranceScoped(token, "finalization failed token=$token reason=$reason", t)
         }
     }
 
@@ -1833,13 +1891,9 @@ class SprichIME : InputMethodService() {
             reason = reason,
             endpointTimestampNanos = System.nanoTime(),
         )
-        if (reason == StopReason.USER_STOP) {
-            // USER_STOP must be synchronous for caller awaiting termination ordering; decode before generation bump
-            finalizePending(pending)
-        } else {
-            // ENDPOINT queued — allows capture of B while A decodes
-            enqueuePending(pending)
-        }
+        // P0 item 3: all accepted final utterances enter same FIFO actor — ENDPOINT, USER_STOP, 30s cap, explicit finish
+        // USER_STOP no longer bypasses queue; it enqueues after earlier accepted utterances to preserve FIFO and avoid loss
+        enqueuePending(pending)
     }
 
     // Legacy wrapper for tests — delegates to finalizeOnce with ENDPOINT
@@ -1881,8 +1935,8 @@ class SprichIME : InputMethodService() {
         return when (result) {
             is FieldSessionController.CommitResult.Committed -> true
             is FieldSessionController.CommitResult.EditorRejected -> {
-                Log.w("SprichIME", "commitFinalText EditorRejected, retrying direct commit token=$token")
-                composition.applyUpdate(ic, finalText, "", true)
+                Log.w("SprichIME", "commitFinalText EditorRejected (ambiguous) — NOT retrying to avoid duplication token=$token")
+                false
             }
             is FieldSessionController.CommitResult.AlreadyFinalized -> { Log.w("SprichIME", "AlreadyFinalized token=$token — never direct-commit"); false }
             is FieldSessionController.CommitResult.StaleSession -> { Log.w("SprichIME", "StaleSession token=$token — never direct-commit"); false }
@@ -1929,9 +1983,8 @@ class SprichIME : InputMethodService() {
             return when (result) {
                 is FieldSessionController.CommitResult.Committed -> true
                 is FieldSessionController.CommitResult.EditorRejected -> {
-                    // Only editor rejection may retry via direct composition — still validated
-                    Log.w("SprichIME", "controller EditorRejected, retrying direct commit token=$token")
-                    composition.applyUpdate(inputConnection, finalText, "", true)
+                    Log.w("SprichIME", "controller EditorRejected (ambiguous) — NOT retrying token=$token")
+                    false
                 }
                 is FieldSessionController.CommitResult.AlreadyFinalized -> {
                     Log.w("SprichIME", "AlreadyFinalized token=$token — never direct-commit")
@@ -1993,6 +2046,31 @@ class SprichIME : InputMethodService() {
         writeDiagnostics("error=$reason generation=$generation staleDrops=$staleCallbackDrops claims=$finalizationClaims commits=$finalCommitCount")
     }
 
+    /**
+     * UTTERANCE-SCOPED failure — must NOT destroy active B.
+     * Used for: editor insertion ambiguous, remote timeout, refinement failure, local blank/error, stale connection.
+     * Does NOT increment generation, does NOT clear global PCM collector if B active, does NOT stop audio globally.
+     * Only clears state belonging to the failed token itself.
+     */
+    private fun failUtteranceScoped(token: UtteranceToken, reason: String, throwable: Throwable?) {
+        if (throwable != null) Log.w("SprichIME", "utteranceScopedFailure token=$token reason=$reason", throwable) else Log.w("SprichIME", "utteranceScopedFailure token=$token reason=$reason")
+        // Do not increment global generation — preserve B's token validity
+        // Only clear active capture state if this token still owns it
+        maybeClearActiveStateForToken(token)
+        // If session was left in Finalizing, return to Listening for next utterance (keep field alive)
+        try {
+            if (session.state.value is SessionState.Finalizing) session.onListeningAgain()
+        } catch (_: Exception) {}
+        // Keep fieldId intact — do not clear currentFieldId
+        // Do NOT clear utteranceAudio globally if B might be active — maybeClear already guarded
+        // Do NOT stop audio if B active — audio is needed for B capture
+        // Ensure composition speculative partial is discarded (not committed)
+        try { composition.discardPartial(currentInputConnection) } catch (_: Exception) {}
+        statusText?.text = "Could not insert"
+        (statusText?.tag as? TextView)?.text = reason.take(60)
+        writeDiagnostics("utteranceScopedFailure token=$token reason=$reason drops=$staleCallbackDrops claims=$finalizationClaims")
+    }
+
     private fun stopDictation(reason: StopReason = StopReason.USER_STOP) {
         val wasActive = isDictationRunning()
         val generationAtStop = sessionGeneration.get()
@@ -2011,51 +2089,72 @@ class SprichIME : InputMethodService() {
             else -> false
         }
 
-        if (shouldCommitAsFinalizing) {
-            // USER_STOP must NOT invalidate its own token before finalization completes.
-            // Keep generation unchanged during finalize; advance only after completion.
-            // Do not cancel endpointJob yet — let finalizeOnce claim race be atomic.
-            val token = currentUtteranceToken ?: UtteranceToken(session.sessionId, generationAtStop, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
-            if (frozenUtterancePcm == null) {
-                frozenUtterancePcm = try { utteranceAudio.snapshot() } catch (_: Exception) { ShortArray(0) }
-            }
-            // Stop accepting new mic data already done via audio.stop(); endpoint will handle freeze.
-            scope.launch {
-                try {
-                    finalizeOnce(token, StopReason.USER_STOP)
-                } catch (t: Throwable) {
-                    Log.w("SprichIME", "stopCommit finalizeOnce failed token=$token", t)
-                } finally {
-                    // After USER_STOP finalization, terminate session / advance generation (never re-arm)
-                    val newGen = sessionGeneration.incrementAndGet()
-                    fieldGeneration.incrementAndGet()
-                    try { engineJob?.cancel() } catch (_: Exception) {}
-                    engineJob = null
-                    endpointJob = null
-                    // Ensure termination — USER_STOP must stop listening, not keep re-armed
-                    try { engine.cancelSession() } catch (_: Exception) {}
-                    try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-                    utteranceActive.set(false)
-                    endpointPending.set(false)
-                    lastPartialText = ""
-                    frozenUtterancePcm = null
-                    currentUtteranceToken = null
-                    activeUtterance = null
-                    pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
-                    vad.reset()
-                    lastVadState = Vad.State.SILENCE
-                    try { composition.discardPartial(currentInputConnection) } catch (_: Exception) {}
-                    // Controller already transitioned Inserting->Listening via commitUtterance, but USER_STOP must end.
-                    // Force session to Idle.
-                    try { if (session.state.value !is SessionState.Idle) session.end() } catch (_: Exception) { try { session.idle() } catch (_: Exception) {} }
-                    // Do not clear currentFieldId here? USER_STOP terminates dictation but field may remain focused.
-                    // Keep field for next manual start; generation bump already prevents stale inserts.
-                    updateImeUi(false)
-                    writeDiagnostics("stopped USER_STOP committed reason=$reason prevGen=$generationAtStop newGen=$newGen token=$token claims=$finalizationClaims commits=$finalCommitCount drops=$staleCallbackDrops")
+        // USER_STOP must be FIFO-serialized with ENDPOINT via same finalization actor — no direct finalizePending call that bypasses queue
+        if (reason == StopReason.USER_STOP) {
+            // Stop accepting new mic input immediately, but do NOT invalidate already queued work
+            val shouldEnqueueFinal = shouldCommitAsFinalizing
+            if (shouldEnqueueFinal) {
+                val token = currentUtteranceToken ?: UtteranceToken(session.sessionId, generationAtStop, utteranceIdCounter.get(), currentFieldId, fieldGeneration.get(), try { currentInputConnection } catch (_: Exception) { null })
+                // Freeze current PCM snapshot — immutable, isolated copy
+                val snap = try { utteranceAudio.snapshot() } catch (_: Exception) { ShortArray(0) }
+                if (snap.isNotEmpty()) {
+                    frozenUtterancePcm = snap.copyOf()
                 }
+                val captured = activeUtterance?.takeIf { it.token.utteranceId == token.utteranceId }
+                val pendingPlan = captured?.plan ?: buildUtterancePlan()
+                val pendingRoute = captured?.localRoute ?: when (val tp = pendingPlan.transcription) {
+                    is TranscriptionPlan.Local -> tp.route
+                    is TranscriptionPlan.ApiPrimary -> tp.localFallback ?: determineRoute(speechLanguage)
+                    is TranscriptionPlan.LocalApiFallback -> tp.local
+                }
+                val pendingConfig = captured?.speechConfig ?: pendingPlan.speechConfig
+                val pending = PendingUtterance(
+                    token = token,
+                    pcm = snap.copyOf(),
+                    config = pendingConfig,
+                    route = pendingRoute,
+                    plan = pendingPlan,
+                    pushedSamples = pipelinePushedSampleCount,
+                    reason = StopReason.USER_STOP,
+                    endpointTimestampNanos = System.nanoTime(),
+                )
+                enqueuePending(pending)
+                Log.i("SprichIME", "USER_STOP enqueued final token=$token queueDepth=${queueDepth.get()} snapSamples=${snap.size}")
+            }
+            // If queue empty and no final to enqueue, terminate immediately; else await drain via actor
+            if (queueDepth.get() == 0 && !shouldEnqueueFinal) {
+                val newGen = sessionGeneration.incrementAndGet()
+                fieldGeneration.incrementAndGet()
+                try { engineJob?.cancel() } catch (_: Exception) {}
+                engineJob = null
+                endpointJob = null
+                try { engine.cancelSession() } catch (_: Exception) {}
+                try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
+                try { engine.clearUtteranceCapture() } catch (_: Exception) {}
+                try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
+                utteranceActive.set(false)
+                endpointPending.set(false)
+                lastPartialText = ""
+                frozenUtterancePcm = null
+                currentUtteranceToken = null
+                activeUtterance = null
+                pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
+                vad.reset()
+                lastVadState = Vad.State.SILENCE
+                try { composition.discardPartial(currentInputConnection) } catch (_: Exception) {}
+                try { if (session.state.value !is SessionState.Idle) session.end() } catch (_: Exception) { try { session.idle() } catch (_: Exception) {} }
+                updateImeUi(false)
+                writeDiagnostics("stopped USER_STOP immediate (no queue) prevGen=$generationAtStop newGen=$newGen claims=$finalizationClaims")
+            } else {
+                // Enqueued — mark stop after drain, preserve FIFO order, no generation bump yet
+                stopRequested = true
+                stopRequestedGeneration = generationAtStop
+                statusText?.text = "Stopping…"
+                (statusText?.tag as? TextView)?.text = "Finishing ${queueDepth.get()} utterance(s) then idle"
+                Log.i("SprichIME", "USER_STOP awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
+                writeDiagnostics("USER_STOP awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
             }
             if (wasActive) vibrateStop()
-            Log.i("SprichIME", "dictation USER_STOP finalization scheduled token=$token generation=$generationAtStop")
             return
         }
 
@@ -2179,10 +2278,10 @@ class SprichIME : InputMethodService() {
             while (i >= 0 && trimmed[i].isWhitespace()) i--
             val keepLen = i + 1
             val toDelete = (before.length - keepLen).coerceIn(1, before.length)
-            val ok = ic.deleteSurroundingText(toDelete, 0)
+            // ONE irreversible delete — never retry with key event. Hostile editor may delete and return false; retry would duplicate deletion.
+            val ok = try { ic.deleteSurroundingText(toDelete, 0) } catch (_: Exception) { false }
             if (!ok) {
-                ic.sendKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DEL))
-                ic.sendKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_DEL))
+                Log.w("SprichIME", "deleteSurroundingText ambiguous (returned false) — NOT sending fallback DEL to avoid duplicate deletion chars=$toDelete")
             } else if (hapticsEnabled) {
                 vibrateTick()
             }
@@ -2352,26 +2451,8 @@ class SprichIME : InputMethodService() {
         }
     }
 
-    // Strict HTTPS validation (P1-20) — production must require https, debug allows localhost http for MockWebServer
-    private fun isValidHttpsUrl(url: String): Boolean {
-        if (url.isBlank()) return false
-        return try {
-            val uri = java.net.URI(url.trim())
-            val scheme = uri.scheme?.lowercase() ?: return false
-            if (scheme != "https") {
-                if (scheme == "http") {
-                    val host = uri.host?.lowercase() ?: return false
-                    val isDebug = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
-                    if (!isDebug) return false
-                    if (host != "localhost" && host != "127.0.0.1" && host != "10.0.2.2") return false
-                } else return false
-            }
-            val host = uri.host ?: return false
-            if (host.isBlank()) return false
-            if (uri.userInfo != null) return false
-            true
-        } catch (_: Exception) { false }
-    }
+    // Strict HTTPS validation — centralized via EndpointValidator (P1 centralization)
+    private fun isValidHttpsUrl(url: String): Boolean = com.sprich.app.core.security.EndpointValidator.isValidHttpsUrl(url)
 
     private fun buildRemoteSttConfig(): RemoteSttConfig? {
         // P1-15: No runBlocking, no DataStore reads on audio hot path — use in-memory snapshots
@@ -2546,8 +2627,8 @@ class SprichIME : InputMethodService() {
             return when (result) {
                 is FieldSessionController.CommitResult.Committed -> true
                 is FieldSessionController.CommitResult.EditorRejected -> {
-                    Log.w("SprichIME", "controller EditorRejected, retrying direct commit token=$token")
-                    composition.applyUpdate(inputConnection, finalText, "", true)
+                    Log.w("SprichIME", "controller EditorRejected (ambiguous) — NOT retrying token=$token")
+                    false
                 }
                 is FieldSessionController.CommitResult.AlreadyFinalized -> {
                     Log.w("SprichIME", "AlreadyFinalized token=$token — never direct-commit")

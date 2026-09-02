@@ -26,29 +26,8 @@ import com.sprich.app.storage.Preferences
 import com.sprich.app.storage.SecretStoreResult
 import kotlinx.coroutines.launch
 
-// Shared validation: production custom endpoints must require https:// (except debug localhost via BuildConfig.DEBUG)
-private fun isValidProductionHttpsUrl(url: String): Boolean {
-    if (url.isBlank()) return false
-    return try {
-        val uri = java.net.URI(url.trim())
-        val scheme = uri.scheme?.lowercase() ?: return false
-        if (scheme != "https") {
-            // Allow http only for debug MockWebServer localhost
-            if (scheme == "http") {
-                val host = uri.host?.lowercase() ?: ""
-                // Strict allow only localhost/127.0.0.1 in debug builds
-                val isDebug = try { com.sprich.app.BuildConfig.DEBUG } catch (_: Exception) { false }
-                if (!isDebug) return false
-                if (host != "localhost" && host != "127.0.0.1" && host != "10.0.2.2") return false
-            } else return false
-        }
-        val host = uri.host ?: return false
-        if (host.isBlank()) return false
-        if (uri.userInfo != null) return false // embedded userinfo credentials not allowed
-        // reject query-token URLs? For now allow but don't log
-        true
-    } catch (_: Exception) { false }
-}
+// Centralized validation — delegate to EndpointValidator to avoid duplication
+private fun isValidProductionHttpsUrl(url: String): Boolean = com.sprich.app.core.security.EndpointValidator.isValidHttpsUrl(url)
 
 private fun sanitizedModelSummary(id: String): String = id.take(64)
 
@@ -165,7 +144,7 @@ fun SettingsScreen(onBack: ()->Unit, onBenchmark: ()->Unit, onVocab: ()->Unit = 
 
             HorizontalDivider()
             DynamicPrivacySection(prefs)
-            SettingsRow("Clear local data", "", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); try { com.sprich.app.storage.ApiSecretStore(ctx).clearAll() } catch (_:Exception){}; mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron() } })
+            SettingsRow("Clear local data", "", actionLabel = "Clear", onClick = { scope.launch{ prefs.clearAll(); try { com.sprich.app.storage.ApiSecretStore(ctx).clearAll() } catch (_:Exception){}; try { com.sprich.app.diagnostics.ReplayHarness.clearAll(ctx) } catch (_:Exception){}; try { java.io.File(ctx.filesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "diagnostics").deleteRecursively(); java.io.File(ctx.filesDir, "benchmark").deleteRecursively(); java.io.File(ctx.noBackupFilesDir, "benchmark").deleteRecursively() } catch (_:Exception){}; mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron() } })
 
             HorizontalDivider()
             Text("Advanced", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
@@ -347,8 +326,8 @@ private fun TranscriptionSection(prefs: Preferences) {
     val baseUrl by prefs.sttBaseUrl.collectAsState(initial = "")
     val model by prefs.sttModel.collectAsState(initial = "whisper-large-v3")
     val secretStore = remember { ApiSecretStore(ctx) }
-    // Shared pooled client for Settings Test — same pooling semantics as production
-    val sharedClient = remember { okhttp3.OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build() }
+    // Shared pooled client for Settings Test — same pooling semantics as production, redirects disabled for credentialed BYOK
+    val sharedClient = remember { okhttp3.OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build() }
     var hasKey by remember { mutableStateOf(false) }
     var keyInput by remember { mutableStateOf("") }
     var showKeyEntry by remember { mutableStateOf(false) }
@@ -494,7 +473,7 @@ private fun RefinementSection(prefs: Preferences) {
     val baseUrl by prefs.refinementBaseUrl.collectAsState(initial = "")
     val model by prefs.refinementModel.collectAsState(initial = "")
     val secretStore = remember { ApiSecretStore(ctx) }
-    val sharedClient = remember { okhttp3.OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build() }
+    val sharedClient = remember { okhttp3.OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build() }
     var hasKey by remember { mutableStateOf(false) }
     var keyInput by remember { mutableStateOf("") }
     var showKeyEntry by remember { mutableStateOf(false) }

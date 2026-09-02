@@ -88,20 +88,21 @@ class SessionOwnershipAndFsmPropertyTest {
     fun compositionPartialIsComposingAndFinalCommitsOnce() {
         val cm = CompositionManager()
         val ic = FakeIC()
-        // partial replaces previous partial
+        // IME-local partials: composing stays null externally, final commits exactly once
         cm.applyUpdate(ic, "Hello", "", false)
-        assertEquals("Hello", ic.composing)
+        assertNull(ic.composing)
         cm.applyUpdate(ic, "Hello world", "", false)
-        assertEquals("Hello world", ic.composing)
+        assertNull(ic.composing)
         assertEquals(0, ic.committed.length)
         // final commits exactly once
         cm.applyUpdate(ic, "Hello world", "", true)
         assertEquals("Hello world", ic.committed.toString())
         assertNull(ic.composing)
-        // second final with same text should not duplicate if reset
+        // second final with same text should not duplicate if reset — also IME-local
         cm.reset()
         val ic2 = FakeIC().apply { committed.append("Before ") }
         cm.applyUpdate(ic2, "hello", "", false)
+        assertNull(ic2.composing)
         cm.applyUpdate(ic2, "hello world", "", true)
         assertEquals("Before hello world", ic2.committed.toString())
     }
