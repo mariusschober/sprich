@@ -1,0 +1,33 @@
+{
+  "status": "PASS",
+  "device": "S23",
+  "versionCode": 83,
+  "rows": [
+    {
+      "field": "single",
+      "status": "PASS",
+      "text": "The blue notebook is on the table.",
+      "events": 1,
+      "micStopped": true
+    },
+    {
+      "field": "multi",
+      "status": "PASS",
+      "text": "The blue notebook is on the table.",
+      "events": 1,
+      "micStopped": true
+    },
+    {
+      "field": "rich",
+      "status": "PASS",
+      "text": "The blue notebook is on the table.",
+      "events": 1,
+      "micStopped": true
+    },
+    {
+      "field": "password",
+      "status": "PASS",
+      "micStopped": true
+    }
+  ]
+}

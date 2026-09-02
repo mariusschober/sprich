@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="500" viewBox="0 0 1024 500">
+<rect width="1024" height="500" fill="#FAFAF8"/>
+<g fill="#121212" font-family="Arial, Helvetica, sans-serif">
+<text x="64" y="76" font-size="30" font-weight="700">Sprich</text>
+<text x="64" y="195" font-size="64" font-weight="700">Your words,</text>
+<text x="64" y="270" font-size="64" font-weight="700">on your phone.</text>
+<text x="66" y="325" font-size="24" fill="#535057">Offline dictation for Android.</text>
+<text x="66" y="434" font-size="20" fill="#535057">English · Deutsch · Español · Français</text>
+</g>
+<g stroke="#FF4D76" stroke-width="16" stroke-linecap="round">
+<path d="M749 220v60 M785 187v126 M821 145v210 M857 184v132 M893 206v88 M929 231v38"/>
+</g>
+</svg>

@@ -1,42 +1,31 @@
-# MODELS — reliability build (2026-09-02)
+# Production speech files
 
-## Supported: Accurate (Canary 180M Flash INT8) — primary (explicit languages)
+The manifest in `app/src/main/java/com/sprich/app/models/manager/ModelManifest.kt` is the executable source for archive URLs, sizes, hashes and required files. Downloads extract only required model files; upstream test WAVs are not installed.
 
-| Property | Value |
-|---|---|
-| Engine | `Canary 180M Flash INT8` via `sherpa-onnx` OfflineRecognizer |
-| Delivery | Device-side, not bundled in APK — downloaded to `files/canary/` on first use |
-| Files | `encoder.int8.onnx 127 MB`, `decoder.int8.onnx 71 MB`, `tokens.txt 52 KB` = **198 MB** on-device |
-| Download | `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8.tar.bz2` |
-| Size | `198 MB` (manifest `sizeBytes=207618048` = 198 * 1024 * 1024) |
-| SHA-256 | `7a38ed8b13f014ad632b09ff8d22e0c6f1359dd046af9235d281dfae841b9ab9` |
-| Runtime | `libsherpa-onnx-1.12.11.aar` → `libonnxruntime.so` + `libsherpa-onnx-*.so`, arm64-v8a only, CPU, 2 threads, `inferenceDispatcher + Mutex` serialized |
-| Sample rate | `16000 Hz` mono PCM16 (engine-required, verified via `AudioCapture` + `Pcm16Wav`) |
-| Quantization | `INT8` |
-| Languages exposed | **Explicit only**: English, German, Spanish, French (FR now via explicit `fr`). **Automatic not natively supported** — `capabilities.languageDetection=false`, `supportedLanguages` does not contain `AUTO`; when `Auto` pref is present, engine falls back single-decode to `en` with diagnostic. Previous stopword multi-decode (EN/DE/ES 4s window + 30s cache) removed as architecturally invalid. See `docs/MODEL_BAKEOFF.md`. |
-| Task | `transcribe` only (`srcLang == tgtLang` on every decode, never `translate`) |
-| Decoder options | beam=5 (default), serialized create/decode/release via Mutex, per-utterance PCM frozen at endpoint, cancellable speculative decode, LCP N=2 stabilizer, `UtteranceToken` + `finalizeOnce` exactly-once |
-| License | `CC-BY-4.0` (model) + `Apache-2.0` (sherpa-onnx) — attribution in Settings → Licenses |
+| Choice | Role / upstream | Archive bytes | License |
+| --- | --- | ---: | --- |
+| Automatic | OpenAI Whisper Tiny INT8, language identification | 116,204,861 | MIT model; Apache-2.0 sherpa conversion/runtime |
+| Automatic | NeMo FastConformer CTC EN/DE/ES/FR export 14288 INT8 | 102,875,642 | **NVIDIA NGC Terms of Use for the model**; Apache-2.0 conversion code |
+| Accurate | NVIDIA Canary 180M Flash INT8, explicit language | 153,692,328 | CC-BY-4.0 model; Apache-2.0 sherpa conversion/runtime |
+| Bundled detector | Silero VAD, 16 kHz, single CPU thread | 643,854 uncompressed | MIT, Silero Team |
 
-At runtime, Sprich verifies `files/canary` integrity (size >50 MB per file, SHA-256 after download, atomic rename from `*.tmp`). Missing files are an explicit load error; there is no cloud fallback unless the user has explicitly configured Remote STT (opt-in).
+Automatic downloads both language identification and recognition files in one action (219,080,503 bytes total). It never needs Canary. Accurate must receive EN, DE, ES or FR explicitly and uses the same source/target language. No speculative decode runs in the production IME.
 
-Former Whisper Base Q5_1 `bundled` is deleted per user request (2026-08-24). `scripts/verify-models.sh` now skips the Whisper bundle check and verifies Canary runtime presence without bundling model data.
+## Integrity
 
-## Former: Fast (Whisper) — deleted
+| File/archive | SHA-256 |
+| --- | --- |
+| Whisper Tiny archive | `c46116994e539aa165266d96b325252728429c12535eb9d8b6a2b10f129e66b1` |
+| FastConformer archive | `ea7434ecff117272a70b8a60b70cfc2f04b9b07553aa0ecb91065b69c7b91ec5` |
+| Canary archive | `7a38ed8b13f014ad632b09ff8d22e0c6f1359dd046af9235d281dfae841b9ab9` |
+| `vad/silero_vad.onnx` | `9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6` |
 
-Whisper Q5_1 (`59,707,625 bytes`, `sha256 422f1ae4…`, `libsprich_whisper.so`) was the original bundled engine. It is removed from `app/src/main/assets/models` and `app/src/main/cpp`; the APK gate now expects no `whisper-base-q5_1.bin` in the APK. The `SprichApp.fastEngine` alias now points to the Canary instance for benchmark compatibility. Whisper may not return without a pinned checksum, NDK build, and the same lifecycle/memory gates as Canary.
+Installation verifies the pinned archive, bounded extraction, required files and a durable receipt recording each installed file's hash/size. Process startup verifies receipts and installed bytes on IO. Replacement keeps the prior directory until promotion succeeds; interrupted downloads restart from zero.
 
-## Disabled: Nemotron
+## Attribution and distribution review
 
-Nemotron is not implemented. The former native library was a dummy that could not transcribe; it has been removed from the build. Settings identifies it as unavailable.
+FastConformer derives from NVIDIA's [`stt_multilingual_fastconformer_hybrid_large_pc_blend_eu`](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_multilingual_fastconformer_hybrid_large_pc_blend_eu), v1.21.0. Earlier repository text incorrectly called this model Apache-2.0. The publisher must review NGC terms for use and distribution of the converted model before public distribution. Apache licensing of conversion code does not change model rights.
 
-It must not return until a real pinned runtime/model combination exists and passes the same lifecycle, correctness, memory, and hardware gates as Accurate (Canary).
+Canary model attribution: NVIDIA, [canary-180m-flash](https://huggingface.co/nvidia/canary-180m-flash), converted/quantized to ONNX by the sherpa-onnx project. Whisper: OpenAI, [Whisper](https://github.com/openai/whisper), converted/quantized by sherpa-onnx. Silero: Silero Team, [silero-vad](https://github.com/snakers4/silero-vad), distributed via sherpa-onnx's ASR release assets. These are modified/exported model forms, not original training checkpoints. Full upstream license texts and notices are in `licenses/THIRD_PARTY_NOTICES.txt` and the app.
 
-## APK gate
-
-`scripts/verify-models.sh` now verifies:
-- Canary runtime (`libsherpa`/`libonnxruntime`) IS packaged.
-- Canary/Nemotron model data (`*.onnx`, `*.gguf`) is NOT bundled (device-side).
-- Whisper model not bundled (Canary focus).
-
-`scripts/check-apk.sh` enforces that `speech/*` except `speech/remote` stays network-free.
+Native versions and source provenance: [native/README.md](../native/README.md). Nemotron and replay fixtures are development experiments excluded from production model choices and APKs.

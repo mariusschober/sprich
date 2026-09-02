@@ -1,0 +1,27 @@
+{
+  "status": "PASS",
+  "versionCode": 83,
+  "rows": [
+    {
+      "scenario": "real WebView multiline",
+      "status": "PASS",
+      "eventCount": 1
+    },
+    {
+      "scenario": "Unicode delete and exact undo",
+      "status": "PASS",
+      "deleted": "hello 👩🏽‍💻",
+      "restored": "hello 👩🏽‍💻 world"
+    },
+    {
+      "scenario": "cursor move invalidates undo",
+      "status": "PASS"
+    },
+    {
+      "scenario": "speech then immediate field switch",
+      "status": "PASS",
+      "eventCount": 0,
+      "micStopped": true
+    }
+  ]
+}

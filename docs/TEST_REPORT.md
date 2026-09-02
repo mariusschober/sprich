@@ -1,3 +1,5 @@
+> Historical development snapshot. Commands, architecture and acceptance claims below describe an older build. Use [the current README](../README.md) and [the current qualification evidence](../release/REVIEW.md) for this release candidate.
+
 # TEST REPORT — 2026-09-01 (host + device T807D) — pipeline correctness pass
 
 Verified locally on **2026-09-01** after pipeline-correctness pass (punctuation spacing, overlapping queue, composition shrink/repetition, exactly-once consolidation, language canonical, no mock) with host gates; device re-validation from 2026-09-02 retained where measured and pending for new pipeline features. Physical device T807D MT6878 Android 16 SDK36 7.6GB RAM.

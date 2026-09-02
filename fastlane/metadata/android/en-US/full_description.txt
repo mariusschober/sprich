@@ -1,0 +1,21 @@
+Speak instead of typing.
+
+Sprich is an offline voice keyboard for Android. Dictate in your notes, messages and other text fields, then return to your regular keyboard with one tap.
+
+• Speak English, German, Spanish or French.
+• Automatic recognizes the language as you speak.
+• Accurate uses a language you choose.
+• Add personal vocabulary for names and special terms.
+• Say “new line” or “delete that”, or swipe to delete and undo.
+• No account, subscription, ads or analytics.
+
+Download the speech files once, then dictate offline. Automatic needs about 219 MB; Accurate is an optional 154 MB download. Your voice is processed on your phone. Online dictation is unavailable in this release.
+
+Tap to speak. Pause to insert your words, and tap again to finish. Moving the cursor or leaving the field stops listening and cancels words that have not been inserted. Dictation is unavailable in password and PIN fields.
+
+Requires an ARM64 phone with Android 8.0 or later. The interface is in English. This is a release candidate; speech recognition can make mistakes, so review your text before sending it.
+
+Sprich's app source is MIT licensed. Speech models and runtime dependencies have their own terms, available in Settings → Advanced → Licenses and notices.
+
+Privacy: https://github.com/mariusschober/sprich/blob/main/docs/PRIVACY.md
+Source and support: https://github.com/mariusschober/sprich

@@ -1,112 +1,44 @@
-# Sprich — Private Dictation (On-device + Optional BYOK Cloud)
+# Sprich
 
-> Tap a text field. Speak. The words are there.
+Voice dictation for Android. Speak English, German, Spanish or French into the app you are already using. No account or subscription.
 
-Sprich is a private dictation IME for Android. **Cloud is optional enhancement, never a requirement.** Normal use is fully on-device (Tiny LID + FastConformer / Canary). When you choose it, Sprich can use your own API keys to call your selected transcription or refinement provider directly from your device — no Sprich cloud, no proxy, no shared billing.
+**Automatic** recognizes the language of each utterance. **Accurate** uses the language you select. Both run on your phone after a one-time download. This release has no enabled cloud providers; optional BYOK adapters remain experimental in debug builds.
 
-**Primary integration**: `InputMethodService` with `InputConnection` composing semantics. Experimental accessibility companion available for users who keep Gboard.
+## Use it
 
-## Quick start
+1. Open Sprich, allow microphone access and enable its keyboard.
+2. Download Automatic (219 MB). Accurate is an optional 154 MB download in Settings.
+3. Select Sprich in a text field, tap the microphone and speak. Pause to insert a sentence; tap again to finish.
+4. Use the keyboard button to return to your regular keyboard.
 
-```bash
-# Prerequisites: JDK 17+, Android SDK 36, NDK 27.0.12077973, CMake 3.22+
-export ANDROID_HOME=/Users/schober/Documents/Circadiano/.android-sdk
-./scripts/apply-whisper-patches.sh
-./gradlew :app:assembleDebug
-adb install app/build/outputs/apk/debug/app-debug.apk
+Swipe left to delete the previous word; swipe right to undo that deletion. Moving the cursor or changing a selection stops listening and cancels words that have not been inserted. Password and PIN fields do not permit dictation. Spoken editing and personal vocabulary are in Settings.
+
+Android 8.0–16 (API 26–36), ARM64 only. UI copy is currently English; the four dictation languages are independent of Android's display language. Recognition quality depends on speech and recording conditions; review the inserted text.
+
+## Build and verify
+
+Use JDK 17+, SDK 36 and NDK 27.0.12077973. Configure the SDK with Android Studio or `local.properties`.
+
+```sh
+./gradlew :app:assembleDebug :app:testDebugUnitTest
+./gradlew -PsprichVersionCode=83 -PsprichVersionName=1.0.0-rc8 \
+  :app:lintRelease :app:assembleRelease :app:writeReleaseDependencyInventory
+python3 scripts/verify-inputs.py --inventory app/build/reports/release-runtime-dependencies.tsv
+python3 scripts/verify-release.py app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-1. Install → open Sprich → grant microphone → enable Sprich keyboard in system settings.
-2. Switch to Sprich in any field (globe icon) → enable **Instant Dictation** if you want auto-listen on focus.
-3. Dictate. Toggle back to Gboard via keyboard switcher instantly.
+Choose an unused, increasing version code for distribution. Version 83 is reserved for this unpublished candidate. Release packaging requires explicit version inputs. Without signing configuration, outputs are unsigned. See [release/SIGNING.md](release/SIGNING.md) for first-time signing; the QA signing key is not a public distribution key.
 
-Airplane mode must work identically after installation.
+The release build uses R8 and resource shrinking. Large recognition models are downloaded, hash-checked and installed atomically. A 644 KB speech detector is bundled. Native runtime provenance and build instructions are in [native/README.md](native/README.md).
 
-## Product principles
+## Review material
 
-1. Perceived latency > actual latency > reliability > privacy > battery > visuals.
-2. Network must never be touched during dictation; architecture enforces isolation.
-3. Target €200-300 phones (6GB RAM, mid Snapdragon/MediaTek).
+- [Architecture](docs/ARCHITECTURE.md), [models and licenses](docs/MODELS.md), [privacy](docs/PRIVACY.md)
+- [Current qualification evidence](release/REVIEW.md), [known limitations](docs/KNOWN_LIMITATIONS.md), [measurement method](docs/LATENCY.md)
+- [Zapstore preparation](release/SUBMISSION.md), [listing configuration](zapstore.yaml), [screenshots and artwork](release/store/README.md)
 
-See [PLAN.md](PLAN.md) for full product thesis and latency targets.
+The opt-in [QA editor](qa-editor/README.md) exercises real Android editors and installed release native code. Debug fixtures, mock providers, experiments and developer screens are excluded from release artifacts. Dated sprint documents and old handovers are historical records, not current acceptance evidence.
 
-## Architecture
+The current release target is Zapstore. Play and F-Droid publishing are deferred. No public release has been published by this review; signing and publisher identity setup remain in the handoff.
 
-- `core/audio` — 16k mono PCM, `UtteranceAudioCollector` (neutral, primitive, bounded 30s, `size()<=maxSamples` strict including oversized chunk), ring buffer 30s, circular pre-roll 250ms, RMS telemetry.
-- `core/vad` — energy VAD, onset 45ms, hesitation 400ms, endpoint 650ms, adaptive.
-- `speech/api` — `SpeechEngine` contract, `SpeechLanguage.Auto|Fixed`, `TranscriptionTask.TRANSCRIBE`.
-- `speech/canary` — Canary 180M Flash INT8 via sherpa-onnx INT8 (Accurate, `files/canary`)
-- `speech/fastconformer` — FastConformer CTC 126M (Automatic primary, `files/fastconformer`) + Tiny LID 98M (`files/whisper-tiny`)
-- `speech` — `TranscriptionMode` ON_DEVICE / API_PRIMARY / LOCAL_API_FALLBACK, `UtterancePlan` frozen at onset, `TranscriptionResult` + `TranscriptionCoordinator` (remote-first, no wasted local decode)
-- `speech/remote` — `RemoteSttProvider` abstraction, `OpenAiCompatibleSttProvider` (`POST /audio/transcriptions`, Bearer, bounded 8KB), `MetaMuseSttProvider` (BLOCKED), `DeadlinePolicy`, typed `ApiFailure`, `Call.cancel()` structured cancellation
-- `speech/refinement` + `ai` — `RefinementMode` OFF / CORRECT / CLEAN_DICTATION, `OpenAiCompatibleRefinementProvider` (`POST /chat/completions`, temp 0, tiny, DATA block), `RefinementValidator` (numbers/URLs/emails/IDs, drift heuristics, injection), deterministic before refinement
-- `storage` — `Preferences` typed DataStore, `ApiSecretStore` (Keystore AES-GCM in `noBackupFilesDir/api_secrets`, DataStore keeps refs only)
-- `input/ime` — `SprichIME` owns `ActiveUtterance(plan)` frozen at onset, `UtteranceAudioCollector` authoritative PCM, exactly-once via `FieldSessionController`, password guard, streaming partial policy (IME preview)
-- `input/composition` — `CompositionManager` delta, `SpokenEditingParser` deterministic EN/DE/ES, `TypographyNormalizer` language-aware
-
-Full: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Cloud: [docs/API_ARCHITECTURE.md](docs/API_ARCHITECTURE.md)
-
-## Models (2026-09-02 sprint 3, commit `ad1fdb8` — with dual-color addendum)
-
-| Model | Size | Delivery | Runtime | Status |
-|-------|------|----------|---------|--------|
-| **Automatic** Whisper Tiny 98M (LID) + FastConformer CTC 126M | 224 MB total (`98 + 126`) | device-side `files/whisper-tiny` + `files/fastconformer` | sherpa-onnx 1.13.6 INT8, 16KB, lidar 1 thread + fast 2 threads | **Primary** — per-utterance SLID, `isAutomaticReady()` fail-closed, zero Canary loads |
-| **Accurate** Canary 180M Flash INT8 | 198 MB (`encoder+decoder+tokens`) | device-side `files/canary` | sherpa-onnx 1.13.6 INT8, 2 threads, 16KB | Supported — explicit EN/DE/ES/FR |
-| **Streaming** Nemotron 560/160 0.6B | 475 MB archive | hidden behind `DEBUG` | not shipped in prod | Experimental — WER/thermal not measured |
-
-Gestures: `swipe left = delete`, `right = undo`, `down = new line`, `up = switch keyboard` (one mutation per gesture). Visual: single `Choreographer` lane + **dual-color live bar** (`local red` vs `API blue` + hint `Listening — cloud`), no `Math.random` animators. Release: R8 `33M`/`17M` AAB, `llvm-readelf` per-`.so` `Align 0x4000` MEASURED. See [docs/SPRINT3_2026-09-02.md](docs/SPRINT3_2026-09-02.md) · [docs/MODELS.md](docs/MODELS.md).
-
-## Privacy
-
-- On-device by default. Cloud is optional enhancement — you provide your own provider + API key, Sprich calls provider directly from your device, no Sprich proxy/account.
-- No cloud ASR by default, no telemetry, no AD_ID, raw audio in RAM 30s then discarded, diagnostic WAV opt-in only.
-- BYOK secrets: Keystore AES-GCM in `noBackupFilesDir/api_secrets`, never in DataStore/logs/backups. Settings shows `Saved` without reloading plaintext.
-- `speech:*` except `speech/remote` never imports `okhttp`/`java.net` (lint `check-apk.sh`), `ai` handles refinement network.
-- Dynamic privacy disclosure reflects actual mode: local-only → `Models only`, API STT → `Audio sent directly...`, refinement → `Transcript sent directly...`.
-
-See [docs/PRIVACY.md](docs/PRIVACY.md) · [docs/API_ARCHITECTURE.md](docs/API_ARCHITECTURE.md).
-
-## Benchmark
-
-Hidden screen: tap version 7× on Home. It transcribes the bundled public-domain `jfk.wav` through the same process-wide Fast engine and reports load time, inference time, and RTF.
-
-Instructions and limitations: [docs/BENCHMARK.md](docs/BENCHMARK.md)
-
-## Build reproducibility
-
-```bash
-./scripts/verify-models.sh      # exact size/SHA and optional-runtime absence
-./scripts/apply-whisper-patches.sh
-./gradlew :app:assembleDebug    # builds the arm64 reliability APK
-./gradlew :app:testDebugUnitTest
-```
-
-CI check fails if `canary/` or `nemotron/` artifacts appear inside APK.
-
-## Testing (sprint 3 `ad1fdb8` — host verified, dual-color)
-
-```bash
-./gradlew :app:testDebugUnitTest      # 290+ (44 suites) PASS  (dual palette isoApi)
-./gradlew :app:lintDebug              # PASS
-./gradlew :app:assembleDebug          # 54M PASS  (api_* colors present)
-./gradlew :app:assembleRelease        # 33M (1 dex) PASS
-./gradlew :app:bundleRelease          # 17M AAB PASS
-./scripts/verify-models.sh; ./scripts/check-apk.sh
-llvm-readelf -l */arm64-v8a/*.so | grep LOAD  # all Align 0x4000
-# Device (T807D) — bar: ON_DEVICE red vs API_PRIMARY blue (human, light+dark)
-# ./gradlew :app:connectedDebugAndroidTest -P..QueueActorStressDeviceTest
-# ./gradlew :app:connectedDebugAndroidTest -P..AutomaticWithoutCanaryDeviceTest
-# adb install -r app/build/outputs/apk/debug/app-debug.apk  # set com.sprich.app.debug/...SprichIME
-```
-
-Manual matrix: Chrome, WhatsApp, Telegram, Signal, Gmail, Slack, Notion, WebView, Compose — `EditorMatrixRealTest` now covers EditText/Compose/IME-local, Chrome/Gmail/WebView human pending. See [docs/SPRINT3_2026-09-02.md](docs/SPRINT3_2026-09-02.md) §10.
-
-## Known limitations (v1 — sprint 3 `ad1fdb8`)
-
-- Device proof pending re-run on T807D for this commit: `AutomaticWithoutCanary` heap (sprint2 BLOCKED, now sequential+cache), `onDestroy <50ms`, **dual-color bar** light+dark, `Choreographer` `gfxinfo`, gesture switch + TalkBack, Chrome/WebView human, R8 smoke.
-- Only `arm64-v8a` (NDK 27, `16KB Check` host PASS, device emulator NOT MEASURED), local `224 MB` Automatic + `198 MB` Accurate; dual-color adds ~5 colors only.
-- Nemotron hidden (`DEBUG` only); `PLAY_SIGNING_READY:NO` (unsigned CI), `30+30+10+10` WER corpus not measured — `OVERALL_PRODUCTION_READY:NO` (correct).
-
-## License
-
-App code MIT. Model licenses per [docs/MODELS.md](docs/MODELS.md). Include attribution in Settings → Licenses.
+App source is MIT. Runtime and model terms differ; full notices are available in Settings → Advanced → Licenses and notices and in [licenses/THIRD_PARTY_NOTICES.txt](licenses/THIRD_PARTY_NOTICES.txt).

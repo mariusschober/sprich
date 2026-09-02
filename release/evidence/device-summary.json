@@ -1,0 +1,102 @@
+{
+  "startSha": "671f88e80d6ecb2588941acf673c5312cb278be1",
+  "date": "2026-09-02",
+  "physicalSustained": {
+    "device": "TCL T807D",
+    "api": 36,
+    "pageSize": 4096,
+    "versionCode": 81,
+    "apkSha256": "c272b1b7c6830d2ce93ada8b8523ab52a67de553d59e042c94df1b5f79f18a84",
+    "durationSeconds": 2017.1494004999986,
+    "utterances": 200,
+    "editorMutations": 200,
+    "unexpectedFields": 0,
+    "deletions": 0,
+    "lateExtraMutations": 0,
+    "mutationCountCheck": "PASS",
+    "strictFixtureTextCheck": "FAIL",
+    "matchedFixtureCues": 194,
+    "failedFixtureCueIndices": [
+      54,
+      78,
+      110,
+      136,
+      148,
+      196
+    ],
+    "network": "Wi-Fi and mobile data disabled",
+    "method": "Mac speaker, physical phone microphone, production IME, separate real EditText. Alternating public synthesized English/German sentences.",
+    "latency": {
+      "metric": "Playback end to actual editor callback; includes endpointing",
+      "warmupExcluded": 3,
+      "samples": 197,
+      "p50Ms": 556.48,
+      "p95Ms": 1074.56,
+      "p99Ms": 1111.03,
+      "maxMs": 2044.28,
+      "maxClockSyncUncertaintyMs": 72.48
+    },
+    "memory": {
+      "warmPssKiBMin": 505944,
+      "warmPssKiBMax": 515767,
+      "warmFirstNativeHeapAllocatedKiB": 511135,
+      "warmLastNativeHeapAllocatedKiB": 511752,
+      "afterHidePssKiB": 502979
+    },
+    "thermal": {
+      "androidThermalStatusValues": [
+        0
+      ],
+      "batteryTemperatureCMin": 35.0,
+      "batteryTemperatureCMax": 37.0,
+      "usbPowered": true,
+      "batteryLife": "NOT MEASURED"
+    },
+    "cpu": {
+      "dumpsysSamples": 19,
+      "processPercentMin": 28.0,
+      "processPercentMax": 57.0,
+      "samplingLimitation": "Android rolling windows, not integrated task CPU or power measurements"
+    },
+    "sameDeviceBeforeAfterLatencyComparison": "NOT MEASURED"
+  },
+  "physicalLifecycle": {
+    "device": "Samsung S23 Ultra",
+    "versionCode": 81,
+    "cycles": 100,
+    "durationSeconds": 377.5001371660037,
+    "status": "PASS",
+    "scope": "Observed microphone start and stop; field changes, hiding, password/PIN, cursor movement, repeated background/foreground; real EditText events. No ASR-quality claim."
+  },
+  "latestPhysical": {
+    "versionCode": 83,
+    "apkSha256": "36d33ff46515c188f77dd8f27fa2bf94301139df1dcc2051b2068e609491b19b",
+    "automaticFrenchSpanish": "PASS",
+    "accurateEnglishSpanishFrench": "PASS",
+    "accurateGermanControlledSingleCue": "NOT MEASURED",
+    "accurateGermanNote": "Expected German sentence recognized. User confirmed additional live speech during this sample; its strict one-cue script failed and was not rewritten.",
+    "chromeSingleMultilineRichPassword": "PASS",
+    "talkBackStartStopPicker": "PASS",
+    "talkBackFullActionMenuAudit": "NOT MEASURED",
+    "clearDataAndDownloadCancellation": "PASS",
+    "webViewMultiline": "PASS",
+    "unicodeDeleteUndo": "PASS",
+    "cursorInvalidatesUndo": "PASS",
+    "speechThenFieldSwitchZeroMutation": "PASS",
+    "s23TalkBackSettingsRestored": "PASS"
+  },
+  "remaining": {
+    "mailComposer": "BLOCKED: no configured mail composer available on the connected phones",
+    "productionSigning": "BLOCKED: publisher deferred creation of the permanent Android app signing key",
+    "legal": "BLOCKED: human review of model/runtime redistribution terms, especially NVIDIA NGC FastConformer, has not been completed",
+    "nostrIdentity": "BLOCKED: publisher identity/signer not supplied",
+    "zapstorePublication": "NOT MEASURED"
+  },
+  "distributionScope": {
+    "target": "Zapstore beta",
+    "deferredByPublisher": [
+      "Google Play",
+      "F-Droid"
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+# Zapstore preparation. Read release/SUBMISSION.md before publishing.
+# Add your actual public Nostr key as pubkey, then commit it for repository verification.
+# A publisher identity has not been selected or created.
+repository: https://github.com/mariusschober/sprich
+# Only a permanent-key-signed APK belongs here. QA artifacts stay in release-output/qa/.
+release_source: ./release-output/zapstore/sprich-arm64-v8a.apk
+name: Sprich
+summary: Offline voice typing in English, German, Spanish and French.
+description: |
+  Speak instead of typing.
+
+  Sprich is an offline voice keyboard for Android. Dictate in your notes, messages and other text fields, then return to your regular keyboard with one tap.
+
+  • Speak English, German, Spanish or French.
+  • Automatic recognizes the language as you speak.
+  • Accurate uses a language you choose.
+  • Add personal vocabulary for names and special terms.
+  • Say “new line” or “delete that”, or swipe to delete and undo.
+  • No account, subscription, ads or analytics.
+
+  Download the speech files once, then dictate offline. Automatic needs about 219 MB; Accurate is an optional 154 MB download. Your voice is processed on your phone. Online dictation is unavailable in this release.
+
+  Tap to speak. Pause to insert your words, and tap again to finish. Moving the cursor or leaving the field stops listening and cancels words that have not been inserted. Dictation is unavailable in password and PIN fields.
+
+  Requires an ARM64 phone with Android 8.0 or later. The interface is in English. This is a release candidate; speech recognition can make mistakes, so review your text before sending it.
+
+  Sprich's app source is MIT licensed. Speech models and runtime dependencies have their own terms, available in Settings → Advanced → Licenses and notices.
+
+  Privacy: https://github.com/mariusschober/sprich/blob/main/docs/PRIVACY.md
+  Source and support: https://github.com/mariusschober/sprich
+tags: [productivity, tools, keyboard, offline, privacy]
+# This is the app-source license. Downloaded model terms are disclosed above.
+license: MIT
+website: https://github.com/mariusschober/sprich
+icon: ./fastlane/metadata/android/en-US/images/icon.png
+images:
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/5-keyboard.png
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/2-home.png
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/3-settings.png
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/4-vocab.png
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/1-onboarding.png
+release_notes: ./fastlane/metadata/android/en-US/changelogs/83.txt
+metadata_sources: [fastlane]

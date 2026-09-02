@@ -1,3 +1,5 @@
+> Historical development snapshot. Commands, architecture and acceptance claims below describe an older build. Use [the current README](README.md) and [the current qualification evidence](release/REVIEW.md) for this release candidate.
+
 # PLAN — Sprich · Local-Only Android Dictation
 
 > Tap a text field. Speak. The words are there.

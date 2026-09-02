@@ -1,3 +1,5 @@
+> Historical development snapshot. Commands, architecture and acceptance claims below describe an older build. Use [the current README](README.md) and [the current qualification evidence](release/REVIEW.md) for this release candidate.
+
 # HANDOVER — Sprich for ChatGPT Sol Max
 
 **Date:** 2026-08-24 18:20 UTC  

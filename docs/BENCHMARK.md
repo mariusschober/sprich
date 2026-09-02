@@ -1,3 +1,5 @@
+> Historical development snapshot. Commands, architecture and acceptance claims below describe an older build. Use [the current README](../README.md) and [the current qualification evidence](../release/REVIEW.md) for this release candidate.
+
 # BENCHMARK
 
 Open the hidden developer screen by tapping the version seven times on Home.

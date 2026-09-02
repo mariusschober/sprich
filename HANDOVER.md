@@ -1,3 +1,5 @@
+> Historical development snapshot. Commands, architecture and acceptance claims below describe an older build. Use [the current README](README.md) and [the current qualification evidence](release/REVIEW.md) for this release candidate.
+
 # HANDOVER — Sprich Local-Only Android Dictation
 
 **Date:** 2026-08-24 15:33 UTC  

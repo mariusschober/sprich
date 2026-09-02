@@ -1,3 +1,5 @@
+> Historical development snapshot. Commands, architecture and acceptance claims below describe an older build. Use [the current README](../README.md) and [the current qualification evidence](../release/REVIEW.md) for this release candidate.
+
 # Manual physical-device test script — required matrix (2026-09-01)
 
 When blocked by hardware/emulator/model assets, this exact script must be executed on a real device before release. Repository is left buildable; no cloud speech is introduced.

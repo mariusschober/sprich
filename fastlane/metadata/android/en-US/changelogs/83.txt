@@ -1,0 +1,9 @@
+First release candidate for Zapstore.
+
+• Offline dictation in English, German, Spanish and French.
+• Automatic language detection and an optional Accurate mode.
+• Personal vocabulary, spoken editing and delete/undo gestures.
+• A compact voice keyboard with a visible keyboard switcher.
+• Safer downloads, cursor cancellation and password-field protection.
+
+Android 8.0 or later, ARM64. Download speech files during setup. Online dictation is unavailable in this release. Please review recognized text before sending.
