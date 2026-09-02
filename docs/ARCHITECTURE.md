@@ -35,7 +35,7 @@ onStartInput / focus → FieldSessionController.onFieldFocused [sessionId++] →
                          ↘ continuous capture: next onset not blocked by previous final (decode serialized via mutex, live capture via separate PCM buffer/shnapshot)
 ```
 
-  ## Modules (2026-09-02 sprint 3)
+  ## Modules (2026-09-02 sprint 3 + dual-color addendum ad1fdb8)
 
 ```
 app/src/main/java/com/sprich/app/
@@ -59,7 +59,7 @@ app/src/main/java/com/sprich/app/
   speech/remote/RemoteSttProvider  abstraction: OpenAiCompatible/MetaMuse (https://api.meta.ai) / Gemini (generativelanguage.googleapis.com), bounded 8KB, followRedirects false, pooled sharedClient
   speech/refinement + ai/OpenAiCompatibleRefinementProvider  OFF/CORRECT/CLEAN, DATA-block, bounded
   speech/stabilization/TranscriptStabilizer  LCP of last N=2, word-level
-   input/ime/SprichIME         InputMethodService — axis-locked gestures (swipe up switch → previous/next/picker, left delete/right undo/down newline, one mutation per gesture), Choreographer single visual lane (no Math.random/ValueAnimator fighting), immediate ACTION_DOWN press, password guard, utteranceId monotonic, sessionGeneration/fieldGeneration, frozen UtterancePlan+PCM at onset, FIFO pendingChannel(4), suppressEpisode backpressure, local-cold for API_PRIMARY, redirect-blocked pooled OkHttp, exactly-once via finalizedUtterances LRU 128, onDestroy field-tied cleanupScope (<50ms wall)
+   input/ime/SprichIME         InputMethodService — dual-color bar (local red #FF4D76 vs API blue #3B6BFF, isApiPalette via frozen ActiveUtterance ApiPrimary vs idle mode+valid remote, no mid-utterance hue jump for LOCAL_API_FALLBACK), axis-locked gestures (swipe up switch → previous/next/picker, left delete/right undo/down newline, one mutation per gesture), Choreographer single visual lane (no Math.random/ValueAnimator fighting), immediate ACTION_DOWN press, password guard, utteranceId monotonic, sessionGeneration/fieldGeneration, frozen UtterancePlan+PCM at onset, FIFO pendingChannel(4), suppressEpisode backpressure, local-cold for API_PRIMARY, redirect-blocked pooled OkHttp, exactly-once via finalizedUtterances LRU 128, onDestroy field-tied cleanupScope (<50ms wall)
    input/composition/CompositionManager  IME-local partials (no external setComposingText → no HelloHello), single irreversible commitText (no retry on ambiguous false), discardPartial vs commitFinal distinct, no destructive delete
    input/lifecycle/DictationSession FSM  Idle→Preparing→Listening→Speech→Finalizing→Inserting→Listening (per utterance) →Ending→Idle (field loss only), sessionId per field focus
    input/lifecycle/FieldSessionController single authoritative field session owner, commitUtterance (Inserting→Listening keeps field alive) vs commitFinal (Ending→Idle), utteranceId exactly-once set, cross-field guard, typed CommitResult (Committed/EditorRejected/Stale etc.)
@@ -68,7 +68,7 @@ app/src/main/java/com/sprich/app/
   models/manager/ModelManager+Manifest  BuiltinManifest (Canary/Fast/Tiny 2026-09-01 SHA), SHA atomic rename, isAutomaticReady gated (>5M threshold accommodates test fixtures)
   vocab/PersonalVocabStore+Repository  word-boundary replace, DataStore persistence (local only), gesture legend
   storage/Preferences          DataStore prefs (instant, speechLanguage BCP-47, transcriptionMode, sttProviderId/sttStreamingEnabled, haptics, commands) — suggestLanguageFromLocale suspend (no runBlocking)
-  ui/*                         Compose Material3 DayNight, onboarding 4 steps (jargon-free), home (Ready to speak), settings (Digital clean IA, gesture legend, DEBUG-gated benchmark/nemotron)
+  ui/*                         Compose Material3 DayNight, onboarding 4 steps (jargon-free), home (Ready to speak), settings (Digital clean IA, gesture legend, DEBUG-gated benchmark/nemotron); colors api_* blue for bar
   diagnostics/Diagnostics      local only, no transcript, no raw audio by default, opt-in export
   diagnostics/ReplayHarness    debug WAV capture in noBackupFilesDir/sprich_replay (never backed up), paired WAV+.meta deletion, clearAll
 ```

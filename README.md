@@ -46,7 +46,7 @@ See [PLAN.md](PLAN.md) for full product thesis and latency targets.
 
 Full: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Cloud: [docs/API_ARCHITECTURE.md](docs/API_ARCHITECTURE.md)
 
-## Models (2026-09-02 sprint 3, commit `609b00b`)
+## Models (2026-09-02 sprint 3, commit `ad1fdb8` — with dual-color addendum)
 
 | Model | Size | Delivery | Runtime | Status |
 |-------|------|----------|---------|--------|
@@ -54,7 +54,7 @@ Full: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Cloud: [docs/API_ARCHITECT
 | **Accurate** Canary 180M Flash INT8 | 198 MB (`encoder+decoder+tokens`) | device-side `files/canary` | sherpa-onnx 1.13.6 INT8, 2 threads, 16KB | Supported — explicit EN/DE/ES/FR |
 | **Streaming** Nemotron 560/160 0.6B | 475 MB archive | hidden behind `DEBUG` | not shipped in prod | Experimental — WER/thermal not measured |
 
-Gestures: `swipe left = delete`, `right = undo`, `down = new line`, `up = switch keyboard` (one mutation per gesture). Visual: single `Choreographer` lane, no `Math.random` animators. Release: R8 `33M`/`17M` AAB, `llvm-readelf` per-`.so` `Align 0x4000` MEASURED. A model returns to prod only after device-measured 16KB, lifecycle and editor-matrix gates. See [docs/SPRINT3_2026-09-02.md](docs/SPRINT3_2026-09-02.md) · [docs/MODELS.md](docs/MODELS.md).
+Gestures: `swipe left = delete`, `right = undo`, `down = new line`, `up = switch keyboard` (one mutation per gesture). Visual: single `Choreographer` lane + **dual-color live bar** (`local red` vs `API blue` + hint `Listening — cloud`), no `Math.random` animators. Release: R8 `33M`/`17M` AAB, `llvm-readelf` per-`.so` `Align 0x4000` MEASURED. See [docs/SPRINT3_2026-09-02.md](docs/SPRINT3_2026-09-02.md) · [docs/MODELS.md](docs/MODELS.md).
 
 ## Privacy
 
@@ -83,28 +83,28 @@ Instructions and limitations: [docs/BENCHMARK.md](docs/BENCHMARK.md)
 
 CI check fails if `canary/` or `nemotron/` artifacts appear inside APK.
 
-## Testing (sprint 3 `609b00b` — host verified)
+## Testing (sprint 3 `ad1fdb8` — host verified, dual-color)
 
 ```bash
-./gradlew :app:testDebugUnitTest      # 290+ (44 suites) PASS
-./gradlew :app:lintDebug              # PASS  (R8-compat, sherpa keeps)
-./gradlew :app:assembleDebug          # 54M PASS
-./gradlew :app:assembleRelease        # 33M (1 dex, R8) PASS
+./gradlew :app:testDebugUnitTest      # 290+ (44 suites) PASS  (dual palette isoApi)
+./gradlew :app:lintDebug              # PASS
+./gradlew :app:assembleDebug          # 54M PASS  (api_* colors present)
+./gradlew :app:assembleRelease        # 33M (1 dex) PASS
 ./gradlew :app:bundleRelease          # 17M AAB PASS
 ./scripts/verify-models.sh; ./scripts/check-apk.sh
-llvm-readelf -l */arm64-v8a/*.so | grep LOAD  # all Align 0x4000 MEASURED
-# Device (T807D) — pending re-measurement on this commit:
+llvm-readelf -l */arm64-v8a/*.so | grep LOAD  # all Align 0x4000
+# Device (T807D) — bar: ON_DEVICE red vs API_PRIMARY blue (human, light+dark)
 # ./gradlew :app:connectedDebugAndroidTest -P..QueueActorStressDeviceTest
 # ./gradlew :app:connectedDebugAndroidTest -P..AutomaticWithoutCanaryDeviceTest
-# adb install -r app/build/outputs/apk/release/app-release-unsigned.apk
+# adb install -r app/build/outputs/apk/debug/app-debug.apk  # set com.sprich.app.debug/...SprichIME
 ```
 
-Manual matrix: Chrome, WhatsApp, Telegram, Signal, Gmail, Slack, Notion, WebView, Compose — `EditorMatrixRealTest` now covers EditText/Compose/IME-local (host), Chrome/Gmail/WebView still human. See [docs/SPRINT3_2026-09-02.md](docs/SPRINT3_2026-09-02.md) §10.
+Manual matrix: Chrome, WhatsApp, Telegram, Signal, Gmail, Slack, Notion, WebView, Compose — `EditorMatrixRealTest` now covers EditText/Compose/IME-local, Chrome/Gmail/WebView human pending. See [docs/SPRINT3_2026-09-02.md](docs/SPRINT3_2026-09-02.md) §10.
 
-## Known limitations (v1 — sprint 3 `609b00b`)
+## Known limitations (v1 — sprint 3 `ad1fdb8`)
 
-- Device proof pending re-run on T807D for this commit: `AutomaticWithoutCanary` heap (sprint2 BLOCKED, now sequential+cache), `onDestroy <50ms`, `Choreographer` `gfxinfo`, gesture switch + TalkBack, Chrome/WebView human, R8 smoke.
-- Only `arm64-v8a` (NDK 27, `16KB Check` host PASS, device emulator NOT MEASURED), local `224 MB` Automatic + `198 MB` Accurate.
+- Device proof pending re-run on T807D for this commit: `AutomaticWithoutCanary` heap (sprint2 BLOCKED, now sequential+cache), `onDestroy <50ms`, **dual-color bar** light+dark, `Choreographer` `gfxinfo`, gesture switch + TalkBack, Chrome/WebView human, R8 smoke.
+- Only `arm64-v8a` (NDK 27, `16KB Check` host PASS, device emulator NOT MEASURED), local `224 MB` Automatic + `198 MB` Accurate; dual-color adds ~5 colors only.
 - Nemotron hidden (`DEBUG` only); `PLAY_SIGNING_READY:NO` (unsigned CI), `30+30+10+10` WER corpus not measured — `OVERALL_PRODUCTION_READY:NO` (correct).
 
 ## License

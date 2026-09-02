@@ -87,6 +87,11 @@
 - Editor matrix: EditorMatrixRealTest added (EditText/Compose/IME-local vs hostile editors) — real Chrome/WebView still needs human validation.
 - Release: R8 enabled for release (proguard keeps sherpa), 16KB linker flags, adaptive icon, licenses wiring, signing via keystore.properties (unsigned CI remains).
 
+## Sprint 3 addendum 2026-09-03 — dual-color live bar (ad1fdb8, pushed)
+- Bar: local pleasure red `#B9B3C9→#FF7A67→#FF4D76→#E92B8E` vs API trustworthy blue `#9AA4D9→#5B8DEF→#3B6BFF→#1E40AF`, Δ max for deuteranopia, nightly `values-night/colors.xml` symmetric.
+- Logic: `SprichIME.BarPalette` `LOCAL`/`API` + `isApiPalette()` frozen `ActiveUtterance.plan ApiPrimary` during utterance (no mid-utterance hue jump; `LOCAL_API_FALLBACK` stays red until endpoint), else idle `transcriptionMode+valid remote` (locked Muse/Gemini or valid https). `gradientForRms(rms,isApi)`, `strokeForRms(t,isApi)`, `auraColorsFor`, `updateLiquidVisual`/`celebrateCommit`/`onCreateInputView`/`updateImeUi` palette-aware; hint `Listening — cloud` vs `Tap to stop`.
+- Host verified `test+lint+assemble` PASS after palette; device manual `ON_DEVICE` red vs `API_PRIMARY` blue NOT YET human-verified (needs T807D light/dark).
+
 ## Hardware-tier latency budgets (defined, to be measured physically)
 
 - **Mid (6GB RAM, Snapdragon 730 tier)**: focus→capturing p95 <150ms, endpoint→final p95 <800ms, RTF <0.5, first phoneme loss <1/100.
