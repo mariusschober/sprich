@@ -222,10 +222,11 @@ class SprichIME : InputMethodService() {
     // New product modes
     private var transcriptionMode: TranscriptionMode = TranscriptionMode.ON_DEVICE
     private var refinementMode: RefinementMode = RefinementMode.OFF
-    private var sttProviderId: String = "openai-compatible"
+    private var sttProviderId: String = "meta-muse-voice-transcribe"
     private var sttBaseUrlState: String = ""
     private var sttModelState: String = "whisper-large-v3"
     private var sttDeadlineMsState: Long = 3500L
+    private var sttStreamingEnabledState: Boolean = true
     private var refinementBaseUrlState: String = ""
     private var refinementModelState: String = ""
     private var refinementDeadlineMsState: Long = 1000L
@@ -326,6 +327,7 @@ class SprichIME : InputMethodService() {
             scope.launch { try { prefs.sttBaseUrl.collect { sttBaseUrlState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.sttModel.collect { sttModelState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.sttDeadlineMs.collect { sttDeadlineMsState = it } } catch (e: Exception) {} }
+            scope.launch { try { prefs.sttStreamingEnabled.collect { sttStreamingEnabledState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.sttCredentialRef.collect { sttCredentialRefState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.refinementProviderId.collect { refinementProviderIdState = it } } catch (e: Exception) {} }
             scope.launch { try { prefs.refinementCredentialRef.collect { refinementCredentialRefState = it } } catch (e: Exception) {} }
@@ -2472,27 +2474,91 @@ class SprichIME : InputMethodService() {
 
     private fun buildRemoteSttConfig(): RemoteSttConfig? {
         // P1-15: No runBlocking, no DataStore reads on audio hot path — use in-memory snapshots
-        if (!isValidHttpsUrl(sttBaseUrlState)) return null
-        if (sttModelState.isBlank()) return null
+        // Locked providers (Muse/Gemini) have fixed endpoint/model, single key, streaming toggle
+        val isMuse = sttProviderId == "meta-muse-voice-transcribe" || sttProviderId == "meta-muse"
+        val isGemini = sttProviderId == "gemini" || sttProviderId == "gemini-3.5-transcribe" || sttProviderId == "gemini-3.5-transcribe-live"
+        val isLocked = isMuse || isGemini
+        val endpoint: String
+        val model: String
+        val supportsStreaming: Boolean
+        val supportsKeywordBiasing: Boolean
+        if (isMuse) {
+            endpoint = com.sprich.app.storage.MuseDefaults.ENDPOINT_TRANSCRIBE // https://api.meta.ai/v1/asr/transcribe (base https://api.meta.ai)
+            model = com.sprich.app.storage.MuseDefaults.MODEL
+            supportsStreaming = true
+            supportsKeywordBiasing = true
+        } else if (isGemini) {
+            endpoint = com.sprich.app.storage.GeminiDefaults.BASE_URL
+            model = com.sprich.app.storage.GeminiDefaults.MODEL
+            supportsStreaming = true
+            supportsKeywordBiasing = true
+        } else {
+            // Custom / openai-compatible — require valid HTTPS and model
+            if (!isValidHttpsUrl(sttBaseUrlState)) return null
+            if (sttModelState.isBlank()) return null
+            endpoint = sttBaseUrlState
+            model = sttModelState
+            supportsStreaming = false
+            supportsKeywordBiasing = false
+        }
+        // Single key for locked providers: use stt_default (same key for STT+refinement if provider supports both)
         val credRef = sttCredentialRefState.ifBlank { "stt_default" }
         val langPolicy = LanguagePolicy.fromSpeechLanguage(speechLanguage)
         return RemoteSttConfig(
             providerId = sttProviderId,
-            endpoint = sttBaseUrlState,
-            model = sttModelState,
+            endpoint = endpoint,
+            model = model,
             languagePolicy = langPolicy,
             deadlineMs = sttDeadlineMsState,
             credentialRef = credRef,
-            supportsStreaming = sttProviderId == "meta-muse",
+            supportsStreaming = supportsStreaming,
+            supportsKeywordBiasing = supportsKeywordBiasing,
+            preferStreaming = supportsStreaming && sttStreamingEnabledState,
         )
     }
 
     private fun buildRefinementConfig(mode: RefinementMode): RefinementConfig? {
         if (mode == RefinementMode.OFF) return null
+        val isMuseRefine = refinementProviderIdState == "meta-muse-voice-transcribe" || refinementProviderIdState == "meta-muse" || refinementProviderIdState == "muse-spark"
+        val isGeminiRefine = refinementProviderIdState == "gemini" || refinementProviderIdState.startsWith("gemini-")
+        val isSttMuse = sttProviderId == "meta-muse-voice-transcribe" || sttProviderId == "meta-muse"
+        val isSttGemini = sttProviderId == "gemini" || sttProviderId.startsWith("gemini-")
+        // For locked Muse/Gemini refinement, use fixed endpoint/model and single key (same as STT if STT is same provider)
+        if (isMuseRefine || (isSttMuse && refinementProviderIdState == "openai-compatible" && refinementMode != RefinementMode.OFF)) {
+            // If refinement is Muse Spark and STT is Muse Voice, use single key
+            val credRef = when {
+                refinementCredentialRefState.isNotBlank() && refinementCredentialRefState != "refine_default" -> refinementCredentialRefState
+                sttCredentialRefState.isNotBlank() -> sttCredentialRefState
+                else -> "stt_default"
+            }
+            return RefinementConfig(
+                providerId = "meta-muse-voice-transcribe",
+                endpoint = com.sprich.app.storage.MuseRefinementDefaults.ENDPOINT,
+                model = com.sprich.app.storage.MuseRefinementDefaults.MODEL,
+                mode = mode,
+                deadlineMs = refinementDeadlineMsState,
+                credentialRef = credRef,
+            )
+        }
+        if (isGeminiRefine) {
+            val credRef = when {
+                refinementCredentialRefState.isNotBlank() && refinementCredentialRefState != "refine_default" -> refinementCredentialRefState
+                sttCredentialRefState.isNotBlank() -> sttCredentialRefState
+                else -> "stt_default"
+            }
+            return RefinementConfig(
+                providerId = "gemini",
+                endpoint = com.sprich.app.storage.GeminiRefinementDefaults.ENDPOINT,
+                model = com.sprich.app.storage.GeminiRefinementDefaults.MODEL,
+                mode = mode,
+                deadlineMs = refinementDeadlineMsState,
+                credentialRef = credRef,
+            )
+        }
         if (!isValidHttpsUrl(refinementBaseUrlState) || refinementModelState.isBlank()) return null
         val credRef = refinementCredentialRefState.ifBlank { "refine_default" }
         return RefinementConfig(
-            providerId = refinementProviderIdState, // P0-14: use real refinement provider ID, not STT provider
+            providerId = refinementProviderIdState,
             endpoint = refinementBaseUrlState,
             model = refinementModelState,
             mode = mode,
@@ -2533,13 +2599,35 @@ class SprichIME : InputMethodService() {
         if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
         // Build provider map — shared HttpClient reused (P0-18: pooled connections, keep-alive, HTTP/2)
         val providers = mutableMapOf<String, RemoteSttProvider>()
-        // OpenAI-compatible provider if configured — strict HTTPS validation
         try {
-            if (isValidHttpsUrl(sttBaseUrlState) && sttModelState.isNotBlank()) {
-                // Use sharedClient.newBuilder() to share ConnectionPool/Dispatcher where OkHttp semantics permit
+            // Locked Muse — fixed endpoint, single key, streaming default
+            if (sttProviderId == "meta-muse-voice-transcribe" || sttProviderId == "meta-muse") {
+                val client = sharedHttpClient.newBuilder().build()
+                val museProvider = com.sprich.app.speech.remote.MetaMuseSttProvider(
+                    com.sprich.app.storage.MuseDefaults.BASE_URL,
+                    com.sprich.app.storage.MuseDefaults.MODEL,
+                    client,
+                    sttStreamingEnabledState
+                )
+                providers["meta-muse-voice-transcribe"] = museProvider
+                providers["meta-muse"] = museProvider
+                providers[sttProviderId] = museProvider
+            } else if (sttProviderId == "gemini" || sttProviderId.startsWith("gemini-")) {
+                val client = sharedHttpClient.newBuilder().build()
+                val geminiProvider = com.sprich.app.speech.remote.GeminiSttProvider(
+                    com.sprich.app.storage.GeminiDefaults.BASE_URL,
+                    com.sprich.app.storage.GeminiDefaults.MODEL,
+                    client,
+                    sttStreamingEnabledState
+                )
+                providers["gemini"] = geminiProvider
+                providers[sttProviderId] = geminiProvider
+            } else if (isValidHttpsUrl(sttBaseUrlState) && sttModelState.isNotBlank()) {
+                // Custom / openai-compatible — strict HTTPS validation
                 val client = sharedHttpClient.newBuilder().build()
                 providers["openai-compatible"] = OpenAiCompatibleSttProvider(sttBaseUrlState, sttModelState, client)
                 providers[sttProviderId] = providers["openai-compatible"]!!
+                providers["custom"] = providers["openai-compatible"]!!
             }
         } catch (_: Exception) {}
         // Mock for tests

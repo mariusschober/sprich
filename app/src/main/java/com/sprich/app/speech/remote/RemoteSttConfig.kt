@@ -7,7 +7,7 @@ import com.sprich.app.speech.LanguagePolicy
  * One utterance must never combine old endpoint + new model + old mode because Settings changed mid-speech.
  */
 data class RemoteSttConfig(
-    val providerId: String, // e.g. "openai-compatible", "meta-muse", "mock"
+    val providerId: String, // e.g. "openai-compatible", "meta-muse-voice-transcribe", "gemini", "mock"
     val endpoint: String, // base URL
     val model: String,
     val languagePolicy: LanguagePolicy,
@@ -16,6 +16,7 @@ data class RemoteSttConfig(
     // capabilities snapshot
     val supportsStreaming: Boolean = false,
     val supportsKeywordBiasing: Boolean = false,
+    val preferStreaming: Boolean = false, // user toggle for Muse/Gemini streaming vs non-streaming
 ) {
     override fun toString(): String {
         // Privacy-safe: never log full endpoint/query or credential ref secret
@@ -39,6 +40,7 @@ data class RemoteSttRequest(
     val personalVocabularyHints: List<String> = emptyList(),
     val utteranceId: Long,
     val credential: String, // resolved plaintext at call time from secure store, never persisted in config
+    val preferStreaming: Boolean = false,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

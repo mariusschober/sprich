@@ -18,5 +18,6 @@ enum class TranscriptionSourceId(val id: String) {
     LOCAL_CANARY("local-canary"),
     API_OPENAI_COMPATIBLE("api-openai-compatible"),
     API_META_MUSE("api-meta-muse"),
+    API_GEMINI("api-gemini"),
     API_MOCK("api-mock"),
 }

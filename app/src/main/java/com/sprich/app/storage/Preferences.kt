@@ -40,10 +40,11 @@ class Preferences(context: Context) {
         val KEY_AI_MODEL = stringPreferencesKey("ai_model")
         // Typed product semantics (new)
         val KEY_TRANSCRIPTION_MODE = stringPreferencesKey("transcription_mode") // on_device | api_primary | local_api_fallback
-        val KEY_STT_PROVIDER_ID = stringPreferencesKey("stt_provider_id") // openai-compatible | meta-muse | mock
+        val KEY_STT_PROVIDER_ID = stringPreferencesKey("stt_provider_id") // meta-muse-voice-transcribe | gemini | openai-compatible | custom | mock
         val KEY_STT_CREDENTIAL_REF = stringPreferencesKey("stt_credential_ref")
         val KEY_STT_DEADLINE_MS = longPreferencesKey("stt_deadline_ms")
         val KEY_STT_LANGUAGE_POLICY = stringPreferencesKey("stt_language_policy") // auto | fixed tag
+        val KEY_STT_STREAMING_ENABLED = booleanPreferencesKey("stt_streaming_enabled") // Muse streaming default true
         val KEY_REFINEMENT_MODE = stringPreferencesKey("refinement_mode") // off | correct | clean_dictation
         val KEY_REFINEMENT_PROVIDER_ID = stringPreferencesKey("refinement_provider_id")
         val KEY_REFINEMENT_CREDENTIAL_REF = stringPreferencesKey("refinement_credential_ref")
@@ -54,6 +55,7 @@ class Preferences(context: Context) {
         // Debug harness (opt-in only, default false, never logs transcript by default)
         val KEY_DEBUG_WAV_CAPTURE = booleanPreferencesKey("debug_wav_capture")
         val KEY_DEBUG_TRANSCRIPT_TRACE = booleanPreferencesKey("debug_transcript_trace")
+
     }
 
     val onboardingDone: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_ONBOARDING_DONE] ?: false }
@@ -102,10 +104,11 @@ class Preferences(context: Context) {
             try { com.sprich.app.speech.TranscriptionMode.valueOf(it) } catch (_: Exception) { null }
         } ?: com.sprich.app.speech.TranscriptionMode.fromRaw(prefs[KEY_STT_MODE] ?: "local")
     }
-    val sttProviderId: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_PROVIDER_ID] ?: "openai-compatible" }
+    val sttProviderId: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_PROVIDER_ID] ?: "meta-muse-voice-transcribe" }
     val sttCredentialRef: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_CREDENTIAL_REF] ?: "stt_default" }
     val sttDeadlineMs: Flow<Long> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_DEADLINE_MS] ?: 3500L }
     val sttLanguagePolicyRaw: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_LANGUAGE_POLICY] ?: "auto" }
+    val sttStreamingEnabled: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_STREAMING_ENABLED] ?: true }
 
     val refinementMode: Flow<com.sprich.app.speech.refinement.RefinementMode> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map { prefs ->
         prefs[KEY_REFINEMENT_MODE]?.let {
@@ -131,6 +134,7 @@ class Preferences(context: Context) {
     suspend fun setSttProviderId(v: String){ context.ds.edit{it[KEY_STT_PROVIDER_ID]= v} }
     suspend fun setSttCredentialRef(v: String){ context.ds.edit{it[KEY_STT_CREDENTIAL_REF]= v} }
     suspend fun setSttDeadlineMs(v: Long){ context.ds.edit{it[KEY_STT_DEADLINE_MS]= v} }
+    suspend fun setSttStreamingEnabled(v: Boolean){ context.ds.edit{it[KEY_STT_STREAMING_ENABLED]= v} }
     suspend fun setAiEnabled(v: Boolean){ context.ds.edit{it[KEY_AI_ENABLED]=v} }
     suspend fun setAiBaseUrl(v: String){ context.ds.edit{it[KEY_AI_BASE_URL]=v.trim().trimEnd('/')} }
     @Deprecated("Legacy plaintext — use ApiSecretStore; migration-only")
@@ -177,4 +181,29 @@ class Preferences(context: Context) {
     suspend fun setHaptics(v: Boolean){ context.ds.edit{it[KEY_HAPTICS]=v} }
     suspend fun setCommands(v: Boolean){ context.ds.edit{it[KEY_COMMANDS]=v} }
     suspend fun clearAll(){ context.ds.edit{it.clear()}}
+}
+
+// Locked provider defaults — Muse Voice Transcribe (Meta Model API) + Gemini (top-level for Settings/SprichIME)
+object MuseDefaults {
+    const val PROVIDER_ID = "meta-muse-voice-transcribe"
+    const val BASE_URL = "https://api.meta.ai"
+    const val REALTIME_PATH = "/v1/asr/realtime"
+    const val TRANSCRIBE_PATH = "/v1/asr/transcribe"
+    const val MODEL = "muse-voice-transcribe-1.0"
+    const val ENDPOINT_REALTIME = "wss://api.meta.ai/v1/asr/realtime"
+    const val ENDPOINT_TRANSCRIBE = "https://api.meta.ai/v1/asr/transcribe"
+}
+object GeminiDefaults {
+    const val PROVIDER_ID = "gemini"
+    const val BASE_URL = "https://generativelanguage.googleapis.com"
+    const val MODEL = "gemini-3.5-transcribe"
+    const val MODEL_LIVE = "gemini-3.5-transcribe-live"
+}
+object MuseRefinementDefaults {
+    const val MODEL = "muse-spark-1.1"
+    const val ENDPOINT = "https://api.meta.ai/v1"
+}
+object GeminiRefinementDefaults {
+    const val MODEL = "gemini-2.0-flash"
+    const val ENDPOINT = "https://generativelanguage.googleapis.com"
 }

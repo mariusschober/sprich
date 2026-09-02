@@ -128,11 +128,33 @@ class TranscriptionCoordinator(
     }
 
     private suspend fun tryRemote(pcm: ShortArray, config: com.sprich.app.speech.remote.RemoteSttConfig, speechConfig: SpeechSessionConfig, utteranceId: Long): TranscriptionResult? {
-        // Resolve provider from frozen config (do not rely on mutable global prefs). Create on-demand for openai-compatible to reflect frozen endpoint/model.
+        // Resolve provider from frozen config (do not rely on mutable global prefs). Create on-demand for locked providers to reflect frozen endpoint/model.
         val provider: RemoteSttProvider = when (config.providerId) {
             "mock", "mock-refine" -> remoteProviders[config.providerId] ?: remoteProviders["mock"] ?: return null
-            "meta-muse", "meta-muse-voice-transcribe" -> remoteProviders[config.providerId]
-                ?: com.sprich.app.speech.remote.MetaMuseSttProvider(config.endpoint, config.model)
+            "meta-muse", "meta-muse-voice-transcribe" -> {
+                val injected = remoteProviders[config.providerId] ?: remoteProviders["meta-muse-voice-transcribe"] ?: remoteProviders["meta-muse"]
+                if (injected != null && injected !is com.sprich.app.speech.remote.MetaMuseSttProvider) injected else {
+                    val shared = sharedHttpClient as? okhttp3.OkHttpClient
+                    val client = if (shared != null) shared.newBuilder()
+                        .connectTimeout(deadlinePolicy.socketConnectMs, TimeUnit.MILLISECONDS)
+                        .readTimeout(deadlinePolicy.socketReadMs, TimeUnit.MILLISECONDS)
+                        .writeTimeout(deadlinePolicy.socketWriteMs, TimeUnit.MILLISECONDS)
+                        .build() else com.sprich.app.speech.remote.MetaMuseSttProvider.createClient(deadlinePolicy)
+                    com.sprich.app.speech.remote.MetaMuseSttProvider(config.endpoint, config.model, client, config.preferStreaming)
+                }
+            }
+            "gemini", "gemini-3.5-transcribe", "gemini-3.5-transcribe-live" -> {
+                val injected = remoteProviders[config.providerId] ?: remoteProviders["gemini"]
+                if (injected != null && injected !is com.sprich.app.speech.remote.GeminiSttProvider) injected else {
+                    val shared = sharedHttpClient as? okhttp3.OkHttpClient
+                    val client = if (shared != null) shared.newBuilder()
+                        .connectTimeout(deadlinePolicy.socketConnectMs, TimeUnit.MILLISECONDS)
+                        .readTimeout(deadlinePolicy.socketReadMs, TimeUnit.MILLISECONDS)
+                        .writeTimeout(deadlinePolicy.socketWriteMs, TimeUnit.MILLISECONDS)
+                        .build() else com.sprich.app.speech.remote.GeminiSttProvider.createClient(deadlinePolicy)
+                    com.sprich.app.speech.remote.GeminiSttProvider(config.endpoint, config.model, client, config.preferStreaming)
+                }
+            }
             else -> {
                 // OpenAI-compatible: use injected mock if set, otherwise create fresh from frozen config (ensures Settings change mid-utterance not mixed)
                 val injected = remoteProviders[config.providerId] ?: remoteProviders["openai-compatible"]
@@ -162,14 +184,15 @@ class TranscriptionCoordinator(
             lastRemoteFailureAtMs = android.os.SystemClock.elapsedRealtime()
             return null
         }
-        // P1-37: use real utteranceId from token, not fabricated nanoTime
+        // P1-37: use real utteranceId from token, not fabricated nanoTime; pass preferStreaming for Muse/Gemini
         val request = RemoteSttRequest(
             pcm = pcm,
             sampleRate = 16000,
             languagePolicy = config.languagePolicy,
-            personalVocabularyHints = emptyList(), // controlled via settings privacy option — only if enabled and provider supports hints
+            personalVocabularyHints = if (config.supportsKeywordBiasing) emptyList() else emptyList(), // vocab hints injected by SprichIME if enabled
             utteranceId = utteranceId,
             credential = credential,
+            preferStreaming = config.preferStreaming,
         )
         return try {
             val result = withTimeoutOrNull(config.deadlineMs) {

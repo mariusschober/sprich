@@ -322,54 +322,83 @@ private fun TranscriptionSection(prefs: Preferences) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val mode by prefs.transcriptionMode.collectAsState(initial = TranscriptionMode.ON_DEVICE)
-    val providerId by prefs.sttProviderId.collectAsState(initial = "openai-compatible")
+    val providerId by prefs.sttProviderId.collectAsState(initial = "meta-muse-voice-transcribe")
     val baseUrl by prefs.sttBaseUrl.collectAsState(initial = "")
     val model by prefs.sttModel.collectAsState(initial = "whisper-large-v3")
+    val streamingEnabled by prefs.sttStreamingEnabled.collectAsState(initial = true)
     val secretStore = remember { ApiSecretStore(ctx) }
     // Shared pooled client for Settings Test — same pooling semantics as production, redirects disabled for credentialed BYOK
     val sharedClient = remember { okhttp3.OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build() }
     var hasKey by remember { mutableStateOf(false) }
+    var hasMuseKey by remember { mutableStateOf(false) }
+    var hasGeminiKey by remember { mutableStateOf(false) }
     var keyInput by remember { mutableStateOf("") }
     var showKeyEntry by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
     var saveError by remember { mutableStateOf<String?>(null) }
+    val isMuse = providerId == "meta-muse-voice-transcribe" || providerId == "meta-muse"
+    val isGemini = providerId == "gemini" || providerId.startsWith("gemini-")
+    val isCustom = providerId == "openai-compatible" || providerId == "custom"
     // hasKey = decryptable secure credential only — migration has already moved legacy if present
     LaunchedEffect(Unit) {
         try { LegacyApiCredentialMigrator.migrateIfNeeded(prefs, secretStore) } catch (_: Exception) {}
         hasKey = try { secretStore.hasSecret("stt_default") } catch (_: Exception) { false }
+        hasMuseKey = hasKey // single key for Muse (stt_default)
+        hasGeminiKey = hasKey
     }
-    // Refresh when secret changes
-    LaunchedEffect(hasKey) {}
+    LaunchedEffect(providerId, hasKey) {
+        // Refresh hasKey when provider changes — for locked providers, check single key
+        hasKey = try { secretStore.hasSecret("stt_default") } catch (_: Exception) { false }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Transcription", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        Text("On-device is default. Add an API key and enable API to make API primary with on-device fallback.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(selected = mode == TranscriptionMode.ON_DEVICE, onClick = { scope.launch { prefs.setTranscriptionMode(TranscriptionMode.ON_DEVICE) } }, label = { Text("On-device", style = MaterialTheme.typography.labelSmall) })
-            FilterChip(selected = mode == TranscriptionMode.API_PRIMARY, onClick = { scope.launch { prefs.setTranscriptionMode(TranscriptionMode.API_PRIMARY) } }, label = { Text("API", style = MaterialTheme.typography.labelSmall) })
+            FilterChip(selected = mode == TranscriptionMode.API_PRIMARY, onClick = { scope.launch { prefs.setTranscriptionMode(TranscriptionMode.API_PRIMARY) } }, label = { Text("API → On-device fallback", style = MaterialTheme.typography.labelSmall) })
             FilterChip(selected = mode == TranscriptionMode.LOCAL_API_FALLBACK, onClick = { scope.launch { prefs.setTranscriptionMode(TranscriptionMode.LOCAL_API_FALLBACK) } }, label = { Text("On-device → API fallback", style = MaterialTheme.typography.labelSmall) })
         }
         if (mode != TranscriptionMode.ON_DEVICE) {
-            Text("Audio is sent directly from your device to your selected transcription provider using your API key. Sprich does not provide, proxy or receive your API key. Usage is billed directly by your provider.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Audio is sent directly from your device to your selected transcription provider using your API key. Sprich does not provide, proxy or receive your API key. Usage is billed directly by your provider. On-device stays as fallback if API fails.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(selected = providerId == "openai-compatible", onClick = { scope.launch { prefs.setSttProviderId("openai-compatible") } }, label = { Text("OpenAI-compatible", style = MaterialTheme.typography.labelSmall) })
-                // Meta Muse blocked — show as disabled info, not selectable
-                AssistChip(onClick = {}, enabled = false, label = { Text("Meta Muse — Not available yet", style = MaterialTheme.typography.labelSmall) })
-                FilterChip(selected = providerId == "custom", onClick = { scope.launch { prefs.setSttProviderId("custom") } }, label = { Text("Custom", style = MaterialTheme.typography.labelSmall) })
+                FilterChip(selected = isMuse, onClick = { scope.launch { prefs.setSttProviderId("meta-muse-voice-transcribe") } }, label = { Text("Muse Voice (Default)", style = MaterialTheme.typography.labelSmall) })
+                FilterChip(selected = isGemini, onClick = { scope.launch { prefs.setSttProviderId("gemini") } }, label = { Text("Gemini", style = MaterialTheme.typography.labelSmall) })
+                FilterChip(selected = isCustom, onClick = { scope.launch { prefs.setSttProviderId("custom") } }, label = { Text("Custom", style = MaterialTheme.typography.labelSmall) })
             }
-            // API key: Saved / Replace, never reload plaintext. Saved only if decryptable.
+            if (isMuse) {
+                Text("Muse Voice Transcribe — locked: https://api.meta.ai, model muse-voice-transcribe-1.0, single key for STT + text. Streaming default.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            } else if (isGemini) {
+                Text("Gemini 3.5 Transcribe — locked: generativelanguage.googleapis.com, model gemini-3.5-transcribe. Single key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+            // Streaming toggle for Muse/Gemini (both support streaming + non-streaming)
+            if (isMuse || isGemini) {
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Streaming", style = MaterialTheme.typography.bodyMedium)
+                    Switch(checked = streamingEnabled, onCheckedChange = { scope.launch { prefs.setSttStreamingEnabled(it) } })
+                    Text(if (streamingEnabled) "Realtime (default)" else "Batch", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text("Streaming: 80ms realtime via WebSocket (ENDPOINTING). Batch: single POST. Toggle as needed.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            // API key: single for Muse/Gemini (same key for STT+refinement), separate for Custom
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("API key", style = MaterialTheme.typography.bodyMedium)
+                Text(if (isMuse || isGemini) "API key (single for STT + text)" else "API key", style = MaterialTheme.typography.bodyMedium)
                 if (hasKey) {
                     AssistChip(onClick = { showKeyEntry = true; keyInput = ""; saveError = null }, label = { Text("Saved — Replace") })
-                    TextButton(onClick = { scope.launch { secretStore.removeSecret("stt_default"); hasKey = false; testResult = "Key removed" } }) { Text("Remove") }
+                    TextButton(onClick = {
+                        scope.launch {
+                            secretStore.removeSecret("stt_default")
+                            // For Muse/Gemini single key, also clear refine_default if it was twin-written
+                            try { secretStore.removeSecret("refine_default") } catch (_: Exception) {}
+                            hasKey = false; testResult = "Key removed"
+                        }
+                    }) { Text("Remove") }
                 } else {
                     AssistChip(onClick = { showKeyEntry = true; saveError = null }, label = { Text("Add") })
                     Text("Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                    if (saveError == null) {
-                        // Check if key needs re-entry due to keystore invalidation — show hint if file existed but decrypt failed recently
-                        // heuristic: if hasKey false after migration, show needs entry
-                    }
                 }
             }
+            if (isMuse) Text("Muse uses one Meta API key for both Voice Transcribe (STT) and Spark (text). Paste your key from dev.meta.ai.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            else if (isGemini) Text("Gemini uses one Google API key for both Transcribe and text. Paste from ai.google.dev.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (!hasKey && !showKeyEntry) {
                 Text("API key needs to be entered again if previously saved but no longer decryptable.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -387,17 +416,24 @@ private fun TranscriptionSection(prefs: Preferences) {
                                 scope.launch {
                                     val trimmed = keyInput.trim()
                                     if (trimmed.isBlank()) { saveError = "Key cannot be empty"; return@launch }
+                                    // Single key for Muse/Gemini: twin-write to both refs so refinement reuses same key
                                     val res = secretStore.saveSecret("stt_default", trimmed)
-                                    when (res) {
-                                        is SecretStoreResult.Success -> {
+                                    val res2 = if (isMuse || isGemini) secretStore.saveSecret("refine_default", trimmed) else SecretStoreResult.Success
+                                    when {
+                                        res is SecretStoreResult.Success && res2 is SecretStoreResult.Success -> {
                                             prefs.setSttCredentialRef("stt_default")
+                                            if (isMuse || isGemini) prefs.setRefinementCredentialRef("stt_default")
                                             keyInput = ""
                                             showKeyEntry = false
                                             hasKey = true
-                                            testResult = "Saved"
+                                            testResult = "Saved — API will be used (on-device fallback if fails)"
                                             saveError = null
+                                            // If user just added a key while on-device, activate API primary with on-device fallback
+                                            if (mode == TranscriptionMode.ON_DEVICE) {
+                                                prefs.setTranscriptionMode(TranscriptionMode.API_PRIMARY)
+                                            }
                                         }
-                                        is SecretStoreResult.Failure -> {
+                                        else -> {
                                             saveError = "Could not securely save API key"
                                             hasKey = false
                                         }
@@ -408,44 +444,65 @@ private fun TranscriptionSection(prefs: Preferences) {
                     }, modifier = Modifier.fillMaxWidth())
                 if (saveError != null) Text("Could not securely save API key — try again, or clear app data if keystore is corrupted.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
-            var editBaseUrl by remember { mutableStateOf(baseUrl) }
-            var editModel by remember { mutableStateOf(model) }
-            LaunchedEffect(baseUrl) { editBaseUrl = baseUrl }
-            LaunchedEffect(model) { editModel = model }
-            OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it; testResult = null }, label = { Text("Base URL (https://)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                supportingText = { if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) Text("Must be https:// (http only allowed for localhost in debug)", color = MaterialTheme.colorScheme.error) },
-                trailingIcon = {
-                    TextButton(onClick = {
-                        scope.launch {
-                            if (!isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
-                            prefs.setSttBaseUrl(editBaseUrl)
-                            testResult = "Saved"
-                        }
-                    }) { Text("Save") }
-                })
-            OutlinedTextField(value = editModel, onValueChange = { editModel = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttModel(editModel); testResult = "Saved" } }) { Text("Save") } })
-            // Removed unverified presets (xAI/Grok) — only generic OpenAI-compatible documented. Custom endpoint is expected.
+            // Locked Muse/Gemini: show fixed endpoint/model, hide editable fields
+            if (isMuse) {
+                Text("Endpoint: https://api.meta.ai/v1 (locked) • Model: muse-voice-transcribe-1.0 (locked)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else if (isGemini) {
+                Text("Endpoint: https://generativelanguage.googleapis.com (locked) • Model: gemini-3.5-transcribe (locked)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (isCustom) {
+                var editBaseUrl by remember { mutableStateOf(baseUrl) }
+                var editModel by remember { mutableStateOf(model) }
+                LaunchedEffect(baseUrl) { editBaseUrl = baseUrl }
+                LaunchedEffect(model) { editModel = model }
+                OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it; testResult = null }, label = { Text("Base URL (https://)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    supportingText = { if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) Text("Must be https:// (http only allowed for localhost in debug)", color = MaterialTheme.colorScheme.error) },
+                    trailingIcon = {
+                        TextButton(onClick = {
+                            scope.launch {
+                                if (!isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
+                                prefs.setSttBaseUrl(editBaseUrl)
+                                testResult = "Saved"
+                            }
+                        }) { Text("Save") }
+                    })
+                OutlinedTextField(value = editModel, onValueChange = { editModel = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = { TextButton(onClick = { scope.launch { prefs.setSttModel(editModel); testResult = "Saved" } }) { Text("Save") } })
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = {
                     scope.launch {
                         testResult = "Testing…"
                         try {
-                            if (!isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
                             val cred = secretStore.loadSecret("stt_default")
                             if (cred.isNullOrBlank()) { testResult = "Missing API key — add key first"; return@launch }
-                            // Use production provider factory + shared client + real fixture
                             val t0 = System.currentTimeMillis()
-                            // Load JFK fixture for valid speech
                             val pcm = try {
                                 ctx.assets.open("jfk.wav").use { Pcm16Wav.read(it).samples }
                             } catch (_: Exception) {
-                                // fallback small silence if asset missing (should not happen)
                                 ShortArray(16000) { (kotlin.math.sin(it * 0.01) * 8000).toInt().toShort() }
                             }
                             val trimmedPcm = if (pcm.size > 16000*8) pcm.copyOfRange(0, 16000*8) else pcm
-                            val provider = com.sprich.app.speech.remote.OpenAiCompatibleSttProvider(editBaseUrl, editModel, sharedClient)
-                            val req = com.sprich.app.speech.remote.RemoteSttRequest(trimmedPcm, 16000, com.sprich.app.speech.LanguagePolicy.Automatic, utteranceId = System.nanoTime(), credential = cred)
+                            val provider: com.sprich.app.speech.remote.RemoteSttProvider = when {
+                                isMuse -> com.sprich.app.speech.remote.MetaMuseSttProvider(
+                                    com.sprich.app.storage.MuseDefaults.BASE_URL,
+                                    com.sprich.app.storage.MuseDefaults.MODEL,
+                                    sharedClient,
+                                    streamingEnabled
+                                )
+                                isGemini -> com.sprich.app.speech.remote.GeminiSttProvider(
+                                    com.sprich.app.storage.GeminiDefaults.BASE_URL,
+                                    com.sprich.app.storage.GeminiDefaults.MODEL,
+                                    sharedClient,
+                                    streamingEnabled
+                                )
+                                else -> {
+                                    if (!isValidProductionHttpsUrl(baseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
+                                    if (model.isBlank()) { testResult = "Missing model"; return@launch }
+                                    com.sprich.app.speech.remote.OpenAiCompatibleSttProvider(baseUrl, model, sharedClient)
+                                }
+                            }
+                            val req = com.sprich.app.speech.remote.RemoteSttRequest(trimmedPcm, 16000, com.sprich.app.speech.LanguagePolicy.Automatic, emptyList(), System.nanoTime(), cred, streamingEnabled)
                             val res = provider.transcribe(req)
                             val dt = System.currentTimeMillis() - t0
                             if (res.text.isBlank()) { testResult = "Connected but returned blank — check model/audio"; return@launch }
@@ -453,7 +510,6 @@ private fun TranscriptionSection(prefs: Preferences) {
                             testResult = "Connected · ${dt} ms · $preview"
                         } catch (e: Exception) {
                             val failure = com.sprich.app.speech.remote.ApiFailure.fromException(e)
-                            // Try to map typed failure if RemoteSttException
                             val typed = (e as? com.sprich.app.speech.remote.RemoteSttException)?.failure ?: failure
                             testResult = typed.toDisplay() + " · " + (e.message?.take(60) ?: "")
                         }
@@ -470,11 +526,15 @@ private fun RefinementSection(prefs: Preferences) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val mode by prefs.refinementMode.collectAsState(initial = RefinementMode.OFF)
+    val sttProviderId by prefs.sttProviderId.collectAsState(initial = "meta-muse-voice-transcribe")
+    val isMuseStt = sttProviderId == "meta-muse-voice-transcribe" || sttProviderId == "meta-muse"
+    val isGeminiStt = sttProviderId == "gemini" || sttProviderId.startsWith("gemini-")
     val baseUrl by prefs.refinementBaseUrl.collectAsState(initial = "")
     val model by prefs.refinementModel.collectAsState(initial = "")
     val secretStore = remember { ApiSecretStore(ctx) }
     val sharedClient = remember { okhttp3.OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build() }
     var hasKey by remember { mutableStateOf(false) }
+    var hasSttKey by remember { mutableStateOf(false) }
     var keyInput by remember { mutableStateOf("") }
     var showKeyEntry by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
@@ -482,6 +542,10 @@ private fun RefinementSection(prefs: Preferences) {
     LaunchedEffect(Unit) {
         try { LegacyApiCredentialMigrator.migrateIfNeeded(prefs, secretStore) } catch (_: Exception) {}
         hasKey = try { secretStore.hasSecret("refine_default") } catch (_: Exception) { false }
+        hasSttKey = try { secretStore.hasSecret("stt_default") } catch (_: Exception) { false }
+    }
+    LaunchedEffect(sttProviderId) {
+        hasSttKey = try { secretStore.hasSecret("stt_default") } catch (_: Exception) { false }
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Improve transcript", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
@@ -497,80 +561,131 @@ private fun RefinementSection(prefs: Preferences) {
         }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (mode != RefinementMode.OFF) {
             Text("Transcript text is sent directly from your device to your selected refinement provider using your API key. Sprich does not provide, proxy or receive your API key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("API key", style = MaterialTheme.typography.bodyMedium)
-                if (hasKey) {
-                    AssistChip(onClick = { showKeyEntry = true; keyInput = ""; saveError = null }, label = { Text("Saved — Replace") })
-                    TextButton(onClick = { scope.launch { secretStore.removeSecret("refine_default"); hasKey = false; testResult = "Key removed" } }) { Text("Remove") }
-                } else {
-                    AssistChip(onClick = { showKeyEntry = true; saveError = null }, label = { Text("Add") })
-                    Text("Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            // Single key for Muse/Gemini: reuse STT key
+            if (isMuseStt || isGeminiStt) {
+                Text(
+                    if (isMuseStt) "Uses your Muse API key from Transcription (single key for STT + text). No separate key needed."
+                    else "Uses your Gemini API key from Transcription (single key).",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary
+                )
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Refinement key", style = MaterialTheme.typography.bodyMedium)
+                    if (hasSttKey) {
+                        AssistChip(onClick = {}, enabled = false, label = { Text("Using Transcription key ✓") })
+                    } else {
+                        AssistChip(onClick = {}, enabled = false, label = { Text("Add key in Transcription above") })
+                        Text("Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
                 }
-            }
-            if (!hasKey && !showKeyEntry) {
-                Text("API key needs to be entered again if previously saved but no longer decryptable.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (saveError != null) Text(saveError!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            if (showKeyEntry) {
-                var reveal by remember { mutableStateOf(false) }
-                OutlinedTextField(value = keyInput, onValueChange = { keyInput = it; saveError = null }, label = { Text("API key") }, singleLine = true,
-                    visualTransformation = if (reveal) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                    trailingIcon = {
-                        Row {
-                            TextButton(onClick = { reveal = !reveal }) { Text(if (reveal) "Hide" else "Show") }
-                            TextButton(onClick = {
-                                scope.launch {
-                                    val trimmed = keyInput.trim()
-                                    if (trimmed.isBlank()) { saveError = "Key cannot be empty"; return@launch }
-                                    val res = secretStore.saveSecret("refine_default", trimmed)
-                                    when (res) {
-                                        is SecretStoreResult.Success -> {
-                                            prefs.setRefinementCredentialRef("refine_default")
-                                            keyInput = ""; showKeyEntry = false; hasKey = true; testResult = "Saved"; saveError = null
-                                        }
-                                        is SecretStoreResult.Failure -> { saveError = "Could not securely save API key"; hasKey = false }
-                                    }
+                if (isMuseStt) Text("Muse refinement: model muse-spark-1.1 via https://api.meta.ai (locked)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else Text("Gemini refinement: model gemini-2.0-flash via generativelanguage.googleapis.com (locked)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            testResult = "Testing…"
+                            val cannedInput = "tomorrow i think we should meet at nine"
+                            try {
+                                val secret = secretStore.loadSecret("stt_default")
+                                if (secret.isNullOrBlank()) { testResult = "Missing API key — add Muse/Gemini key in Transcription"; return@launch }
+                                val t0 = System.currentTimeMillis()
+                                val prov = if (isMuseStt) {
+                                    com.sprich.app.ai.OpenAiCompatibleRefinementProvider(
+                                        com.sprich.app.storage.MuseRefinementDefaults.ENDPOINT,
+                                        com.sprich.app.storage.MuseRefinementDefaults.MODEL,
+                                        secret, sharedClient
+                                    )
+                                } else {
+                                    com.sprich.app.ai.OpenAiCompatibleRefinementProvider(
+                                        com.sprich.app.storage.GeminiRefinementDefaults.ENDPOINT,
+                                        com.sprich.app.storage.GeminiRefinementDefaults.MODEL,
+                                        secret, sharedClient
+                                    )
                                 }
-                            }) { Text("Save") }
+                                val res = prov.refine(com.sprich.app.speech.refinement.RefinementRequest(cannedInput, "en", mode))
+                                val ms = System.currentTimeMillis() - t0
+                                testResult = "OK · ${ms}ms · ${res.text.take(40).replace("\n"," ")}"
+                            } catch (e: Exception) {
+                                testResult = "Failed: ${e.message?.take(80)}"
+                            }
                         }
-                    }, modifier = Modifier.fillMaxWidth())
-            }
-            var editBaseUrl by remember { mutableStateOf(baseUrl) }
-            var editModel by remember { mutableStateOf(model) }
-            LaunchedEffect(baseUrl) { editBaseUrl = baseUrl }
-            LaunchedEffect(model) { editModel = model }
-            OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it }, label = { Text("Base URL (OpenAI-compatible, https://)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                supportingText = { if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) Text("Must be https://", color = MaterialTheme.colorScheme.error) },
-                trailingIcon = { TextButton(onClick = {
-                    scope.launch {
-                        if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
-                        prefs.setRefinementBaseUrl(editBaseUrl); testResult = "Saved"
+                    }) { Text("Test") }
+                    if (testResult != null) Text(testResult!!, style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                // Custom / OpenAI-compatible: separate key
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("API key", style = MaterialTheme.typography.bodyMedium)
+                    if (hasKey) {
+                        AssistChip(onClick = { showKeyEntry = true; keyInput = ""; saveError = null }, label = { Text("Saved — Replace") })
+                        TextButton(onClick = { scope.launch { secretStore.removeSecret("refine_default"); hasKey = false; testResult = "Key removed" } }) { Text("Remove") }
+                    } else {
+                        AssistChip(onClick = { showKeyEntry = true; saveError = null }, label = { Text("Add") })
+                        Text("Not set", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
-                }) { Text("Save") } })
-            OutlinedTextField(value = editModel, onValueChange = { editModel = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                trailingIcon = { TextButton(onClick = { scope.launch { prefs.setRefinementModel(editModel); testResult = "Saved" } }) { Text("Save") } })
-            // Removed unverified Gemini/GPT presets — user enters verified OpenAI-compatible endpoint/model
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = {
-                    scope.launch {
-                        testResult = "Testing…"
-                        val cannedInput = "tomorrow i think we should meet at nine"
-                        try {
+                }
+                if (!hasKey && !showKeyEntry) {
+                    Text("API key needs to be entered again if previously saved but no longer decryptable.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (saveError != null) Text(saveError!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                if (showKeyEntry) {
+                    var reveal by remember { mutableStateOf(false) }
+                    OutlinedTextField(value = keyInput, onValueChange = { keyInput = it; saveError = null }, label = { Text("API key") }, singleLine = true,
+                        visualTransformation = if (reveal) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        trailingIcon = {
+                            Row {
+                                TextButton(onClick = { reveal = !reveal }) { Text(if (reveal) "Hide" else "Show") }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        val trimmed = keyInput.trim()
+                                        if (trimmed.isBlank()) { saveError = "Key cannot be empty"; return@launch }
+                                        val res = secretStore.saveSecret("refine_default", trimmed)
+                                        when (res) {
+                                            is SecretStoreResult.Success -> {
+                                                prefs.setRefinementCredentialRef("refine_default")
+                                                keyInput = ""; showKeyEntry = false; hasKey = true; testResult = "Saved"; saveError = null
+                                            }
+                                            is SecretStoreResult.Failure -> { saveError = "Could not securely save API key"; hasKey = false }
+                                        }
+                                    }
+                                }) { Text("Save") }
+                            }
+                        }, modifier = Modifier.fillMaxWidth())
+                }
+                var editBaseUrl by remember { mutableStateOf(baseUrl) }
+                var editModel by remember { mutableStateOf(model) }
+                LaunchedEffect(baseUrl) { editBaseUrl = baseUrl }
+                LaunchedEffect(model) { editModel = model }
+                OutlinedTextField(value = editBaseUrl, onValueChange = { editBaseUrl = it }, label = { Text("Base URL (OpenAI-compatible, https://)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    supportingText = { if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) Text("Must be https://", color = MaterialTheme.colorScheme.error) },
+                    trailingIcon = { TextButton(onClick = {
+                        scope.launch {
                             if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
-                            val secret = secretStore.loadSecret("refine_default")
-                            if (secret.isNullOrBlank()) { testResult = "Missing API key — add key first"; return@launch }
-                            val t0 = System.currentTimeMillis()
-                            val prov = com.sprich.app.ai.OpenAiCompatibleRefinementProvider(editBaseUrl, editModel, secret, sharedClient)
-                            val res = prov.refine(com.sprich.app.speech.refinement.RefinementRequest(cannedInput, "en", mode))
-                            val ms = System.currentTimeMillis() - t0
-                            val preview = res.text.take(40).replace("\n"," ")
-                            testResult = "OK · ${ms}ms · $preview"
-                        } catch (e: Exception) {
-                            testResult = "Failed: ${e.message?.take(80)}"
+                            prefs.setRefinementBaseUrl(editBaseUrl); testResult = "Saved"
                         }
-                    }
-                }) { Text("Test") }
-                if (testResult != null) Text(testResult!!, style = MaterialTheme.typography.bodySmall)
+                    }) { Text("Save") } })
+                OutlinedTextField(value = editModel, onValueChange = { editModel = it }, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = { TextButton(onClick = { scope.launch { prefs.setRefinementModel(editModel); testResult = "Saved" } }) { Text("Save") } })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            testResult = "Testing…"
+                            val cannedInput = "tomorrow i think we should meet at nine"
+                            try {
+                                if (editBaseUrl.isNotBlank() && !isValidProductionHttpsUrl(editBaseUrl)) { testResult = "Invalid URL — must be https://"; return@launch }
+                                val secret = secretStore.loadSecret("refine_default")
+                                if (secret.isNullOrBlank()) { testResult = "Missing API key — add key first"; return@launch }
+                                val t0 = System.currentTimeMillis()
+                                val prov = com.sprich.app.ai.OpenAiCompatibleRefinementProvider(editBaseUrl, editModel, secret, sharedClient)
+                                val res = prov.refine(com.sprich.app.speech.refinement.RefinementRequest(cannedInput, "en", mode))
+                                val ms = System.currentTimeMillis() - t0
+                                testResult = "OK · ${ms}ms · ${res.text.take(40).replace("\n"," ")}"
+                            } catch (e: Exception) {
+                                testResult = "Failed: ${e.message?.take(80)}"
+                            }
+                        }
+                    }) { Text("Test") }
+                    if (testResult != null) Text(testResult!!, style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }
