@@ -6,7 +6,7 @@ Sprich is a voice keyboard for Android. Dictate in your notes, messages and othe
 • Automatic recognizes the language as you speak.
 • Accurate uses a language you choose.
 • Add personal vocabulary for names and special terms.
-• Say “new line” or “delete that”, or swipe to delete and undo.
+• Swipe to delete, whisper, switch keyboards or hide the bar.
 • Optional writing cleanup and API recognition with your own keys.
 • No Sprich account, subscription, ads or analytics.
 

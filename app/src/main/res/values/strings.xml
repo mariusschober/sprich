@@ -72,7 +72,7 @@
     <string name="commands_description">Say “new line” or “delete that”. Deletion only affects your last unchanged dictation.</string>
     <string name="personal_vocabulary">Personal vocabulary</string>
     <string name="using_sprich">Using Sprich</string>
-    <string name="gesture_help">Short swipe left: delete a word or symbol.\nLong or slow swipe left: delete a sentence. Hold at the end to keep deleting; release to stop.\nSwipe right: toggle whisper mode.\nSwipe up out of the bar: typing keyboard.\nSwipe down: stop listening and hide.\nHold still for 2½ seconds: Sprich settings.\nAfter deleting, tap Undo to restore the last deletion.</string>
+    <string name="gesture_help">Short swipe left: delete a word or symbol.\nLong or slow swipe left: delete the last phrase. Hold at the end to keep deleting sentences; release to stop.\nSwipe right: toggle whisper mode.\nSwipe up out of the bar: typing keyboard.\nSwipe down: stop listening and hide.\nHold still for 2½ seconds: Sprich settings.\nAfter deleting, tap Undo to restore the last deletion.</string>
     <string name="bar_gestures">Bar gestures</string>
     <string name="hide_gesture_help">Hide gesture guide</string>
     <string name="whisper_mode">Whisper mode</string>

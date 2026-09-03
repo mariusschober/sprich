@@ -36,16 +36,21 @@ internal class VoiceGestureBar(context: Context) : LinearLayout(context) {
             cancelGesture()
             return true
         }
-        val x = event.rawX / density
-        val y = event.rawY / density
+        // Local coordinates remain correct inside the separate IME window and turn negative above the bar.
+        val x = event.x / density
+        val y = event.y / density
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 cancelGesture()
                 touching = true
+                recognizer.down(x, y, event.eventTime, 0f)
                 val bounds = Rect()
-                getGlobalVisibleRect(bounds)
-                recognizer.down(x, y, event.eventTime, bounds.top / density)
-                tapTarget = tapTargets.firstOrNull { it.isShown && it.isEnabled && it.getGlobalVisibleRect(bounds) && bounds.contains(event.rawX.toInt(), event.rawY.toInt()) }
+                tapTarget = tapTargets.firstOrNull { target ->
+                    target.visibility == View.VISIBLE &&
+                        target.isEnabled &&
+                        target.parent === this &&
+                        target.getHitRect(bounds).let { bounds.contains(event.x.toInt(), event.y.toInt()) }
+                }
                 isPressed = true
             }
             MotionEvent.ACTION_MOVE -> if (touching) apply(recognizer.move(x, y, event.eventTime))

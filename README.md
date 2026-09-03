@@ -11,7 +11,7 @@ Voice dictation for Android. Speak English, German, Spanish or French into the a
 3. Select Sprich in a text field, tap the voice bar and speak. Pause to insert a sentence; tap again to finish.
 4. Use the keyboard button to return to your regular keyboard.
 
-Swipe left quickly to delete one word or symbol. A longer or slower swipe deletes the current sentence; hold at the end to keep deleting sentences. Swipe right to toggle Whisper mode, up out of the bar for your typing keyboard, or down to hide Sprich. Undo appears after a deletion, and holding the bar for 2½ seconds opens Settings. Moving the cursor or changing a selection stops listening and cancels words that have not been inserted. Password and PIN fields do not permit dictation. Spoken editing and personal vocabulary are in Settings.
+Swipe left quickly to delete one word or symbol. A longer or slower swipe deletes the last phrase; hold at the end to keep deleting sentences. Swipe right to toggle Whisper mode, up out of the bar for your typing keyboard, or down to hide Sprich. Undo appears after a deletion, and holding the bar for 2½ seconds opens Settings. Moving the cursor or changing a selection stops listening and cancels words that have not been inserted. Password and PIN fields do not permit dictation. Spoken editing and personal vocabulary are in Settings.
 
 Android 8.0–16 (API 26–36), ARM64 only. UI copy is currently English; the four dictation languages are independent of Android's display language. Recognition quality depends on speech and recording conditions; review the inserted text.
 

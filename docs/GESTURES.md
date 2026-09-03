@@ -12,7 +12,7 @@ All distances are density-independent. Directions stay physical left/right in RT
 | Short, quick left swipe | At least 36 dp left; under 112 dp and under 350 ms | Delete one word or one complete symbol, using the rules below. |
 | Long or slow left swipe | At least 112 dp left, or at least 36 dp left for 350 ms | Delete the last exact Sprich insertion when its editor authority still matches; otherwise delete the current sentence/phrase. Show the intended action while dragging. |
 | Long left swipe, then hold | Beyond 112 dp; remain near that position for 450 ms | Delete one sentence, then another every 550 ms while held. Release ends deletion immediately. Returning toward the starting point cancels repetition. Release after repetition adds no extra deletion. |
-| Up out of the bar | Clear vertical intent, at least 48 dp upward and past the bar's top | Stop capture and pending insertion; switch immediately to the previous typing keyboard, without waiting for release. Use an enabled typing keyboard or the system picker when there is no previous keyboard. |
+| Up out of the bar | Clear vertical intent, at least 48 dp upward and past the bar's top | Stop capture and pending insertion; switch immediately to the most recent enabled typing keyboard, without waiting for release. Use Android's public previous-keyboard operation or the system picker when recent history is unavailable. |
 | Right swipe | At least 48 dp with clear horizontal intent | Toggle whisper mode on release. Show which mode will be entered. |
 | Down swipe | At least 48 dp with clear vertical intent | Stop capture and cancel pending insertion, then lower/fade the bar over approximately 180 ms and ask Android to hide it. A later tap in a text field shows Sprich again. Respect disabled system animations. |
 | Stationary hold | Stay within touch slop for 2.5 seconds | Stop capture, discard pending work and open Sprich Settings directly. Movement cancels this timer. |
@@ -65,3 +65,21 @@ There is no assumed undocumented Meta/OpenAI/Gemini “whisper” parameter. The
 Required: no duplicate action on release, no mutation after cancellation or field change, no Unicode splitting, no late dictation after an editing/hide/switch action, no hold timer surviving a hidden view, no API permission change from whisper mode, and no increased native-model loading on a successful API path.
 
 Evidence uses PASS, FAIL, NOT MEASURED or BLOCKED with the exact cause. Host editor tests establish controller behavior, not physical-editor integration. Release build checks do not establish whispered-speech accuracy. This is a focused feature pass, not a new broad reliability or store-certification campaign.
+
+## Focused acceptance evidence
+
+Build under review: QA-signed release variant, version code 86, `1.0.0-rc11`; final artifact verification is recorded from the final committed SHA.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Gesture classification, cancellation, editor spans, Unicode, frozen whisper state, gain bounds and cleanup prompt safety | PASS | 41 focused host tests, zero failures. |
+| Quick word deletion and exact Undo | PASS | TCL T807D and Samsung S23 Ultra real Compose editor. `word ` was removed and restored exactly. |
+| Undo tap isolation | PASS | S23 Ultra: tapping Undo restored text and left the bar at “Tap to speak.” |
+| Long phrase deletion | PASS | S23 Ultra: live “Delete phrase” preview; `First sentence. Second word` became `First sentence.` on release. |
+| Whisper toggle and persistent state indicator | PASS | S23 Ultra: right swipe showed the Whisper badge and “Tap to whisper”; a second swipe returned to normal. |
+| Instant typing-keyboard switch | PASS | S23 Ultra: leaving the bar upward selected and displayed Samsung Keyboard without another tap. The first public previous-keyboard path selected it but left it hidden; direct validated recent-keyboard selection fixed that device behavior. |
+| Downward dismissal and cancellation | PASS | TCL T807D and S23 Ultra: the IME window closed, capture stopped and no late text appeared. |
+| Stationary Settings hold | PASS | S23 Ultra: a 2.7-second stationary press opened Sprich Settings directly and did not start dictation. |
+| Held repeated sentence deletion on a physical pointer | NOT MEASURED | ADB's swipe command cannot move and then park one continuous pointer. The repeat cadence, release behavior and advancing editor authority pass deterministic host tests. |
+| Human whispered-speech accuracy | NOT MEASURED | Requires a person whispering into the final installed build; synthetic speech is not equivalent evidence. |
+| TalkBack touch exploration | NOT MEASURED | Explicit accessibility actions are implemented, but touch exploration was not run in this focused pass. |

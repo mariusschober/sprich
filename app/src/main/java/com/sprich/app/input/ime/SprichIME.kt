@@ -2235,9 +2235,22 @@ class SprichIME : InputMethodService() {
             method.packageName != packageName && (method.subtypeCount == 0 ||
                 (0 until method.subtypeCount).any { method.getSubtypeAt(it).mode == "keyboard" && !method.getSubtypeAt(it).isAuxiliary })
         }
+        // Direct switching keeps the next IME window visible on Samsung. Its public "previous"
+        // operation changes the selected IME but can collapse the window. Android persists this
+        // colon-separated history; every candidate is still validated against the enabled list.
+        val enabledIds = choices.asSequence().map { it.id }.toSet()
+        val recentTypingId = runCatching {
+            android.provider.Settings.Secure
+                .getString(contentResolver, "input_methods_subtype_history")
+                .orEmpty()
+                .split(':')
+                .asSequence()
+                .map { it.substringBefore(';') }
+                .firstOrNull { it in enabledIds }
+        }.getOrNull()
         val switched = runCatching {
-            if (choices.size == 1) {
-                switchInputMethod(choices.single().id)
+            if (recentTypingId != null || choices.size == 1) {
+                switchInputMethod(recentTypingId ?: choices.single().id)
                 true
             } else if (choices.isNotEmpty()) {
                 if (android.os.Build.VERSION.SDK_INT >= 28) switchToPreviousInputMethod()
@@ -2305,11 +2318,11 @@ class SprichIME : InputMethodService() {
     private fun performDeletion(unit: EditorActionController.Unit): Boolean {
         val gesture = deletionGesture ?: return false
         val ic = currentInputConnection ?: return false
+        // This is exactly one editor mutation. A batch can defer Compose's surrounding-text update,
+        // causing the controller to verify before the mutation is observable and correctly withhold Undo.
         val ok = try {
-            ic.beginBatchEdit()
             editorActionController.deleteStep(gesture, unit, ic, currentFieldId, fieldGeneration.get(), isPasswordField || isPassword(currentInputEditorInfo))
         } catch (_: Exception) { gesture.cancel(); false }
-        finally { runCatching { ic.endBatchEdit() } }
         if (ok) { noteOwnEditorChange(true); vibrateTick() }
         updateEditingControls()
         return ok
