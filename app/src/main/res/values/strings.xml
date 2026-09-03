@@ -143,7 +143,7 @@
     <string name="cleanup_off">Off · Keep it on device</string>
     <string name="cleanup_description">Natural punctuation, fewer fillers, and clear self-corrections. Your meaning stays yours.</string>
     <string name="cleanup_intro">Speak naturally. An optional API turns your dictation into clear written text. Recognition can stay on your phone.</string>
-    <string name="api_voice_intro">Use your own API for voice recognition. On-device dictation is always available without a key.</string>
+    <string name="api_voice_intro">Voice recognition with your own API key. Local dictation stays available.</string>
     <string name="vocab_short">Names and words, written your way</string>
     <string name="privacy_about">Privacy &amp; About</string>
     <string name="privacy_short">No Sprich account, subscription, ads or analytics. Personal APIs are optional.</string>
@@ -156,7 +156,7 @@
     <string name="licenses_source">Upstream source</string>
     <string name="licenses_error">Could not open these notices. Reopen Sprich and try again.</string>
     <string name="licenses_no_results">No matching licenses.</string>
-    <string name="api_experimental">Experimental integration. Check it with your account before using it. Availability and response times can vary.</string>
+    <string name="api_experimental">Experimental · Check before use.</string>
     <string name="api_base_url">Base URL (HTTPS)</string>
     <string name="api_model">Model name</string>
     <string name="api_key">Your API key</string>
@@ -164,8 +164,8 @@
     <string name="api_key_paste">Paste your key</string>
     <string name="api_get_key">Get a %1$s key</string>
     <string name="api_text_disclosure">Cleanup sends your transcript and relevant vocabulary directly to %1$s. A connection check sends a short sample sentence. API charges may apply.</string>
-    <string name="api_audio_disclosure">Voice recognition sends your audio directly to %1$s. The check uses four seconds from your microphone. API charges may apply.</string>
-    <string name="api_key_privacy">Keys are encrypted on this phone. Sprich does not store dictation recordings or transcripts. Provider data policies still apply.</string>
+    <string name="api_audio_disclosure">The check sends four seconds from your microphone to %1$s. Voice typing sends each phrase. Provider costs and data policies apply.</string>
+    <string name="api_key_privacy">Your key is encrypted on this phone. Sprich keeps no dictation history.</string>
     <string name="api_recording">Say a short sentence…</string>
     <string name="api_checking">Checking your connection…</string>
     <string name="api_save_check">Check connection</string>
@@ -209,8 +209,8 @@
     <string name="api_transmission">When to send audio</string>
     <string name="api_streaming">As I speak</string>
     <string name="api_recording_mode">After I speak</string>
-    <string name="api_streaming_description">See your words appear in the bar as you speak. Only the finished text is inserted.</string>
-    <string name="api_recording_description">Send each phrase after you finish speaking. The bar shows progress while it is transcribed.</string>
+    <string name="api_streaming_description">See live words in the bar. Only finished text goes into your app.</string>
+    <string name="api_recording_description">Send each phrase when you finish. Follow its progress in the bar.</string>
     <string name="api_turn_detection">Detect speech turns</string>
     <string name="api_recognition_options">Recognition preferences</string>
     <string name="api_turn_detection_description">Let Meta help recognize when a thought is complete.</string>
@@ -218,7 +218,7 @@
     <string name="api_language_bias_description">Optional hints for recognition. Leave these unselected to follow your dictation language.</string>
     <string name="api_vocabulary_title">Help recognize my vocabulary</string>
     <string name="api_vocabulary_description">Share up to 100 saved names and terms with %1$s. Off until you choose.</string>
-    <string name="api_shared_key">Your saved %1$s key can be used for both voice typing and cleanup.</string>
+    <string name="api_shared_key">Use your saved %1$s key for voice typing and cleanup.</string>
     <string name="api_setup_writing_same_key">Set up cleanup with this key</string>
     <string name="api_setup_voice_same_key">Set up voice typing with this key</string>
     <string name="api_speaker_labels">Label different speakers</string>

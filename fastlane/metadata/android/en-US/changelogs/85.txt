@@ -2,4 +2,4 @@ Meta voice typing can show partial words and progress in the dictation bar. Choo
 
 One provider key can serve voice typing and writing cleanup, with separate permission for each. Setup preserves a working connection if another check fails.
 
-A refreshed Home, voice bar and readable, searchable licenses. Meta remains experimental while recording-mode verification is unfinished. This candidate is not a public release.
+A refreshed Home, voice bar and readable, searchable licenses. Meta streaming, recording and shared-key cleanup have returned usable text on a physical phone. Per-configuration checks remain required. This candidate is not a public release.

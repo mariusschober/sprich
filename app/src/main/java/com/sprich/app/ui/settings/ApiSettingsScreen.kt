@@ -193,7 +193,7 @@ import kotlinx.coroutines.flow.first
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) }
         })
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).imePadding().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Column(Modifier.fillMaxSize().padding(padding).imePadding().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(stringResource(if (use == ApiUse.WRITING) R.string.cleanup_intro else R.string.api_voice_intro), style = MaterialTheme.typography.bodyLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ApiCatalog.presets.forEach { p -> FilterChip(selected = providerId == p.id, enabled = !busy, onClick = {

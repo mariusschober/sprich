@@ -1,6 +1,5 @@
 package com.sprich.app.speech.remote
 
-import com.sprich.app.api.ApiException
 import com.sprich.app.api.ApiHttp
 import com.sprich.app.api.readApiBody
 import com.sprich.app.api.readApiEvents
@@ -11,7 +10,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
 import okio.ForwardingSink
 import okio.buffer
@@ -32,9 +30,7 @@ class MetaMuseSttProvider(
         require(EndpointValidator.isValidHttpsUrl(baseUrl) && request.credential.isNotBlank()) { "API is not configured" }
         require(request.pcm.isNotEmpty() && request.pcm.size <= 1_920_000 && request.sampleRate == 16_000) { "Invalid audio" }
         val metadata = MetaVoiceProtocol.settings(model, request, realtime = false)
-        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-            .addFormDataPart("request", null, metadata.toString().toRequestBody("application/json".toMediaType()))
-            .addFormDataPart("audio", "dictation.wav", OpenAiCompatibleSttProvider.wavBytes(request.pcm, request.sampleRate).toRequestBody("audio/wav".toMediaType())).build()
+        val body = recordingBody(metadata.toString(), OpenAiCompatibleSttProvider.wavBytes(request.pcm, request.sampleRate))
         val endpoint = baseUrl.trimEnd('/').removeSuffix("/v1") + "/v1/asr/transcribe"
         val progress = request.onProgress
         val upload = if (progress == null) body else object : RequestBody() {
@@ -68,5 +64,20 @@ class MetaMuseSttProvider(
         progress?.invoke(RemoteTranscriptUpdate(text, request.pcm.size * 1000L / request.sampleRate, stage = VoiceApiStage.COMPLETE))
         // Neither languageBias nor the response schema establishes a detected language.
         RemoteSttResult(text, ResolvedUtteranceLanguage.Unknown, TranscriptionSourceId.API_META_MUSE, (System.nanoTime() - start) / 1_000_000)
+    }
+
+    /** The documented form has only disposition/type per part; no part lengths or charset parameters. */
+    private fun recordingBody(settings: String, wav: ByteArray): RequestBody {
+        val boundary = "sprich-${java.util.UUID.randomUUID()}"
+        val prefix = ("--$boundary\r\nContent-Disposition: form-data; name=\"request\"\r\n" +
+            "Content-Type: application/json\r\n\r\n$settings\r\n" +
+            "--$boundary\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"dictation.wav\"\r\n" +
+            "Content-Type: audio/wav\r\n\r\n").toByteArray(Charsets.UTF_8)
+        val suffix = "\r\n--$boundary--\r\n".toByteArray(Charsets.US_ASCII)
+        return object : RequestBody() {
+            override fun contentType() = "multipart/form-data; boundary=$boundary".toMediaType()
+            override fun contentLength() = prefix.size.toLong() + wav.size + suffix.size
+            override fun writeTo(sink: BufferedSink) { sink.write(prefix); sink.write(wav); sink.write(suffix) }
+        }
     }
 }

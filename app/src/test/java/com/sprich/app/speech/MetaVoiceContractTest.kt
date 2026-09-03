@@ -201,7 +201,11 @@ class MetaVoiceContractTest {
             val http = server.takeRequest(1, TimeUnit.SECONDS)!!
             assertEquals("text/event-stream", http.getHeader("Accept"))
             assertEquals("Bearer fixture-key", http.getHeader("Authorization"))
-            assertTrue(http.body.readUtf8().contains("German"))
+            assertEquals(http.body.size.toString(), http.getHeader("Content-Length"))
+            val multipart = http.body.readUtf8()
+            assertTrue(multipart.contains("German"))
+            assertTrue(multipart.substringBefore("\r\n\r\n").endsWith("Content-Type: application/json"))
+            assertFalse(multipart.contains("Content-Length:"))
             for (invalid in listOf(body.trimEnd(), "data: {\"type\":\"error\",\"message\":\"Unsupported mode\",\"sessionId\":\"fixture\"}\n\n")) {
                 server.enqueue(MockResponse().addHeader("Content-Type", "text/event-stream").setBody(invalid))
                 try { provider.transcribe(request().copy(onProgress = {})); fail("Incomplete request accepted") } catch (_: ApiException) { }
