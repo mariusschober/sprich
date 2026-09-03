@@ -1,6 +1,9 @@
 package com.sprich.app.storage
 
 import android.content.Context
+import com.sprich.app.api.*
+import com.sprich.app.speech.TranscriptionMode
+import com.sprich.app.speech.refinement.RefinementMode
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import com.sprich.app.speech.api.EngineType
@@ -44,14 +47,20 @@ class Preferences(context: Context) {
         val KEY_STT_CREDENTIAL_REF = stringPreferencesKey("stt_credential_ref")
         val KEY_STT_DEADLINE_MS = longPreferencesKey("stt_deadline_ms")
         val KEY_STT_LANGUAGE_POLICY = stringPreferencesKey("stt_language_policy") // auto | fixed tag
-        val KEY_STT_STREAMING_ENABLED = booleanPreferencesKey("stt_streaming_enabled") // Muse streaming default true
+        val KEY_STT_STREAMING_ENABLED = booleanPreferencesKey("stt_streaming_enabled")
+        val KEY_STT_DETECT_TURNS = booleanPreferencesKey("stt_detect_turns")
+        val KEY_STT_SPEAKERS = booleanPreferencesKey("stt_speaker_labels")
+        val KEY_STT_LANGUAGE_HINTS = stringSetPreferencesKey("stt_language_hints")
         val KEY_REFINEMENT_MODE = stringPreferencesKey("refinement_mode") // off | correct | clean_dictation
         val KEY_REFINEMENT_PROVIDER_ID = stringPreferencesKey("refinement_provider_id")
         val KEY_REFINEMENT_CREDENTIAL_REF = stringPreferencesKey("refinement_credential_ref")
         val KEY_REFINEMENT_BASE_URL = stringPreferencesKey("refinement_base_url")
         val KEY_REFINEMENT_MODEL = stringPreferencesKey("refinement_model")
-        val KEY_REFINEMENT_DEADLINE_MS = longPreferencesKey("refinement_deadline_ms")
         val KEY_PERSONAL_VOCAB_HINT = booleanPreferencesKey("personal_vocab_hint_enabled")
+        val KEY_STT_VERIFICATION = stringPreferencesKey("stt_connection_verification")
+        val KEY_REFINEMENT_VERIFICATION = stringPreferencesKey("writing_connection_verification")
+        val KEY_REFINEMENT_CONTEXT = booleanPreferencesKey("writing_field_context")
+        val KEY_API_LOCAL_FALLBACK = booleanPreferencesKey("api_local_fallback")
         // Debug harness (opt-in only, default false, never logs transcript by default)
         val KEY_DEBUG_WAV_CAPTURE = booleanPreferencesKey("debug_wav_capture")
         val KEY_DEBUG_TRANSCRIPT_TRACE = booleanPreferencesKey("debug_transcript_trace")
@@ -105,10 +114,10 @@ class Preferences(context: Context) {
         } ?: com.sprich.app.speech.TranscriptionMode.fromRaw(prefs[KEY_STT_MODE] ?: "local")
     }
     val sttProviderId: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_PROVIDER_ID] ?: "meta-muse-voice-transcribe" }
-    val sttCredentialRef: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_CREDENTIAL_REF] ?: "stt_default" }
+    val sttCredentialRef: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_CREDENTIAL_REF] ?: "" }
     val sttDeadlineMs: Flow<Long> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_DEADLINE_MS] ?: 3500L }
     val sttLanguagePolicyRaw: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_LANGUAGE_POLICY] ?: "auto" }
-    val sttStreamingEnabled: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_STREAMING_ENABLED] ?: true }
+    val sttStreamingEnabled: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_STT_STREAMING_ENABLED] ?: false }
 
     val refinementMode: Flow<com.sprich.app.speech.refinement.RefinementMode> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map { prefs ->
         prefs[KEY_REFINEMENT_MODE]?.let {
@@ -119,7 +128,6 @@ class Preferences(context: Context) {
     val refinementCredentialRef: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_REFINEMENT_CREDENTIAL_REF] ?: "refine_default" }
     val refinementBaseUrl: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_REFINEMENT_BASE_URL] ?: it[KEY_AI_BASE_URL] ?: "" }
     val refinementModel: Flow<String> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_REFINEMENT_MODEL] ?: it[KEY_AI_MODEL] ?: "" }
-    val refinementDeadlineMs: Flow<Long> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_REFINEMENT_DEADLINE_MS] ?: 1000L }
     val personalVocabHintEnabled: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_PERSONAL_VOCAB_HINT] ?: false }
 
     val debugWavCapture: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_DEBUG_WAV_CAPTURE] ?: false }
@@ -152,23 +160,134 @@ class Preferences(context: Context) {
             sttProviderId = prefs[KEY_STT_PROVIDER_ID] ?: "meta-muse-voice-transcribe",
             sttBaseUrl = prefs[KEY_STT_BASE_URL] ?: "",
             sttModel = prefs[KEY_STT_MODEL] ?: "whisper-large-v3",
-            sttCredentialRef = prefs[KEY_STT_CREDENTIAL_REF] ?: "stt_default",
+            sttCredentialRef = prefs[KEY_STT_CREDENTIAL_REF] ?: "",
             sttDeadlineMs = prefs[KEY_STT_DEADLINE_MS] ?: 3500L,
-            sttStreamingEnabled = prefs[KEY_STT_STREAMING_ENABLED] ?: true,
+            sttStreamingEnabled = prefs[KEY_STT_STREAMING_ENABLED] ?: false,
             sttLanguagePolicyRaw = prefs[KEY_STT_LANGUAGE_POLICY] ?: "auto",
             refinementProviderId = prefs[KEY_REFINEMENT_PROVIDER_ID] ?: "openai-compatible",
             refinementCredentialRef = prefs[KEY_REFINEMENT_CREDENTIAL_REF] ?: "refine_default",
             refinementBaseUrl = prefs[KEY_REFINEMENT_BASE_URL] ?: prefs[KEY_AI_BASE_URL] ?: "",
             refinementModel = prefs[KEY_REFINEMENT_MODEL] ?: prefs[KEY_AI_MODEL] ?: "",
-            refinementDeadlineMs = prefs[KEY_REFINEMENT_DEADLINE_MS] ?: 1000L,
             personalVocabHintEnabled = prefs[KEY_PERSONAL_VOCAB_HINT] ?: false,
             debugWavCapture = prefs[KEY_DEBUG_WAV_CAPTURE] ?: false,
             debugTranscriptTrace = prefs[KEY_DEBUG_TRANSCRIPT_TRACE] ?: false,
             instantMode = prefs[KEY_INSTANT_MODE] ?: false,
             commandsEnabled = prefs[KEY_COMMANDS] ?: true,
             hapticsEnabled = prefs[KEY_HAPTICS] ?: true,
+            sttVerification = prefs[KEY_STT_VERIFICATION] ?: "",
+            refinementVerification = prefs[KEY_REFINEMENT_VERIFICATION] ?: "",
+            refinementContextEnabled = prefs[KEY_REFINEMENT_CONTEXT] ?: false,
+            apiLocalFallback = prefs[KEY_API_LOCAL_FALLBACK] ?: false,
+            voiceApiOptions = voiceOptions(prefs),
         ).enforceProviderAvailability()
     }
+
+    private fun apiChoice(p: androidx.datastore.preferences.core.Preferences, use: ApiUse): ApiChoice = when (use) {
+        ApiUse.VOICE -> ApiChoice(use, p[KEY_STT_PROVIDER_ID] ?: "", p[KEY_STT_BASE_URL] ?: "", p[KEY_STT_MODEL] ?: "", p[KEY_STT_CREDENTIAL_REF] ?: "", p[KEY_STT_VERIFICATION] ?: "", voiceOptions(p))
+        ApiUse.WRITING -> ApiChoice(use, p[KEY_REFINEMENT_PROVIDER_ID] ?: "", p[KEY_REFINEMENT_BASE_URL] ?: "", p[KEY_REFINEMENT_MODEL] ?: "", p[KEY_REFINEMENT_CREDENTIAL_REF] ?: "", p[KEY_REFINEMENT_VERIFICATION] ?: "")
+    }
+    /** Persisted fields, including an empty first-run choice, for a connection check's compare-and-set. */
+    suspend fun apiChoiceForCheck(use: ApiUse): ApiChoice = apiChoice(context.ds.data.first(), use)
+    private fun voiceOptions(p: androidx.datastore.preferences.core.Preferences) = com.sprich.app.speech.remote.VoiceApiOptions(
+        streaming = p[KEY_STT_STREAMING_ENABLED] ?: false,
+        detectTurns = p[KEY_STT_DETECT_TURNS] ?: true,
+        speakerLabels = p[KEY_STT_SPEAKERS] ?: false,
+        languageHints = p[KEY_STT_LANGUAGE_HINTS].orEmpty().toSet(),
+    )
+
+    private fun writeApiChoice(p: MutablePreferences, choice: ApiChoice) {
+        when (choice.use) {
+            ApiUse.VOICE -> {
+                p[KEY_TRANSCRIPTION_MODE] = TranscriptionMode.ON_DEVICE.name
+                p[KEY_STT_MODE] = "local"
+                p[KEY_STT_PROVIDER_ID] = choice.providerId
+                p[KEY_STT_BASE_URL] = choice.endpoint.trimEnd('/')
+                p[KEY_STT_MODEL] = choice.model
+                p[KEY_STT_CREDENTIAL_REF] = choice.credentialRef
+                p[KEY_STT_VERIFICATION] = ""
+                p[KEY_STT_STREAMING_ENABLED] = choice.voiceOptions.streaming
+                p[KEY_STT_DETECT_TURNS] = choice.voiceOptions.detectTurns
+                p[KEY_STT_SPEAKERS] = choice.voiceOptions.speakerLabels
+                p[KEY_STT_LANGUAGE_HINTS] = choice.voiceOptions.languageHints.toSet()
+                p[KEY_STT_DEADLINE_MS] = 3500L
+            }
+            ApiUse.WRITING -> {
+                val old = apiChoice(p, choice.use)
+                if (old.providerId != choice.providerId || old.endpoint != choice.endpoint) p[KEY_REFINEMENT_CONTEXT] = false
+                p[KEY_REFINEMENT_MODE] = RefinementMode.OFF.name
+                p[KEY_AI_ENABLED] = false
+                p[KEY_REFINEMENT_PROVIDER_ID] = choice.providerId
+                p[KEY_REFINEMENT_BASE_URL] = choice.endpoint.trimEnd('/')
+                p[KEY_REFINEMENT_MODEL] = choice.model
+                p[KEY_REFINEMENT_CREDENTIAL_REF] = choice.credentialRef
+                p[KEY_REFINEMENT_VERIFICATION] = ""
+            }
+        }
+        p.remove(KEY_STT_API_KEY)
+        p.remove(KEY_AI_API_KEY)
+    }
+
+    /** A failed check leaves the working choice intact. Success saves proof, never new permission. */
+    suspend fun commitApiCheck(choice: ApiChoice, previous: ApiChoice, expectedEpoch: Long): Boolean {
+        require(choice.valid && choice.use == previous.use) { "Invalid API configuration" }
+        var saved = false
+        context.ds.edit { p ->
+            // Use the same monitor as revoke: a late response cannot race a removed key or cleared data.
+            synchronized(ApiHttp) {
+                val current = apiChoice(p, choice.use)
+                if (ApiHttp.currentEpoch == expectedEpoch && current == previous) {
+                    if (current.fingerprint() != choice.fingerprint() || !current.verified) {
+                        ApiHttp.revoke()
+                        writeApiChoice(p, choice)
+                    }
+                    p[if (choice.use == ApiUse.VOICE) KEY_STT_VERIFICATION else KEY_REFINEMENT_VERIFICATION] = choice.fingerprint()
+                    saved = true
+                }
+            }
+        }
+        return saved
+    }
+
+    suspend fun setApiEnabled(use: ApiUse, enabled: Boolean) {
+        if (!enabled) ApiHttp.revoke()
+        context.ds.edit { p ->
+            require(!enabled || apiChoice(p, use).verified) { "Check this API before enabling it" }
+            if (use == ApiUse.VOICE) {
+                p[KEY_TRANSCRIPTION_MODE] = (if (enabled) TranscriptionMode.API_PRIMARY else TranscriptionMode.ON_DEVICE).name
+                p[KEY_STT_MODE] = if (enabled) "remote" else "local"
+            } else {
+                p[KEY_REFINEMENT_MODE] = (if (enabled) RefinementMode.CLEAN_DICTATION else RefinementMode.OFF).name
+                p[KEY_AI_ENABLED] = enabled
+            }
+        }
+    }
+
+    suspend fun removeApi(use: ApiUse): String {
+        ApiHttp.revoke()
+        var orphan = ""
+        context.ds.edit { p ->
+            val old = apiChoice(p, use)
+            val other = apiChoice(p, if (use == ApiUse.VOICE) ApiUse.WRITING else ApiUse.VOICE)
+            if (old.credentialRef != other.credentialRef) orphan = old.credentialRef
+            if (use == ApiUse.VOICE) {
+                p[KEY_TRANSCRIPTION_MODE] = TranscriptionMode.ON_DEVICE.name
+                p[KEY_STT_MODE] = "local"
+                p.remove(KEY_STT_CREDENTIAL_REF); p.remove(KEY_STT_VERIFICATION)
+            } else {
+                p[KEY_REFINEMENT_MODE] = RefinementMode.OFF.name
+                p[KEY_AI_ENABLED] = false
+                p.remove(KEY_REFINEMENT_CREDENTIAL_REF); p.remove(KEY_REFINEMENT_VERIFICATION)
+                p.remove(KEY_REFINEMENT_CONTEXT)
+            }
+        }
+        return orphan
+    }
+
+    suspend fun setRefinementContext(enabled: Boolean) {
+        if (!enabled) ApiHttp.revoke()
+        context.ds.edit { it[KEY_REFINEMENT_CONTEXT] = enabled }
+    }
+    suspend fun setApiLocalFallback(enabled: Boolean) { context.ds.edit { it[KEY_API_LOCAL_FALLBACK] = enabled } }
 
     suspend fun setSttMode(v: SttMode){ context.ds.edit{it[KEY_STT_MODE]= when(v){ SttMode.LOCAL->"local"; SttMode.FALLBACK->"fallback"; SttMode.REMOTE->"remote" }}}
     suspend fun setSttBaseUrl(v: String){ context.ds.edit{it[KEY_STT_BASE_URL]=v.trim().trimEnd('/')} }
@@ -190,8 +309,10 @@ class Preferences(context: Context) {
     suspend fun setRefinementCredentialRef(v: String){ context.ds.edit{it[KEY_REFINEMENT_CREDENTIAL_REF]= v} }
     suspend fun setRefinementBaseUrl(v: String){ context.ds.edit{it[KEY_REFINEMENT_BASE_URL]= v.trim().trimEnd('/')} }
     suspend fun setRefinementModel(v: String){ context.ds.edit{it[KEY_REFINEMENT_MODEL]= v.trim()} }
-    suspend fun setRefinementDeadlineMs(v: Long){ context.ds.edit{it[KEY_REFINEMENT_DEADLINE_MS]= v} }
-    suspend fun setPersonalVocabHintEnabled(v: Boolean){ context.ds.edit{it[KEY_PERSONAL_VOCAB_HINT]= v} }
+    suspend fun setPersonalVocabHintEnabled(v: Boolean){
+        if (!v) ApiHttp.revoke()
+        context.ds.edit{it[KEY_PERSONAL_VOCAB_HINT]= v}
+    }
     suspend fun setDebugWavCapture(v: Boolean){ context.ds.edit{it[KEY_DEBUG_WAV_CAPTURE]=v} }
     suspend fun setDebugTranscriptTrace(v: Boolean){ context.ds.edit{it[KEY_DEBUG_TRANSCRIPT_TRACE]=v} }
 
@@ -222,7 +343,7 @@ class Preferences(context: Context) {
     suspend fun setEngine(v: EngineType){ context.ds.edit{it[KEY_ENGINE]= when(v){ EngineType.FAST->"fast"; EngineType.ACCURATE->"accurate"; EngineType.STREAMING->"streaming" }}}
     suspend fun setHaptics(v: Boolean){ context.ds.edit{it[KEY_HAPTICS]=v} }
     suspend fun setCommands(v: Boolean){ context.ds.edit{it[KEY_COMMANDS]=v} }
-    suspend fun clearAll(){ context.ds.edit{it.clear()}}
+    suspend fun clearAll(){ ApiHttp.revoke(); context.ds.edit{it.clear()}}
 }
 
 // Locked provider defaults — Muse Voice Transcribe (Meta Model API) + Gemini (top-level for Settings/SprichIME)
@@ -240,12 +361,4 @@ object GeminiDefaults {
     const val BASE_URL = "https://generativelanguage.googleapis.com"
     const val MODEL = "gemini-3.5-transcribe"
     const val MODEL_LIVE = "gemini-3.5-transcribe-live"
-}
-object MuseRefinementDefaults {
-    const val MODEL = "muse-spark-1.1"
-    const val ENDPOINT = "https://api.meta.ai/v1"
-}
-object GeminiRefinementDefaults {
-    const val MODEL = "gemini-2.0-flash"
-    const val ENDPOINT = "https://generativelanguage.googleapis.com"
 }

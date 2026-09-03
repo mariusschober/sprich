@@ -2,6 +2,8 @@
 
 The root [zapstore.yaml](../../zapstore.yaml) is the prepared listing. English copy and exports live in [fastlane/metadata/android/en-US](../../fastlane/metadata/android/en-US), a format understood by `zsp`.
 
+**Current UI screenshots: NOT MEASURED.** The carousel below depicts rc8, before the Home, notices and personal-API redesign. Replace it with screenshots of the final signed candidate before publishing. The connected phones are reserved while voice testing is paused.
+
 - `icon.png`: 512 × 512 RGBA, from the actual launcher paths. Editable source: [icon.svg](icon.svg).
 - `featureGraphic.png`: 1024 × 500 RGB, optional promotional artwork. Editable source: [feature-graphic.svg](feature-graphic.svg). The configured Zapstore carousel uses genuine screenshots.
 - Five screenshots: actual non-debuggable 1.0.0-rc8 (83) UI at 1080 × 1920 on the disposable API 36 ARM64 emulator. No personal accounts, notification content, phone frames or marketing overlays.

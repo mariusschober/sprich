@@ -12,6 +12,8 @@ sealed interface ApiFailure {
     data object ModelUnavailable : ApiFailure
     data object ProviderUnavailable : ApiFailure
     data object InvalidResponse : ApiFailure
+    data object OutputLimit : ApiFailure
+    data object OutputRejected : ApiFailure
     data class Http(val status: Int) : ApiFailure
     data class Network(val cause: Throwable) : ApiFailure { override fun toString() = "Network" }
 
@@ -24,6 +26,8 @@ sealed interface ApiFailure {
         is ModelUnavailable -> "Model unavailable (404)"
         is ProviderUnavailable -> "Provider unavailable (5xx)"
         is InvalidResponse -> "Invalid response"
+        is OutputLimit -> "Output limit reached"
+        is OutputRejected -> "Output rejected"
         is Http -> "HTTP $status"
         is Network -> "Network error"
     }

@@ -3,6 +3,8 @@ package com.sprich.app.storage
 import com.sprich.app.speech.TranscriptionMode
 import com.sprich.app.speech.api.SpeechLanguage
 import com.sprich.app.speech.refinement.RefinementMode
+import com.sprich.app.api.ApiUse
+import com.sprich.app.api.apiChoice
 
 /**
  * One immutable runtime config — built from ONE DataStore Preferences emission.
@@ -24,7 +26,6 @@ data class RuntimeConfigSnapshot(
     val refinementCredentialRef: String,
     val refinementBaseUrl: String,
     val refinementModel: String,
-    val refinementDeadlineMs: Long,
     val personalVocabHintEnabled: Boolean,
     val debugWavCapture: Boolean,
     val debugTranscriptTrace: Boolean,
@@ -32,6 +33,11 @@ data class RuntimeConfigSnapshot(
     val instantMode: Boolean,
     val commandsEnabled: Boolean,
     val hapticsEnabled: Boolean,
+    val sttVerification: String = "",
+    val refinementVerification: String = "",
+    val refinementContextEnabled: Boolean = false,
+    val apiLocalFallback: Boolean = false,
+    val voiceApiOptions: com.sprich.app.speech.remote.VoiceApiOptions = com.sprich.app.speech.remote.VoiceApiOptions(),
 ) {
     // Cheap derived for logging without PII
     override fun toString(): String {
@@ -40,6 +46,6 @@ data class RuntimeConfigSnapshot(
 }
 
 fun RuntimeConfigSnapshot.enforceProviderAvailability(): RuntimeConfigSnapshot = copy(
-    transcriptionMode = if (com.sprich.app.speech.remote.ProviderAvailability.isEnabled(sttProviderId)) transcriptionMode else TranscriptionMode.ON_DEVICE,
-    refinementMode = if (com.sprich.app.speech.remote.ProviderAvailability.isEnabled(refinementProviderId)) refinementMode else RefinementMode.OFF,
+    transcriptionMode = if (apiChoice(ApiUse.VOICE).verified) transcriptionMode else TranscriptionMode.ON_DEVICE,
+    refinementMode = if (apiChoice(ApiUse.WRITING).verified) refinementMode else RefinementMode.OFF,
 )

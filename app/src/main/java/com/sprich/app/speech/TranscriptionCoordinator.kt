@@ -29,8 +29,7 @@ class TranscriptionCoordinator(
     private val remoteProviders: Map<String, RemoteSttProvider>, // providerId -> provider (test-injected mocks)
     private val secretStore: ApiSecretStore?,
     private val deadlinePolicy: DeadlinePolicy = DeadlinePolicy.DEFAULT,
-    // shared client kept as Any to keep speech network-free invariant for check-apk.sh; actual type is OkHttpClient when needed
-    private val sharedHttpClient: Any? = null,
+    private val sharedHttpClient: okhttp3.OkHttpClient? = null,
 ) {
     // P1-38: retain last remote failure for Settings/diagnostics observability
     @Volatile var lastRemoteFailure: ApiFailure? = null
@@ -46,7 +45,13 @@ class TranscriptionCoordinator(
         pcm: ShortArray,
         plan: UtterancePlan,
         utteranceId: Long = System.nanoTime(),
+        live: com.sprich.app.speech.remote.LiveRemoteUtterance? = null,
+        onProgress: ((com.sprich.app.speech.remote.RemoteTranscriptUpdate) -> Unit)? = null,
     ): TranscriptionResult {
+        fun checkAuthority() {
+            if (plan.apiPermissionEpoch != com.sprich.app.api.ApiHttp.currentEpoch) throw kotlinx.coroutines.CancellationException("API permission revoked")
+        }
+        checkAuthority()
         val t0 = android.os.SystemClock.elapsedRealtime()
         return when (val tp = plan.transcription) {
             is TranscriptionPlan.Local -> {
@@ -63,7 +68,9 @@ class TranscriptionCoordinator(
                 )
             }
             is TranscriptionPlan.ApiPrimary -> {
-                val remoteResult = tryRemote(pcm, tp.remote, plan.speechConfig, utteranceId)
+                val remoteResult = tryRemote(pcm, tp.remote, plan.speechConfig, utteranceId, plan.remoteVocabularyHints, plan.apiPermissionEpoch, live, onProgress)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                checkAuthority()
                 if (remoteResult != null) {
                     remoteResult.copy(timingMs = android.os.SystemClock.elapsedRealtime() - t0)
                 } else {
@@ -111,7 +118,8 @@ class TranscriptionCoordinator(
                         timingMs = android.os.SystemClock.elapsedRealtime() - t0,
                     )
                 } else {
-                    val remoteResult = tryRemote(pcm, tp.remote, plan.speechConfig, utteranceId)
+                    checkAuthority()
+                    val remoteResult = tryRemote(pcm, tp.remote, plan.speechConfig, utteranceId, plan.remoteVocabularyHints, plan.apiPermissionEpoch, null, onProgress)
                     if (remoteResult != null) remoteResult.copy(timingMs = android.os.SystemClock.elapsedRealtime() - t0)
                     else {
                         // Both failed — return original local blank
@@ -128,17 +136,24 @@ class TranscriptionCoordinator(
         }
     }
 
-    private suspend fun tryRemote(pcm: ShortArray, config: com.sprich.app.speech.remote.RemoteSttConfig, speechConfig: SpeechSessionConfig, utteranceId: Long): TranscriptionResult? {
+    private suspend fun tryRemote(pcm: ShortArray, config: com.sprich.app.speech.remote.RemoteSttConfig, speechConfig: SpeechSessionConfig, utteranceId: Long, vocabulary: List<String>, permissionEpoch: Long,
+        live: com.sprich.app.speech.remote.LiveRemoteUtterance?, onProgress: ((com.sprich.app.speech.remote.RemoteTranscriptUpdate) -> Unit)?): TranscriptionResult? {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
-        val provider = try {
-            com.sprich.app.speech.remote.RemoteProviderFactory.create(config, sharedHttpClient as? okhttp3.OkHttpClient, deadlinePolicy, remoteProviders)
+        if (live != null && live.config != config) throw kotlinx.coroutines.CancellationException("Streaming plan mismatch")
+        if (config.supportsStreaming && config.preferStreaming && live == null) {
+            throw kotlinx.coroutines.CancellationException("Missing streaming authority")
+        }
+        val provider = if (live != null) null else try {
+            com.sprich.app.speech.remote.RemoteProviderFactory.create(config, sharedHttpClient, deadlinePolicy, remoteProviders)
         } catch (_: IllegalArgumentException) {
             lastRemoteFailure = ApiFailure.ProviderUnavailable
             return null
         }
         // Resolve credential — secret store is authoritative, fail closed (no legacy plaintext fallback)
-        val credential = try { secretStore?.loadBoundSecret(config.credentialRef, config.providerId, config.endpoint) ?: "" } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { "" }
-        if (credential.isBlank()) {
+        val credential = if (live != null) "" else try { secretStore?.loadBoundSecret(config.credentialRef, config.providerId, config.endpoint) ?: "" } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { "" }
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        if (permissionEpoch != com.sprich.app.api.ApiHttp.currentEpoch) throw kotlinx.coroutines.CancellationException("API permission revoked")
+        if (live == null && credential.isBlank()) {
             Log.w("TranscriptionCoordinator", "no credential for ${config.credentialRef}")
             lastRemoteFailure = ApiFailure.Authentication
             lastRemoteFailureAtMs = android.os.SystemClock.elapsedRealtime()
@@ -149,14 +164,16 @@ class TranscriptionCoordinator(
             pcm = pcm,
             sampleRate = 16000,
             languagePolicy = config.languagePolicy,
-            personalVocabularyHints = if (config.supportsKeywordBiasing) emptyList() else emptyList(), // vocab hints injected by SprichIME if enabled
+            personalVocabularyHints = if (config.supportsKeywordBiasing) vocabulary else emptyList(),
             utteranceId = utteranceId,
             credential = credential,
             preferStreaming = config.preferStreaming,
+            options = config.options,
+            onProgress = onProgress,
         )
         return try {
             val result = withTimeoutOrNull(config.deadlineMs) {
-                provider.transcribe(request)
+                if (live != null) live.finish(pcm) else checkNotNull(provider).transcribe(request)
             }
             if (result == null) {
                 Log.w("TranscriptionCoordinator", "remote timeout after ${config.deadlineMs}ms")
@@ -184,15 +201,17 @@ class TranscriptionCoordinator(
         } catch (e: RemoteSttException) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (e.failure == ApiFailure.Cancelled) throw kotlinx.coroutines.CancellationException("Remote operation cancelled")
-            Log.w("TranscriptionCoordinator", "remote failed ${e.failure}", e)
+            Log.w("TranscriptionCoordinator", "remote failed ${e.failure}")
             lastRemoteFailure = e.failure
             lastRemoteFailureAtMs = android.os.SystemClock.elapsedRealtime()
             null
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w("TranscriptionCoordinator", "remote unexpected", e)
-            lastRemoteFailure = ApiFailure.fromException(e)
+            lastRemoteFailure = (e as? com.sprich.app.api.ApiException)?.failure ?: ApiFailure.fromException(e)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (lastRemoteFailure == ApiFailure.Cancelled) throw kotlinx.coroutines.CancellationException("Remote operation cancelled")
+            Log.w("TranscriptionCoordinator", "remote failed $lastRemoteFailure")
             lastRemoteFailureAtMs = android.os.SystemClock.elapsedRealtime()
             null
         }

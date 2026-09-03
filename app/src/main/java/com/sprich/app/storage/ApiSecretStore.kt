@@ -3,6 +3,8 @@ package com.sprich.app.storage
 import android.content.Context
 import android.util.AtomicFile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -71,13 +73,21 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
     fun hasSecret(id: String): Boolean = !loadSecret(id).isNullOrBlank()
     fun hasDecryptableSecret(id: String) = hasSecret(id)
 
-    suspend fun saveBoundSecret(provider: String, endpoint: String, key: String): String? = withContext(Dispatchers.IO) {
-        val normalized = normalizeEndpoint(endpoint) ?: return@withContext null
-        if (provider.isBlank() || key.isBlank()) return@withContext null
+    suspend fun saveBoundSecret(provider: String, endpoint: String, key: String): String? {
+        val normalized = normalizeEndpoint(endpoint) ?: return null
+        if (provider.isBlank() || key.isBlank() || key.length > 4096 || key.any { it.isISOControl() }) return null
         // A new reference per save freezes the credential revision in every utterance plan.
         val ref = "bound_${UUID.randomUUID()}"
-        val result = saveSecret(ref, Json.encodeToString(BoundSecret(provider, normalized, key.trim())))
-        ref.takeIf { result is SecretStoreResult.Success }
+        return try {
+            withContext(Dispatchers.IO) {
+                val result = saveSecret(ref, Json.encodeToString(BoundSecret(provider, normalized, key.trim())))
+                ref.takeIf { result is SecretStoreResult.Success }
+            }
+        } catch (e: CancellationException) {
+            // withContext may cancel after the atomic write, before delivering its reference.
+            withContext(NonCancellable + Dispatchers.IO) { removeSecret(ref) }
+            throw e
+        }
     }
     suspend fun loadBoundSecret(ref: String, provider: String, endpoint: String): String? = withContext(Dispatchers.IO) {
         if (!ref.startsWith("bound_")) return@withContext null // Unbound legacy keys require re-entry.

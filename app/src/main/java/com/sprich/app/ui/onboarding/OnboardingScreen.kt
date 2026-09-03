@@ -1,12 +1,8 @@
 package com.sprich.app.ui.onboarding
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -20,6 +16,7 @@ import com.sprich.app.models.manager.ModelManager
 import com.sprich.app.models.manager.ModelStatus
 import com.sprich.app.storage.Preferences
 import com.sprich.app.ui.setup.*
+import com.sprich.app.ui.theme.VoiceMark
 import kotlinx.coroutines.launch
 
 @Composable fun OnboardingScreen(onDone: () -> Unit, onOpenImeSettings: () -> Unit) {
@@ -40,9 +37,7 @@ import kotlinx.coroutines.launch
         Text(stringResource(R.string.setup_step, step + 1, 4), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when (step) {
             0 -> {
-                Box(Modifier.size(88.dp).background(MaterialTheme.colorScheme.tertiary, CircleShape), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.Mic, contentDescription = null, tint = MaterialTheme.colorScheme.onTertiary, modifier = Modifier.size(40.dp))
-                }
+                VoiceMark(Modifier.size(112.dp))
                 Text(stringResource(R.string.onboard_title), style = MaterialTheme.typography.headlineLarge)
                 Text(stringResource(R.string.onboard_description), style = MaterialTheme.typography.bodyLarge)
                 Text(stringResource(R.string.onboard_privacy), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -19,14 +19,8 @@ interface StreamingSttSession {
     suspend fun start()
     suspend fun sendAudio(samples: ShortArray)
     suspend fun finish(): RemoteSttResult
-    suspend fun cancel()
+    fun cancel()
 }
-
-data class RemoteTranscriptUpdate(
-    val stable: String,
-    val unstable: String,
-    val isFinal: Boolean = false,
-)
 
 interface StreamingRemoteSttProvider : RemoteSttProvider {
     suspend fun createStreamingSession(request: RemoteSttRequest): StreamingSttSession

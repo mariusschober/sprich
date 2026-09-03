@@ -15,7 +15,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.navigation.compose.*
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import com.sprich.app.storage.Preferences
+import com.sprich.app.api.ApiUse
+import com.sprich.app.ui.settings.ApiSettingsScreen
+import com.sprich.app.ui.settings.NoticesScreen
 import com.sprich.app.ui.benchmark.BenchmarkScreen
 import com.sprich.app.ui.home.HomeScreen
 import com.sprich.app.ui.onboarding.OnboardingScreen
@@ -66,7 +71,14 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             composable("home") { HomeScreen(onSettings = { nav.navigate("settings") }, onBenchmarkTap = { if (com.sprich.app.BuildConfig.ENABLE_BENCHMARK) nav.navigate("benchmark") }) }
-                            composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }, onBenchmark = { if (com.sprich.app.BuildConfig.ENABLE_BENCHMARK) nav.navigate("benchmark") }, onVocab = { nav.navigate("vocab") }) }
+                            composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }, onBenchmark = { if (com.sprich.app.BuildConfig.ENABLE_BENCHMARK) nav.navigate("benchmark") }, onVocab = { nav.navigate("vocab") }, onApi = { nav.navigate(if (it == ApiUse.VOICE) "voice-api" else "writing-api") }, onLicenses = { nav.navigate("notices") }) }
+                            for ((route, use, otherRoute) in listOf(Triple("voice-api", ApiUse.VOICE, "writing-api"), Triple("writing-api", ApiUse.WRITING, "voice-api"))) {
+                                composable("$route?provider={provider}", arguments = listOf(navArgument("provider") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
+                                    ApiSettingsScreen(use, onBack = { nav.popBackStack() }, initialProviderId = entry.arguments?.getString("provider"),
+                                        onSetUpOther = { provider -> nav.navigate("$otherRoute?provider=${android.net.Uri.encode(provider)}") { launchSingleTop = true } })
+                                }
+                            }
+                            composable("notices") { NoticesScreen(onBack = { nav.popBackStack() }) }
                             composable("vocab") { VocabScreen(onBack = { nav.popBackStack() }) }
                             // Benchmark only in debug source set — in release this destination is not reachable (no route)
                             if (com.sprich.app.BuildConfig.ENABLE_BENCHMARK) {

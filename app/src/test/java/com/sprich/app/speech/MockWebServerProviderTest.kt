@@ -1,6 +1,7 @@
 package com.sprich.app.speech
 
 import com.sprich.app.speech.remote.*
+import com.sprich.app.api.ApiException as RemoteSttException
 import com.sprich.app.ai.OpenAiCompatibleRefinementProvider
 import com.sprich.app.speech.refinement.RefinementRequest
 import com.sprich.app.speech.refinement.RefinementMode
@@ -114,7 +115,7 @@ class MockWebServerProviderTest {
 
     @Test
     fun sttOversizedBody() = runBlocking {
-        val large = "a".repeat(9000)
+        val large = "a".repeat(70_000)
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"text":"$large"}"""))
         val provider = OpenAiCompatibleSttProvider(baseUrl(), "model", client)
         try { provider.transcribe(RemoteSttRequest(ShortArray(100), 16000, LanguagePolicy.Automatic, utteranceId = 1, credential = "k")); fail("") } catch (e: RemoteSttException) { assertTrue(e.failure is ApiFailure.InvalidResponse) }
@@ -192,7 +193,7 @@ class MockWebServerProviderTest {
     // Refinement tests
     @Test
     fun refinementValid() = runBlocking {
-        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"message":{"content":"Hello world."}}]}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"finish_reason":"stop","message":{"content":"Hello world."}}]}"""))
         val provider = OpenAiCompatibleRefinementProvider(baseUrl(), "gpt-4o-mini", "sk-test", client)
         val result = provider.refine(RefinementRequest("hello world", "en", RefinementMode.CORRECT))
         assertEquals("Hello world.", result.text)
@@ -200,9 +201,9 @@ class MockWebServerProviderTest {
 
     @Test
     fun refinementEmpty() = runBlocking {
-        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"message":{"content":""}}]}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"finish_reason":"stop","message":{"content":""}}]}"""))
         val provider = OpenAiCompatibleRefinementProvider(baseUrl(), "model", "k", client)
-        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: Exception) { assertTrue(e is com.sprich.app.ai.RefinementException) }
+        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: Exception) { assertTrue(e is com.sprich.app.api.ApiException) }
     }
 
     @Test
@@ -214,44 +215,44 @@ class MockWebServerProviderTest {
 
     @Test
     fun refinementOversized() = runBlocking {
-        val big = "a".repeat(9000)
-        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"message":{"content":"$big"}}]}"""))
+        val big = "a".repeat(70_000)
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"finish_reason":"stop","message":{"content":"$big"}}]}"""))
         val provider = OpenAiCompatibleRefinementProvider(baseUrl(), "model", "k", client)
-        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: Exception) { assertTrue(e is com.sprich.app.ai.RefinementException) }
+        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: Exception) { assertTrue(e is com.sprich.app.api.ApiException) }
     }
 
     @Test
     fun refinement401() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(401).setBody("unauth"))
         val provider = OpenAiCompatibleRefinementProvider(baseUrl(), "model", "k", client)
-        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: com.sprich.app.ai.RefinementException) { assertTrue(e.failure is ApiFailure.Authentication) }
+        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: com.sprich.app.api.ApiException) { assertTrue(e.failure is ApiFailure.Authentication) }
     }
 
     @Test
     fun refinement429() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(429).setBody("rate"))
         val provider = OpenAiCompatibleRefinementProvider(baseUrl(), "model", "k", client)
-        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: com.sprich.app.ai.RefinementException) { assertTrue(e.failure is ApiFailure.RateLimited) }
+        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: com.sprich.app.api.ApiException) { assertTrue(e.failure is ApiFailure.RateLimited) }
     }
 
     @Test
     fun refinement500() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(500).setBody("err"))
         val provider = OpenAiCompatibleRefinementProvider(baseUrl(), "model", "k", client)
-        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: com.sprich.app.ai.RefinementException) { assertTrue(e.failure is ApiFailure.ProviderUnavailable) }
+        try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: com.sprich.app.api.ApiException) { assertTrue(e.failure is ApiFailure.ProviderUnavailable) }
     }
 
     @Test
     fun refinementTimeout() = runBlocking {
         val slow = OkHttpClient.Builder().readTimeout(500, TimeUnit.MILLISECONDS).build()
-        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"message":{"content":"hi"}}]}""").setHeadersDelay(2, TimeUnit.SECONDS))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"finish_reason":"stop","message":{"content":"hi"}}]}""").setHeadersDelay(2, TimeUnit.SECONDS))
         val provider = OpenAiCompatibleRefinementProvider(baseUrl(), "model", "k", slow)
         try { provider.refine(RefinementRequest("hello", "en", RefinementMode.CORRECT)); fail("") } catch (e: Exception) { assertTrue(true) }
     }
 
     @Test
     fun refinementCancellation() = runBlocking {
-        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"message":{"content":"hi"}}]}""").setBodyDelay(2, TimeUnit.SECONDS))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"choices":[{"finish_reason":"stop","message":{"content":"hi"}}]}""").setBodyDelay(2, TimeUnit.SECONDS))
         val provider = OpenAiCompatibleRefinementProvider(baseUrl(), "model", "k", client)
         val job = async { provider.refine(RefinementRequest("hello world this is a test", "en", RefinementMode.CORRECT)) }
         delay(100)

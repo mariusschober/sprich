@@ -15,6 +15,9 @@ data class UtterancePlan(
     val refinement: RefinementPlan,
     val speechConfig: SpeechSessionConfig,
     val vocabulary: com.sprich.app.vocab.VocabSnapshot = com.sprich.app.vocab.VocabSnapshot.EMPTY,
+    val fieldContext: String? = null,
+    val remoteVocabularyHints: List<String> = emptyList(),
+    val apiPermissionEpoch: Long = com.sprich.app.api.ApiHttp.currentEpoch,
 ) {
     override fun toString(): String {
         val mode = when (transcription) {

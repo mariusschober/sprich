@@ -16,7 +16,8 @@ data class RemoteSttConfig(
     // capabilities snapshot
     val supportsStreaming: Boolean = false,
     val supportsKeywordBiasing: Boolean = false,
-    val preferStreaming: Boolean = false, // user toggle for Muse/Gemini streaming vs non-streaming
+    val preferStreaming: Boolean = false,
+    val options: VoiceApiOptions = VoiceApiOptions(),
 ) {
     override fun toString(): String {
         // Privacy-safe: never log full endpoint/query or credential ref secret
@@ -41,6 +42,9 @@ data class RemoteSttRequest(
     val utteranceId: Long,
     val credential: String, // resolved plaintext at call time from secure store, never persisted in config
     val preferStreaming: Boolean = false,
+    val options: VoiceApiOptions = VoiceApiOptions(),
+    val onProgress: ((RemoteTranscriptUpdate) -> Unit)? = null,
+    val isAuthorized: (() -> Boolean)? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -64,7 +68,9 @@ data class RemoteSttResult(
     val resolvedLanguage: com.sprich.app.speech.ResolvedUtteranceLanguage,
     val sourceId: com.sprich.app.speech.TranscriptionSourceId,
     val timingMs: Long = 0,
-)
+) {
+    override fun toString() = "RemoteSttResult(chars=${text.length}, language=$resolvedLanguage, source=$sourceId, timingMs=$timingMs)"
+}
 
 data class RemoteSttCapabilities(
     val streaming: Boolean = false,

@@ -10,7 +10,8 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okio.Buffer
+import com.sprich.app.api.readApiBody
+import com.sprich.app.api.ApiException
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -23,20 +24,21 @@ class OpenAiCompatibleSttProvider(
     private val baseUrl: String,
     private val model: String,
     private val httpClient: OkHttpClient,
+    private val officialOpenAi: Boolean = false,
 ) : RemoteSttProvider {
     override val id = "openai-compatible"
     override val capabilities = RemoteSttCapabilities(
         streaming = false,
         automaticLanguage = true,
         explicitLanguageHint = true,
-        keywordBiasing = false,
+        keywordBiasing = officialOpenAi,
         contextBiasing = false,
         endpointing = false,
         partialResults = false,
     )
 
     companion object {
-        const val MAX_RESPONSE_BYTES = 8192
+        const val MAX_RESPONSE_BYTES = 65_536
         fun wavBytes(pcm: ShortArray, sampleRate: Int): ByteArray {
             val dataSize = pcm.size * 2
             val out = ByteArray(44 + dataSize)
@@ -72,28 +74,7 @@ class OpenAiCompatibleSttProvider(
 
         private fun isValidHttpsUrl(url: String): Boolean = com.sprich.app.core.security.EndpointValidator.isValidHttpsUrl(url)
 
-        private fun readBoundedBody(resp: okhttp3.Response): String? {
-            val body = resp.body ?: return ""
-            val source = body.source()
-            // Bounded read: at most MAX_RESPONSE_BYTES+1 to detect oversize without allocating huge body
-            val buffer = Buffer()
-            var total: Long = 0
-            val limit = MAX_RESPONSE_BYTES.toLong() + 1
-            try {
-                while (total < limit) {
-                    val read = source.read(buffer, limit - total)
-                    if (read == -1L) break
-                    total += read
-                    if (total > MAX_RESPONSE_BYTES) {
-                        return null // oversized -> caller will throw InvalidResponse
-                    }
-                }
-                return buffer.readUtf8()
-            } catch (e: Exception) {
-                // If timeout/disconnect, propagate as IOException for typed mapping
-                throw e
-            }
-        }
+
     }
 
     private fun languageCode(policy: com.sprich.app.speech.LanguagePolicy): String = when (policy) {
@@ -110,7 +91,7 @@ class OpenAiCompatibleSttProvider(
     override suspend fun transcribe(request: RemoteSttRequest): RemoteSttResult = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank() || !isValidHttpsUrl(baseUrl)) throw IllegalStateException("Invalid baseUrl — must be https://")
         if (request.credential.isBlank()) throw IllegalStateException("Missing credential")
-        if (request.pcm.isEmpty()) throw IllegalArgumentException("No audio")
+        require(request.pcm.isNotEmpty() && request.pcm.size <= 1_920_000 && request.sampleRate == 16_000) { "Invalid audio" }
 
         val wav = wavBytes(request.pcm, request.sampleRate)
         val langCode = languageCode(request.languagePolicy)
@@ -120,8 +101,10 @@ class OpenAiCompatibleSttProvider(
             .addFormDataPart("file", "dictation.wav", fileBody)
             .addFormDataPart("model", model)
             .addFormDataPart("response_format", "json")
-        if (langCode.isNotBlank()) builder = builder.addFormDataPart("language", langCode)
-        // Keyword biasing not supported for generic OpenAI compat; ignore hints
+        if (langCode.isNotBlank()) builder.addFormDataPart(if (officialOpenAi) "languages[]" else "language", langCode)
+        if (officialOpenAi) request.personalVocabularyHints.take(20)
+            .filter { it.isNotBlank() && it.length <= 100 && it.none { c -> c in "<>\r\n" } }
+            .forEach { builder.addFormDataPart("keywords[]", it) }
 
         val req = Request.Builder()
             .url(baseUrl.trimEnd('/') + "/audio/transcriptions")
@@ -129,58 +112,19 @@ class OpenAiCompatibleSttProvider(
             .post(builder.build())
             .build()
 
-        // P1-22: structured cancellation — tie OkHttp Call to coroutine Job with disposable handle to avoid retention
-        val call = httpClient.newCall(req)
-        val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
-        val handle = job?.invokeOnCompletion { cause ->
-            if (cause is kotlinx.coroutines.CancellationException) {
-                try { call.cancel() } catch (_: Exception) {}
-            }
+        val start = System.nanoTime()
+        val body = httpClient.newCall(req).readApiBody(MAX_RESPONSE_BYTES.toLong())
+        val json = try { JSONObject(body) } catch (_: Exception) { throw ApiException(ApiFailure.InvalidResponse) }
+        val text = (json.opt("text") as? String)?.trim()
+            ?.takeIf { it.isNotBlank() && it.length <= 16_384 } ?: throw ApiException(ApiFailure.InvalidResponse)
+        val detected = json.optJSONArray("languages")?.let { languages ->
+            if (languages.length() == 1) languages.optJSONObject(0)?.optString("code") else null
         }
-        try {
-            call.execute().use { resp ->
-                val bodyStr = readBoundedBody(resp)
-                if (bodyStr == null) {
-                    throw RemoteSttException(ApiFailure.InvalidResponse, "Oversized response > $MAX_RESPONSE_BYTES")
-                }
-                if (!resp.isSuccessful) {
-                    val failure = ApiFailure.fromHttpCode(resp.code)
-                    throw RemoteSttException(failure, "STT HTTP ${resp.code}")
-                }
-                val text = parseText(bodyStr) ?: throw RemoteSttException(ApiFailure.InvalidResponse, "Invalid response")
-                if (text.isBlank()) throw RemoteSttException(ApiFailure.InvalidResponse, "Empty transcript")
-                RemoteSttResult(
-                    text = text.trim(),
-                    resolvedLanguage = when (languageCode(request.languagePolicy)) {
-                        "en" -> ResolvedUtteranceLanguage.Known(Language.EN)
-                        "de" -> ResolvedUtteranceLanguage.Known(Language.DE)
-                        "es" -> ResolvedUtteranceLanguage.Known(Language.ES)
-                        "fr" -> ResolvedUtteranceLanguage.Known(Language.FR)
-                        else -> ResolvedUtteranceLanguage.Unknown
-                    },
-                    sourceId = TranscriptionSourceId.API_OPENAI_COMPATIBLE,
-                )
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            try { call.cancel() } catch (_: Exception) {}
-            throw e
-        } finally {
-            try { handle?.dispose() } catch (_: Exception) {}
-        }
-    }
-
-    private fun parseText(body: String): String? = try {
-        val json = JSONObject(body)
-        when {
-            json.has("text") -> json.optString("text")
-            json.has("transcript") -> json.optString("transcript")
-            else -> null
-        }
-    } catch (_: Exception) {
-        // Only accept plain-text bodies that don't look like JSON/HTML
-        if (body.isNotBlank() && !body.trimStart().startsWith("<") && !body.trimStart().startsWith("{")) {
-            body.trim().takeIf { it.length in 1..4096 }
-        } else null
+        val effectiveLanguage = langCode.ifBlank { detected.orEmpty() }
+        RemoteSttResult(text,
+            Language.entries.firstOrNull { it != Language.AUTO && it.code == effectiveLanguage }
+                ?.let { ResolvedUtteranceLanguage.Known(it) } ?: ResolvedUtteranceLanguage.Unknown,
+            TranscriptionSourceId.API_OPENAI_COMPATIBLE, (System.nanoTime() - start) / 1_000_000)
     }
 }
 

@@ -1,0 +1,7 @@
+A warmer Sprich, with a new Home and a softer voice bar.
+
+Optional personal APIs for voice recognition and natural writing cleanup. Your own keys, separate opt-ins, safe cancellation and a short cleanup deadline.
+
+Searchable offline licenses with complete source notices and corrected model attribution.
+
+This is a QA-signed personal testing candidate, not a published release.
