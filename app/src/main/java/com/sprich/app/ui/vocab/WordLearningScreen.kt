@@ -1,6 +1,8 @@
 package com.sprich.app.ui.vocab
 
 import android.Manifest
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -22,7 +24,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -86,6 +90,16 @@ const val TYPED_SPELLING_IME_OPTION = "com.sprich.app.TYPED_SPELLING"
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
         permissionDenied = !allowed
         if (allowed && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) vm.record()
+    }
+    val appPicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            vm.resolvePickedName { LocalNamePicker.appDisplayName(app, result.data) }
+        }
+    }
+    val contactPicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            vm.resolvePickedName { LocalNamePicker.contactDisplayName(app, result.data?.data) }
+        }
     }
     DisposableEffect(lifecycle, vm) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) vm.pause() }
@@ -197,6 +211,42 @@ const val TYPED_SPELLING_IME_OPTION = "com.sprich.app.TYPED_SPELLING"
                         Text(stringResource(R.string.learn_spell_body), modifier = Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     item {
+                        Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(stringResource(R.string.learn_choose_name_title), style = MaterialTheme.typography.titleMedium)
+                                Text(stringResource(R.string.learn_choose_name_body), style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                OutlinedButton(enabled = !state.busy, modifier = Modifier.fillMaxWidth(), onClick = {
+                                    focus.clearFocus(); keyboard?.hide()
+                                    try {
+                                        appPicker.launch(LocalNamePicker.appIntent().putExtra(Intent.EXTRA_TITLE,
+                                            context.getString(R.string.learn_choose_app_title)))
+                                    } catch (_: ActivityNotFoundException) { vm.namePickerUnavailable() }
+                                    catch (_: SecurityException) { vm.namePickerUnavailable() }
+                                }) {
+                                    Icon(Icons.Rounded.Apps, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
+                                    Text(stringResource(R.string.learn_choose_app))
+                                }
+                                OutlinedButton(enabled = !state.busy, modifier = Modifier.fillMaxWidth(), onClick = {
+                                    focus.clearFocus(); keyboard?.hide()
+                                    try { contactPicker.launch(LocalNamePicker.contactIntent()) }
+                                    catch (_: ActivityNotFoundException) { vm.namePickerUnavailable() }
+                                    catch (_: SecurityException) { vm.namePickerUnavailable() }
+                                }) {
+                                    Icon(Icons.Rounded.Person, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
+                                    Text(stringResource(R.string.learn_choose_contact))
+                                }
+                                if (state.resolvingName) Row(verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    Text(stringResource(R.string.learn_reading_name), style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                                }
+                            }
+                        }
+                    }
+                    item {
                         LaunchedEffect(Unit) { spellingFocus.requestFocus(); keyboard?.show() }
                         OutlinedTextField(value = state.written, onValueChange = vm::setWritten, label = { Text(stringResource(R.string.learn_correct_spelling)) },
                             modifier = Modifier.fillMaxWidth().focusRequester(spellingFocus), singleLine = true,
@@ -205,7 +255,7 @@ const val TYPED_SPELLING_IME_OPTION = "com.sprich.app.TYPED_SPELLING"
                             keyboardActions = KeyboardActions(onDone = { vm.review() }))
                     }
                     item {
-                        Button(onClick = vm::review, enabled = VocabularyText.validTerm(VocabularyText.clean(state.written)), modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.learn_review)) }
+                        Button(onClick = vm::review, enabled = !state.busy && VocabularyText.validTerm(VocabularyText.clean(state.written)), modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.learn_review)) }
                     }
                 }
                 LearningStep.REVIEW -> {

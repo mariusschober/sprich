@@ -14,7 +14,7 @@ description: |
   • Speak English, German, Spanish or French.
   • Automatic recognizes the language as you speak.
   • Accurate uses a language you choose.
-  • Teach names and special terms by saying them three times, then confirming the spelling.
+  • Teach names and special terms by saying them three times, then typing the spelling or choosing one app/contact name locally.
   • Swipe to delete, whisper, switch keyboards or hide the bar.
   • Optional writing cleanup and API recognition with your own keys.
   • No Sprich account, subscription, ads or analytics.
@@ -42,5 +42,5 @@ images:
   - ./fastlane/metadata/android/en-US/images/phoneScreenshots/3-settings.png
   - ./fastlane/metadata/android/en-US/images/phoneScreenshots/4-vocab.png
   - ./fastlane/metadata/android/en-US/images/phoneScreenshots/1-onboarding.png
-release_notes: ./fastlane/metadata/android/en-US/changelogs/87.txt
+release_notes: ./fastlane/metadata/android/en-US/changelogs/88.txt
 metadata_sources: [fastlane]

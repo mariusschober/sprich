@@ -23,9 +23,10 @@ data class WordLearningState(
     val selected: Set<String> = emptySet(),
     val error: Int? = null,
     val saving: Boolean = false,
+    val resolvingName: Boolean = false,
     val existing: VocabJson = VocabJson(),
 ) {
-    val busy get() = progress.phase != LearningPhase.IDLE || saving
+    val busy get() = progress.phase != LearningPhase.IDLE || saving || resolvingName
     override fun toString() = "WordLearningState(step=$step, samples=${samples.size}, busy=$busy)"
 }
 
@@ -115,6 +116,31 @@ class WordLearningViewModel(
         viewModelScope.launch { recorder?.release() }
     }
     fun setWritten(text: String) { if (text.length <= 128 && !state.value.busy) mutable.update { it.copy(written = text, error = null) } }
+    fun resolvePickedName(load: suspend () -> String?) {
+        if (state.value.busy || state.value.step != LearningStep.SPELL) return
+        mutable.update { it.copy(resolvingName = true, error = null) }
+        viewModelScope.launch {
+            try {
+                val name = load()?.let(VocabularyText::clean)?.takeIf(VocabularyText::validTerm)
+                mutable.update { draft ->
+                    if (draft.step != LearningStep.SPELL) draft
+                    else if (name == null) draft.copy(error = R.string.learn_name_picker_error)
+                    else draft.copy(written = name, error = null)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                mutable.update { if (it.step == LearningStep.SPELL) it.copy(error = R.string.learn_name_picker_error) else it }
+            } finally {
+                mutable.update { it.copy(resolvingName = false) }
+            }
+        }
+    }
+    fun namePickerUnavailable() {
+        if (state.value.step == LearningStep.SPELL && !state.value.busy) {
+            mutable.update { it.copy(error = R.string.learn_name_picker_unavailable) }
+        }
+    }
     fun review() {
         val current = state.value
         if (current.busy || !VocabularyText.validTerm(VocabularyText.clean(current.written))) return

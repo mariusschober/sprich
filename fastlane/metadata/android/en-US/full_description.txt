@@ -5,7 +5,7 @@ Sprich is a voice keyboard for Android. Dictate in your notes, messages and othe
 • Speak English, German, Spanish or French.
 • Automatic recognizes the language as you speak.
 • Accurate uses a language you choose.
-• Teach names and special terms by saying them three times, then confirming the spelling.
+• Teach names and special terms by saying them three times, then typing the spelling or choosing one app/contact name locally.
 • Swipe to delete, whisper, switch keyboards or hide the bar.
 • Optional writing cleanup and API recognition with your own keys.
 • No Sprich account, subscription, ads or analytics.

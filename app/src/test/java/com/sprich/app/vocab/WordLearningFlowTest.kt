@@ -93,6 +93,27 @@ class WordLearningFlowTest {
         assertEquals("sprick", repo.store().snapshot().apply("sprick", profile.key))
     }
 
+    @Test fun pickedNameIsNormalizedButRemainsAnUnsavedDraft() = runBlocking {
+        val recorder = object : LessonRecorder {
+            override val profile = this@WordLearningFlowTest.profile
+            override val usesApi = false
+            override suspend fun record(finish: Deferred<Unit>, onProgress: (LearningProgress) -> Unit) = "Wats app"
+            override suspend fun release() {}
+        }
+        val vm = model(recorder)
+        repeat(3) { vm.record(); withTimeout(5000) { vm.state.first { !it.busy } } }
+        vm.spell()
+        vm.resolvePickedName { "  WhatsApp  " }
+        withTimeout(5000) { vm.state.first { it.written == "WhatsApp" && !it.resolvingName } }
+        assertTrue(repo.learnedWords().isEmpty())
+        assertEquals(LearningStep.SPELL, vm.state.value.step)
+
+        vm.resolvePickedName { "\u0000invalid" }
+        withTimeout(5000) { vm.state.first { !it.resolvingName && it.error != null } }
+        assertEquals("WhatsApp", vm.state.value.written)
+        assertTrue(repo.learnedWords().isEmpty())
+    }
+
     @Test fun simultaneousConflictingSavesDoNotOverwriteTheWinner() = runBlocking {
         fun candidate(written: String) = WordLesson.create(profile, written, List(3) { "acmee" }, setOf("acmee"))
         val results = listOf("Acme", "Other").map { async(Dispatchers.IO) { runCatching { repo.addLearned(candidate(it)) } } }.awaitAll()

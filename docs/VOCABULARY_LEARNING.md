@@ -20,9 +20,11 @@ every sentence. The interface must make that distinction without model jargon.
    attempts unlock **Next**; two additional attempts are optional. Empty, failed,
    cancelled and interrupted attempts do not count. Removing an attempt permits a
    replacement. Never invent a result from a partial transcript.
-4. Type the intended spelling with the phone's typing keyboard. Avoid a spoken
-   alphabet parser: asking the same recognizer to decode the spelling introduces
-   another ambiguous recognition step. Clear focus and stop/release recording
+4. Type the intended spelling with the phone's typing keyboard, or explicitly
+   choose one launchable app or contact through Android's local picker. Sprich
+   receives only the chosen display name; it does not enumerate either list.
+   Avoid a spoken alphabet parser: asking the same recognizer to decode the
+   spelling introduces another ambiguous recognition step. Clear focus and stop/release recording
    before opening the keyboard. An own-app-only field marker tells Sprich to switch
    to a typing keyboard instead of starting instant dictation in this field.
 5. Review the distinct forms Sprich heard and their frequencies. Repeated forms
@@ -120,3 +122,6 @@ you want learned corrections in normal dictation.
 Record measured results and remaining limits after implementation. Store submission
 and production signing are outside this feature; the active distribution target
 remains Zapstore.
+
+The app/contact choice and its threat model are specified in
+[LOCAL_NAME_LEARNING.md](LOCAL_NAME_LEARNING.md).

@@ -18,6 +18,8 @@ Sprich reads nearby editor text and the current selection locally to insert text
 
 **Teach Sprich a word** records three to five short attempts using the current primary voice recognizer. Local recognition stays on the phone; an already-enabled voice API receives the recordings directly under its own data policy. Learning does not call a writing API or send dictionary hints. Audio is discarded after each attempt. Completed draft text stays in memory while the lesson is open; leaving discards it unless you select **Save word**. Saving stores the correct spelling, the original recognition text, your selected replacements and an identifier for the recognition configuration in Sprich's private vocabulary storage. API credentials are not part of that identifier. The typing keyboard used to enter the spelling is governed by its own privacy policy.
 
+For the spelling step, you may ask Android to choose one launchable app or one contact. Android shows the list; Sprich reads only the chosen display name. To read a selected app label on Android 11 and later, Sprich declares visibility for apps with launcher activities; it does not request visibility into every installed package or call APIs that enumerate the launcher list. Sprich does not scan, index or cache either list and does not store a contact ID, contact URI, package name or app component. Cancelling the picker stores nothing. The selected name remains a draft until **Save word**, then follows the same vocabulary rules as a name you typed.
+
 This is a correction dictionary, not voiceprint storage or speech-model training. Tap a learned word in Personal vocabulary to inspect its observations or remove it. Optional vocabulary sharing sends intended spellings, not the saved recognition errors or lesson history. Ordinary dictation is not added to this dictionary automatically.
 
 Writing cleanup sends only saved vocabulary terms already present in the transcript, up to 20. **Use my vocabulary** can separately share up to 100 saved terms with a voice API and is initially off. Selected language hints are also sent with voice requests. Partial transcripts and progress events stay in the temporary dictation bar; partials never modify the receiving editor.
@@ -45,7 +47,7 @@ Android backup and device-transfer backup are disabled. Uninstalling Sprich or c
 
 ## Permissions
 
-`RECORD_AUDIO` permits dictation after you grant it. `INTERNET` permits requested downloads and optional API calls; `ACCESS_NETWORK_STATE` checks connectivity. `VIBRATE` supports optional feedback. Sprich is an Android input method protected by the system's `BIND_INPUT_METHOD` permission. It has no accessibility service, contacts/storage/location permission, notification permission, foreground recording service or advertising ID permission.
+`RECORD_AUDIO` permits dictation after you grant it. `INTERNET` permits requested downloads and optional API calls; `ACCESS_NETWORK_STATE` checks connectivity. `VIBRATE` supports optional feedback. Sprich is an Android input method protected by the system's `BIND_INPUT_METHOD` permission. It has no accessibility service, contacts/storage/location permission, all-packages permission, notification permission, foreground recording service or advertising ID permission. Android's one-item contact picker grants temporary access only to the contact you select.
 
 ## Contact
 

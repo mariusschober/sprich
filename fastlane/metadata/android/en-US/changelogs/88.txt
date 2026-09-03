@@ -1,0 +1,1 @@
+Teach unusual names more easily. After saying a word three times, type its spelling or choose one app/contact name through Android's local picker. Sprich receives only the name you select. It never scans your address book or app list, adds no contacts permission, and stores nothing until you save the lesson.

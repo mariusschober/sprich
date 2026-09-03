@@ -287,7 +287,15 @@
     <string name="learn_permission">Allow microphone access to record a word.</string>
     <string name="learn_open_settings">Open phone settings</string>
     <string name="learn_spell_title">How should it be written?</string>
-    <string name="learn_spell_body">Type the exact spelling, including capitals. Your typing keyboard opens for this step.</string>
+    <string name="learn_spell_body">Type the exact spelling, including capitals, or choose a name already on this phone.</string>
+    <string name="learn_choose_name_title">Choose a name from this phone</string>
+    <string name="learn_choose_name_body">Android shows the list. Sprich receives only the name you choose and saves nothing until you tap Save word.</string>
+    <string name="learn_choose_app">Choose an app</string>
+    <string name="learn_choose_app_title">Choose an app name</string>
+    <string name="learn_choose_contact">Choose a contact</string>
+    <string name="learn_reading_name">Reading the chosen name…</string>
+    <string name="learn_name_picker_error">Could not read that name. Type it instead or try again.</string>
+    <string name="learn_name_picker_unavailable">No compatible picker is available. Type the name instead.</string>
     <string name="learn_correct_spelling">Correct spelling</string>
     <string name="learn_review">Review corrections</string>
     <string name="learn_will_write">Your spelling</string>
