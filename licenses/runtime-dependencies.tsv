@@ -88,6 +88,8 @@ androidx.vectordrawable:vectordrawable:1.1.0	vectordrawable-1.1.0.aar	46fd633ac0
 androidx.versionedparcelable:versionedparcelable:1.1.1	versionedparcelable-1.1.1.aar	57e8d93260d18d5b9007c9eed3c64ad159de90c8609ebfc74a347cbd514535a4
 androidx.viewpager2:viewpager2:1.0.0	viewpager2-1.0.0.aar	e95c0031d4cc247cd48196c6287e58d2cee54d9c79b85afea7c90920330275af
 androidx.viewpager:viewpager:1.0.0	viewpager-1.0.0.aar	147af4e14a1984010d8f155e5e19d781f03c1d70dfed02a8e0d18428b8fc8682
+com.android.tools:desugar_jdk_libs:2.1.4	desugar_jdk_libs-2.1.4.jar	d7604feeef3a771d5d616b68fcc2c42f516243311ea286cfd41e1962829a6d28
+com.android.tools:desugar_jdk_libs_configuration:2.1.4	desugar_jdk_libs_configuration-2.1.4.jar	5d770c1ba225c2cdf09086bf662954ae765ee481f901b02cd7b1dc3c8077c3f4
 com.google.android.material:material:1.12.0	material-1.12.0.aar	4a672941b626b9ab91ae893ed22598ea53ad69125c858c0a59fa9b90daa5cb08
 com.google.errorprone:error_prone_annotations:2.15.0	error_prone_annotations-2.15.0.jar	067047714349e7789a5bdbfad9d1c0af9f3a1eb28c55a0ee3f68e682f905c4eb
 com.google.guava:listenablefuture:1.0	listenablefuture-1.0.jar	e4ad7607e5c0477c6f890ef26a49cb8d1bb4dffb650bab4502afee64644e3069

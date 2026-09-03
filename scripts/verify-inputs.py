@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Check checked-in runtime bytes, archive pins and actual release dependency notices."""
-import argparse,hashlib,pathlib,re,zipfile,xml.etree.ElementTree as ET
+import argparse,hashlib,pathlib,re,subprocess,sys,zipfile,xml.etree.ElementTree as ET
 root=pathlib.Path(__file__).resolve().parents[1]
 p=argparse.ArgumentParser();p.add_argument('--archives',type=pathlib.Path);p.add_argument('--inventory',type=pathlib.Path);a=p.parse_args()
 def require(value,message):
@@ -35,6 +35,7 @@ for name,url,size,digest in entries:
 print('PASS: production model manifest has complete HTTPS/size/hash pins')
 if not a.archives:print('MODEL_ARCHIVE_DOWNLOAD: NOT MEASURED by this input-only gate')
 require((root/'licenses/THIRD_PARTY_NOTICES.txt').read_bytes()==(root/'app/src/main/assets/THIRD_PARTY_NOTICES.txt').read_bytes(),'packaged notices differ from reviewed notices')
+subprocess.run([sys.executable, str(root/'scripts/generate-notices.py'), '--check'], check=True)
 if a.inventory:
     require(a.inventory.is_file(),'resolved release dependency inventory missing')
     require(set(a.inventory.read_text().splitlines())==set((root/'licenses/runtime-dependencies.tsv').read_text().splitlines()),'release dependencies changed; regenerate and review licenses/notices')

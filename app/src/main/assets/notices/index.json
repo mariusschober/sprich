@@ -1,0 +1,574 @@
+[
+  {
+    "id": "sprich",
+    "name": "Sprich",
+    "version": "",
+    "license": "MIT",
+    "source": "https://github.com/mariusschober/sprich",
+    "description": "The Sprich application. Third-party code and speech models keep their own licenses.",
+    "attribution": "Copyright (c) 2026 Sprich.",
+    "documents": [
+      {
+        "title": "MIT License",
+        "path": "texts/Sprich-MIT.txt"
+      }
+    ]
+  },
+  {
+    "id": "androidx",
+    "name": "AndroidX and Jetpack Compose",
+    "version": "Multiple components",
+    "license": "Apache 2.0",
+    "source": "https://android.googlesource.com/platform/frameworks/support/",
+    "description": "Android user interface, accessibility, navigation, preferences and lifecycle components.",
+    "attribution": "The Android Open Source Project and contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      },
+      {
+        "title": "Components and versions",
+        "path": "texts/androidx-versions.txt"
+      },
+      {
+        "title": "Upstream license",
+        "path": "texts/androidx-809fa1ed2145.txt"
+      }
+    ]
+  },
+  {
+    "id": "material",
+    "name": "Material Components",
+    "version": "1.12.0",
+    "license": "Apache 2.0",
+    "source": "https://github.com/material-components/material-components-android/tree/1.12.0",
+    "description": "Android interface components and Material icons.",
+    "attribution": "Google LLC and contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "errorprone",
+    "name": "Error Prone annotations",
+    "version": "2.15.0",
+    "license": "Apache 2.0",
+    "source": "https://github.com/google/error-prone/tree/v2.15.0",
+    "description": "Annotations used by dependencies.",
+    "attribution": "Google LLC and contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "guava",
+    "name": "Guava ListenableFuture",
+    "version": "1.0",
+    "license": "Apache 2.0",
+    "source": "https://github.com/google/guava",
+    "description": "Asynchronous result interfaces used by Android libraries.",
+    "attribution": "Google LLC and contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "okhttp",
+    "name": "OkHttp",
+    "version": "4.12.0",
+    "license": "Apache 2.0 + MPL 2.0",
+    "source": "https://github.com/square/okhttp/tree/parent-4.12.0",
+    "description": "HTTPS connections for model downloads and optional personal APIs. Includes Public Suffix List data under MPL 2.0; its upstream source is https://publicsuffix.org/list/public_suffix_list.dat.",
+    "attribution": "Square, Inc. and contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      },
+      {
+        "title": "Additional notices",
+        "path": "texts/okhttp-8a9c58fbded5.txt"
+      },
+      {
+        "title": "Mozilla Public License 2.0",
+        "path": "texts/MPL-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "okio",
+    "name": "Okio",
+    "version": "3.6.0",
+    "license": "Apache 2.0",
+    "source": "https://github.com/square/okio/tree/3.6.0",
+    "description": "Buffered file and network input/output.",
+    "attribution": "Square, Inc. and contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "commons-codec",
+    "name": "Apache Commons Codec",
+    "version": "1.17.0",
+    "license": "Apache 2.0",
+    "source": "https://commons.apache.org/proper/commons-codec/",
+    "description": "Encoding utilities used by archive handling.",
+    "attribution": "The Apache Software Foundation.",
+    "documents": [
+      {
+        "title": "Upstream license",
+        "path": "texts/Apache-2.0.txt"
+      },
+      {
+        "title": "Additional notices",
+        "path": "texts/commons-codec-fc5bececcc47.txt"
+      }
+    ]
+  },
+  {
+    "id": "commons-io",
+    "name": "Apache Commons IO",
+    "version": "2.16.1",
+    "license": "Apache 2.0",
+    "source": "https://commons.apache.org/proper/commons-io/",
+    "description": "File and stream utilities.",
+    "attribution": "The Apache Software Foundation.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      },
+      {
+        "title": "Upstream license",
+        "path": "texts/commons-io-8c6db3404751.txt"
+      },
+      {
+        "title": "Additional notices",
+        "path": "texts/commons-io-67c72e54966f.txt"
+      }
+    ]
+  },
+  {
+    "id": "commons-compress",
+    "name": "Apache Commons Compress",
+    "version": "1.26.2",
+    "license": "Apache 2.0",
+    "source": "https://commons.apache.org/proper/commons-compress/",
+    "description": "Unpacking downloaded speech files.",
+    "attribution": "The Apache Software Foundation.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      },
+      {
+        "title": "Upstream license",
+        "path": "texts/commons-compress-c71d239df917.txt"
+      },
+      {
+        "title": "Additional notices",
+        "path": "texts/commons-compress-28a309fd415d.txt"
+      }
+    ]
+  },
+  {
+    "id": "commons-lang",
+    "name": "Apache Commons Lang",
+    "version": "3.14.0",
+    "license": "Apache 2.0",
+    "source": "https://commons.apache.org/proper/commons-lang/",
+    "description": "Utilities used by archive handling.",
+    "attribution": "The Apache Software Foundation.",
+    "documents": [
+      {
+        "title": "Upstream license",
+        "path": "texts/Apache-2.0.txt"
+      },
+      {
+        "title": "Additional notices",
+        "path": "texts/commons-lang-2254574ad826.txt"
+      }
+    ]
+  },
+  {
+    "id": "kotlin",
+    "name": "Kotlin",
+    "version": "1.9.10, 1.9.22, 2.2.20",
+    "license": "Apache 2.0",
+    "source": "https://github.com/JetBrains/kotlin",
+    "description": "The Kotlin language runtime.",
+    "attribution": "JetBrains s.r.o. and Kotlin contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      },
+      {
+        "title": "Components and versions",
+        "path": "texts/kotlin-versions.txt"
+      }
+    ]
+  },
+  {
+    "id": "coroutines",
+    "name": "Kotlin coroutines",
+    "version": "1.9.0",
+    "license": "Apache 2.0",
+    "source": "https://github.com/Kotlin/kotlinx.coroutines/tree/1.9.0",
+    "description": "Cancellable background work.",
+    "attribution": "JetBrains s.r.o. and Kotlin contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      },
+      {
+        "title": "Components and versions",
+        "path": "texts/coroutines-versions.txt"
+      }
+    ]
+  },
+  {
+    "id": "serialization",
+    "name": "Kotlin serialization",
+    "version": "1.7.3",
+    "license": "Apache 2.0",
+    "source": "https://github.com/Kotlin/kotlinx.serialization/tree/v1.7.3",
+    "description": "Reading and writing structured application data.",
+    "attribution": "JetBrains s.r.o. and Kotlin contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      },
+      {
+        "title": "Components and versions",
+        "path": "texts/serialization-versions.txt"
+      }
+    ]
+  },
+  {
+    "id": "annotations",
+    "name": "JetBrains annotations",
+    "version": "23.0.0",
+    "license": "Apache 2.0",
+    "source": "https://github.com/JetBrains/java-annotations/tree/23.0.0",
+    "description": "Annotations used by dependencies.",
+    "attribution": "JetBrains s.r.o. and contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "jspecify",
+    "name": "JSpecify",
+    "version": "1.0.0",
+    "license": "Apache 2.0",
+    "source": "https://github.com/jspecify/jspecify/tree/v1.0.0",
+    "description": "Nullness annotations used by dependencies.",
+    "attribution": "JSpecify contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "desugar",
+    "name": "Java compatibility library",
+    "version": "2.1.4",
+    "license": "GPL 2 with Classpath exception; Apache 2.0",
+    "source": "https://github.com/google/desugar_jdk_libs/tree/50d9c1fb3e85fa4c00161525a45484f712c1f003",
+    "description": "Java APIs used on older Android versions. The Classpath exception permits linking independent modules under their own licenses. Unmodified upstream sources, including the build files, are available at the source link. See licenses/README.md in the Sprich repository for distribution requirements.",
+    "attribution": "Oracle and/or its affiliates; Google LLC; OpenJDK contributors. Sprich does not modify this library; Android build tools select and rename the APIs required by the app.",
+    "documents": [
+      {
+        "title": "GNU GPL 2 with Classpath exception",
+        "path": "texts/desugar-LICENSE.txt"
+      },
+      {
+        "title": "OpenJDK assembly exception",
+        "path": "texts/desugar-ASSEMBLY_EXCEPTION.txt"
+      },
+      {
+        "title": "Additional licensing information",
+        "path": "texts/desugar-ADDITIONAL_LICENSE_INFO.txt"
+      },
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "sherpa",
+    "name": "sherpa-onnx speech runtime",
+    "version": "1.13.6",
+    "license": "Apache 2.0",
+    "source": "https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.6",
+    "description": "Runs speech recognition on the phone. Sprich builds the recognition-only Android runtime; unused speech synthesis and diarization are disabled.",
+    "attribution": "sherpa-onnx contributors.",
+    "documents": [
+      {
+        "title": "Apache License 2.0",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "onnx",
+    "name": "ONNX Runtime",
+    "version": "1.27.1",
+    "license": "MIT and third-party licenses",
+    "source": "https://github.com/microsoft/onnxruntime/tree/v1.27.1",
+    "description": "Executes speech models locally. The upstream third-party notice bundle is retained in full; it also describes components used by other upstream platforms.",
+    "attribution": "Copyright (c) Microsoft Corporation.",
+    "documents": [
+      {
+        "title": "MIT License",
+        "path": "texts/onnx-MIT.txt"
+      },
+      {
+        "title": "ONNX Runtime third-party notices",
+        "path": "texts/onnx-third-party-notices.txt"
+      }
+    ]
+  },
+  {
+    "id": "kaldi-native-fbank",
+    "name": "Kaldi native filterbanks",
+    "version": "1.22.3",
+    "license": "Apache 2.0",
+    "source": "https://github.com/csukuangfj/kaldi-native-fbank/tree/v1.22.3",
+    "description": "Audio feature extraction.",
+    "attribution": "",
+    "documents": [
+      {
+        "title": "License",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "kaldi-decoder",
+    "name": "Kaldi decoder",
+    "version": "0.3.0",
+    "license": "Apache 2.0",
+    "source": "https://github.com/k2-fsa/kaldi-decoder/tree/v0.3.0",
+    "description": "Speech decoding support.",
+    "attribution": "",
+    "documents": [
+      {
+        "title": "License",
+        "path": "texts/Apache-2.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "kaldifst",
+    "name": "kaldifst",
+    "version": "1.8.0",
+    "license": "Apache 2.0",
+    "source": "https://github.com/k2-fsa/kaldifst/tree/v1.8.0",
+    "description": "Finite-state tools used by the speech runtime.",
+    "attribution": "",
+    "documents": [
+      {
+        "title": "License",
+        "path": "texts/kaldifst-license.txt"
+      }
+    ]
+  },
+  {
+    "id": "openfst",
+    "name": "OpenFst",
+    "version": "1.8.5-2026-07-09",
+    "license": "Apache 2.0",
+    "source": "https://github.com/csukuangfj/openfst/tree/v1.8.5-2026-07-09",
+    "description": "Finite-state algorithms used by the speech runtime.",
+    "attribution": "",
+    "documents": [
+      {
+        "title": "License",
+        "path": "texts/openfst-license.txt"
+      }
+    ]
+  },
+  {
+    "id": "sentencepiece",
+    "name": "Simple SentencePiece",
+    "version": "0.7",
+    "license": "Apache 2.0",
+    "source": "https://github.com/pkufool/simple-sentencepiece/tree/v0.7",
+    "description": "Speech-model tokenization.",
+    "attribution": "",
+    "documents": [
+      {
+        "title": "License",
+        "path": "texts/commons-compress-c71d239df917.txt"
+      }
+    ]
+  },
+  {
+    "id": "json",
+    "name": "JSON for Modern C++",
+    "version": "3.12.0",
+    "license": "MIT",
+    "source": "https://github.com/nlohmann/json/tree/v3.12.0",
+    "description": "Structured data support inside the speech runtime.",
+    "attribution": "",
+    "documents": [
+      {
+        "title": "License",
+        "path": "texts/json-license.txt"
+      }
+    ]
+  },
+  {
+    "id": "eigen",
+    "name": "Eigen",
+    "version": "5.0.1",
+    "license": "MPL 2.0 and compatible licenses",
+    "source": "https://gitlab.com/libeigen/eigen/-/tree/5.0.1",
+    "description": "Linear algebra inside the speech runtime. Unmodified corresponding sources are available from the source link.",
+    "attribution": "Eigen contributors. Individual copyright notices are preserved in the upstream source files.",
+    "documents": [
+      {
+        "title": "README",
+        "path": "texts/eigen-COPYING.README.txt"
+      },
+      {
+        "title": "MPL2",
+        "path": "texts/MPL-2.0.txt"
+      },
+      {
+        "title": "BSD",
+        "path": "texts/eigen-COPYING.BSD.txt"
+      },
+      {
+        "title": "MINPACK",
+        "path": "texts/eigen-COPYING.MINPACK.txt"
+      },
+      {
+        "title": "APACHE",
+        "path": "texts/eigen-COPYING.APACHE.txt"
+      }
+    ]
+  },
+  {
+    "id": "kissfft",
+    "name": "Kiss FFT",
+    "version": "febd4cae",
+    "license": "BSD 3-Clause; Unlicense",
+    "source": "https://github.com/mborgerding/kissfft/tree/febd4caeed32e33ad8b2e0bb5ea77542c40f18ec",
+    "description": "Frequency analysis inside the speech runtime.",
+    "attribution": "Copyright (c) 2003–2010 Mark Borgerding.",
+    "documents": [
+      {
+        "title": "COPYING",
+        "path": "texts/kissfft-COPYING.txt"
+      },
+      {
+        "title": "BSD-3-Clause",
+        "path": "texts/kissfft-BSD-3-Clause.txt"
+      },
+      {
+        "title": "Unlicense",
+        "path": "texts/kissfft-Unlicense.txt"
+      }
+    ]
+  },
+  {
+    "id": "llvm",
+    "name": "LLVM and Android C++ runtime",
+    "version": "NDK 27.0.12077973",
+    "license": "Apache 2.0 with LLVM exceptions; additional notices",
+    "source": "https://android.googlesource.com/platform/prebuilts/clang/host/darwin-x86/",
+    "description": "Native C++ support used by Sprich and its dependencies. The complete notice distributed with the exact Android NDK toolchain is included.",
+    "attribution": "LLVM contributors and the Android Open Source Project.",
+    "documents": [
+      {
+        "title": "Complete LLVM and C++ runtime notices",
+        "path": "texts/android-ndk-27-NOTICE.txt"
+      }
+    ]
+  },
+  {
+    "id": "whisper",
+    "name": "Whisper Tiny language model",
+    "version": "Tiny · INT8 export",
+    "license": "MIT",
+    "source": "https://github.com/openai/whisper",
+    "description": "Identifies the language for Automatic mode. Downloaded separately; not included in the APK.",
+    "attribution": "Copyright (c) 2022 OpenAI. Converted to ONNX and quantized to INT8 by the sherpa-onnx project. These are adapted model files, not the original training checkpoints.",
+    "documents": [
+      {
+        "title": "MIT License",
+        "path": "texts/whisper-MIT.txt"
+      }
+    ]
+  },
+  {
+    "id": "fastconformer",
+    "name": "FastConformer speech model",
+    "version": "1.21.0 · CTC export 14288 · INT8",
+    "license": "NVIDIA NGC terms",
+    "source": "https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_multilingual_fastconformer_hybrid_large_pc_blend_eu",
+    "description": "Recognition model for Automatic mode. Downloaded separately; not included in the APK. Its model card specifies NGC terms, not the Apache license of the training or conversion code.",
+    "attribution": "NVIDIA. Converted to ONNX, limited to EN/DE/ES/FR and quantized to INT8 by sherpa-onnx. The NGC terms linked by the model card are reproduced below (retrieved 3 September 2026). Sprich does not grant additional rights to this model.",
+    "documents": [
+      {
+        "title": "NVIDIA Technology Access Terms of Use",
+        "path": "texts/NVIDIA-NGC-terms-2025-04-07.txt"
+      }
+    ]
+  },
+  {
+    "id": "canary",
+    "name": "Canary speech model",
+    "version": "180M Flash · INT8 export",
+    "license": "CC BY 4.0",
+    "source": "https://huggingface.co/nvidia/canary-180m-flash",
+    "description": "Recognition model for Accurate mode. Downloaded separately; not included in the APK.",
+    "attribution": "NVIDIA, Canary 180M Flash. Converted to ONNX and quantized to INT8 by sherpa-onnx. The model has been adapted from the original checkpoint. License: https://creativecommons.org/licenses/by/4.0/. No endorsement by NVIDIA is implied.",
+    "documents": [
+      {
+        "title": "Creative Commons Attribution 4.0 International",
+        "path": "texts/CC-BY-4.0.txt"
+      }
+    ]
+  },
+  {
+    "id": "silero",
+    "name": "Silero speech detector",
+    "version": "16 kHz ONNX model",
+    "license": "MIT",
+    "source": "https://github.com/snakers4/silero-vad",
+    "description": "Detects when speech begins and ends. This small model is included in Sprich and runs locally. The exact model asset is pinned in docs/MODELS.md in the Sprich repository.",
+    "attribution": "Copyright (c) 2020–present Silero Team. ONNX asset distributed by the sherpa-onnx project.",
+    "documents": [
+      {
+        "title": "MIT License",
+        "path": "texts/silero-MIT.txt"
+      }
+    ]
+  }
+]

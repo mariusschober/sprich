@@ -179,7 +179,9 @@ tasks.register("writeReleaseDependencyInventory") {
     doLast {
         val output = layout.buildDirectory.file("reports/release-runtime-dependencies.tsv").get().asFile
         output.parentFile.mkdirs()
-        output.writeText(configurations.getByName("releaseRuntimeClasspath").resolvedConfiguration.resolvedArtifacts
+        output.writeText(listOf("releaseRuntimeClasspath", "coreLibraryDesugaring")
+            .flatMap { configurations.getByName(it).resolvedConfiguration.resolvedArtifacts }
+            .distinctBy { it.moduleVersion.id.toString() }
             .sortedBy { it.moduleVersion.id.toString() }.joinToString("\n") {
                 val digest = MessageDigest.getInstance("SHA-256").digest(it.file.readBytes()).joinToString("") { byte -> "%02x".format(byte) }
                 "${it.moduleVersion.id}\t${it.file.name}\t$digest"
