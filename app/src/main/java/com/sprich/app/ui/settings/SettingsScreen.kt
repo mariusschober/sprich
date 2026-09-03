@@ -41,6 +41,7 @@ import kotlinx.coroutines.launch
     val language = config?.speechLanguage ?: SpeechLanguage.Auto
     var advanced by rememberSaveable { mutableStateOf(false) }
     var about by rememberSaveable { mutableStateOf(false) }
+    var gestures by rememberSaveable { mutableStateOf(false) }
     var clearConfirm by remember { mutableStateOf(false) }
     val automatic = language is SpeechLanguage.Auto
     val apiVoice = config?.transcriptionMode == TranscriptionMode.API_PRIMARY
@@ -76,8 +77,10 @@ import kotlinx.coroutines.launch
             }
             SettingsGroup(stringResource(R.string.keyboard_title)) {
                 SettingsToggle(stringResource(R.string.instant_dictation), stringResource(R.string.instant_description), config?.instantMode == true) { scope.launch { prefs.setInstantMode(it) } }
+                SettingsToggle(stringResource(R.string.whisper_mode), stringResource(R.string.whisper_description), config?.whisperMode == true) { scope.launch { prefs.setWhisperMode(it) } }
                 SettingsToggle(stringResource(R.string.haptics), stringResource(R.string.haptics_description), config?.hapticsEnabled != false) { scope.launch { prefs.setHaptics(it) } }
-                Text(stringResource(R.string.gesture_help), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = { gestures = !gestures }) { Text(stringResource(if (gestures) R.string.hide_gesture_help else R.string.bar_gestures)) }
+                if (gestures) Text(stringResource(R.string.gesture_help), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             SettingsGroup(stringResource(R.string.privacy_about)) {
                 Text(stringResource(R.string.privacy_short), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

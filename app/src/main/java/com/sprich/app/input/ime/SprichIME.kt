@@ -229,17 +229,18 @@ class SprichIME : InputMethodService() {
     private val sharedHttpClient get() = ApiHttp.client
 
     private var transcriptionCoordinator: TranscriptionCoordinator? = null
-    // Swipe editing state: axis-locked, thresholds, one mutation per gesture (minimal 3-gesture release)
-    private var downX = 0f
-    private var downY = 0f
-    private var isSwipeDelete = false
-    private var isSwipeUndo = false
-    private var touchAxisLocked: String? = null // "h" or "v"
-    private val touchSlop by lazy { android.view.ViewConfiguration.get(this).scaledTouchSlop }
-    private val swipeDeleteThreshold by lazy { (48 * resources.displayMetrics.density) } // 48dp per closure sprint
-    private val swipeSwitchThreshold by lazy { (56 * resources.displayMetrics.density) } // 56dp, empty-area only
-    private var outerViewRef: View? = null
-    private var pillViewRef: View? = null
+    private var deletionGesture: EditorActionController.DeletionGesture? = null
+    private var gesturePreview = BarGestureRecognizer.Preview.NONE
+    private var statusBeforeGesture: CharSequence? = null
+    private var hintBeforeGesture: CharSequence? = null
+    private var pillViewRef: VoiceGestureBar? = null
+    private var whisperBadge: TextView? = null
+    private var undoButton: View? = null
+    private var dismissalGeneration = 0L
+    private var dismissing = false
+    private var whisperChangeJob: Job? = null
+    @Volatile private var captureWhisperMode = false
+    private val whisperMode get() = runtimeConfig?.whisperMode == true
     // Liquid visual state driven by mic RMS
     @Volatile private var lastRms = 0f
     private var lastVisualUpdateElapsed = 0L
@@ -292,8 +293,15 @@ class SprichIME : InputMethodService() {
             scope.launch {
                 try {
                     prefs.runtimeConfigSnapshot.collect { snap ->
+                        val profileChanged = runtimeConfig?.let { it.whisperMode != snap.whisperMode } == true
+                        val resume = profileChanged && isDictationRunning() && isInputViewShown
                         runtimeConfig = snap
                         runtimeConfigFlow.value = snap
+                        if (profileChanged) {
+                            if (isDictationRunning()) stopDictation(StopReason.CURSOR_MOVED)
+                            refreshSessionUi()
+                            if (resume) startJob = scope.launch { startDictationIfNeeded() }
+                        }
                         Log.i("SprichIME", "runtimeConfig snapshot $snap")
                     }
                 } catch (e: Exception) { Log.w("SprichIME", "runtimeConfig collect fail", e) }
@@ -308,26 +316,7 @@ class SprichIME : InputMethodService() {
 
             // Observe session for UI — update dot/text without Compose
             scope.launch {
-                session.state.collect { state ->
-                    val active = state is SessionState.Preparing || state is SessionState.Listening ||
-                        state is SessionState.Speech || state is SessionState.Finalizing
-                    when (state) {
-                        is SessionState.Preparing -> {
-                            updateImeUi(true)
-                            statusText?.text = getString(com.sprich.app.R.string.ime_preparing)
-                            (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_loading_hint)
-                        }
-                        is SessionState.Finalizing -> {
-                            updateImeUi(true)
-                            if (!utteranceActive.get()) {
-                                statusText?.text = getString(com.sprich.app.R.string.ime_transcribing)
-                                (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_writing_hint)
-                            }
-                        }
-                        is SessionState.Error -> Unit // failSession owns the actionable message.
-                        else -> updateImeUi(active)
-                    }
-                }
+                session.state.collect { refreshSessionUi() }
             }
         } catch (e: Exception) {
             Log.e("SprichIME", "onCreate failed", e)
@@ -340,6 +329,7 @@ class SprichIME : InputMethodService() {
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onCreateInputView(): View {
+        cancelBarGesture()
         return try {
             val dark = isDark()
             val imeBackground = Color.parseColor(if (dark) "#151315" else "#FFF8F3")
@@ -373,7 +363,7 @@ class SprichIME : InputMethodService() {
                 colors = (if (dark) listOf("#392832", "#2B2531", "#242B35") else listOf("#FFF1E6", "#FBE4EC", "#E9EFFF")).map(Color::parseColor).toIntArray()
                 setStroke(dp(1), if (dark) Color.parseColor("#6A4E5C") else Color.parseColor("#E9C9D5"))
             }
-            val pill = LinearLayout(this).apply {
+            val pill = VoiceGestureBar(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 background = pillBg
@@ -468,6 +458,16 @@ class SprichIME : InputMethodService() {
             glowView = glow
             wave.addView(glow)
             wave.addView(liquidBar)
+            whisperBadge = TextView(this).apply {
+                text = getString(com.sprich.app.R.string.whisper_badge)
+                setTextColor(if (dark) Color.parseColor("#B6E5DA") else Color.parseColor("#245C51"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setPadding(dp(8), 0, dp(8), dp(3))
+                visibility = if (whisperMode) View.VISIBLE else View.GONE
+            }
+            textBlock.addView(whisperBadge)
             textBlock.addView(status)
             textBlock.addView(hint)
             textBlock.addView(wave)
@@ -493,209 +493,41 @@ class SprichIME : InputMethodService() {
             }
             auraView = aura
 
-            // Minimal gesture language: pill swipe left→delete word, right→undo, tap→dictation. One mutation per gesture, reversible.
-            // Outer empty-area swipe up (outside pill, above nav inset) → previous keyboard then next fallback.
-            outerViewRef = outer
             pillViewRef = pill
-            // Pill: only horizontal delete/undo + tap, no vertical, no repeat, no newline
-            var pillTouchActive = false
-            pill.setOnTouchListener { v, ev ->
-                if (getSystemService(android.view.accessibility.AccessibilityManager::class.java).isTouchExplorationEnabled) return@setOnTouchListener false
-                if (ev.pointerCount != 1 || ev.actionMasked == android.view.MotionEvent.ACTION_POINTER_UP) {
-                    pillTouchActive = false
-                    touchAxisLocked = null
-                    return@setOnTouchListener true
-                }
-                when (ev.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> {
-                        pillTouchActive = true
-                        downX = ev.x; downY = ev.y
-                        isSwipeDelete = false; isSwipeUndo = false
-                        touchAxisLocked = null
-                        // Immediate non-destructive press visual allowed
-                        try {
-                            v.animate().cancel()
-                            v.scaleX = 1f; v.scaleY = 1f
-                            v.animate().scaleX(1.02f).scaleY(1.02f).setDuration(80).setInterpolator(android.view.animation.DecelerateInterpolator()).withEndAction {
-                                v.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
-                            }.start()
-                        } catch (_: Exception) {}
-                        true
-                    }
-                    android.view.MotionEvent.ACTION_MOVE -> {
-                        val dx = ev.x - downX
-                        val dy = ev.y - downY
-                        val absDx = kotlin.math.abs(dx); val absDy = kotlin.math.abs(dy)
-                        if (touchAxisLocked == null && (absDx > touchSlop || absDy > touchSlop)) {
-                            touchAxisLocked = if (absDx > absDy * 1.4f) "h" else if (absDy > absDx * 1.4f) "v" else null
-                        }
-                        // No irreversible mutation on MOVE — only lock axis
-                        true
-                    }
-                    android.view.MotionEvent.ACTION_UP -> {
-                        val accepted = pillTouchActive
-                        pillTouchActive = false
-                        if (!accepted) return@setOnTouchListener true
-                        val dx = ev.x - downX
-                        val dy = ev.y - downY
-                        val absDx = kotlin.math.abs(dx); val absDy = kotlin.math.abs(dy)
-                        val axis = touchAxisLocked
-                        var handled = false
-                        // One exactly one action if threshold/axis passes
-                        if (axis == "h") {
-                            if (dx <= -swipeDeleteThreshold && absDx >= 1.4f * absDy) {
-                                isSwipeDelete = true
-                                val ok = deleteLastWord() // controller handles password + safe read + haptic only on success
-                                if (ok) {
-                                    try {
-                                        pill.animate().cancel()
-                                        pill.scaleX = 0.97f; pill.scaleY = 0.97f
-                                        pill.animate().scaleX(1f).scaleY(1f).setDuration(160).start()
-                                    } catch (_: Exception) {}
-                                }
-                                handled = true
-                            } else if (dx >= swipeDeleteThreshold && absDx >= 1.4f * absDy) {
-                                isSwipeUndo = true
-                                val ok = undoLastDelete()
-                                handled = true
-                            }
-                        }
-                        // Reset state
-                        isSwipeDelete = false; isSwipeUndo = false; touchAxisLocked = null
-                        if (handled) {
-                            true
-                        } else {
-                            // Check if was tap (no axis or small movement)
-                            if (absDx < touchSlop && absDy < touchSlop) {
-                                try { v.performClick() } catch (_: Exception) {}
-                            }
-                            // Swipe-up on pill itself is intentionally NOT handled — must be outside pill
-                            true
-                        }
-                    }
-                    android.view.MotionEvent.ACTION_CANCEL -> {
-                        pillTouchActive = false
-                        isSwipeDelete = false; isSwipeUndo = false; touchAxisLocked = null
-                        true
-                    }
-                    else -> false
-                }
-            }
-            // Outer empty-area swipe up: must start inside Sprich's usable IME view, outside central pill, above navigation inset
-            var outerDownX = 0f
-            var outerDownY = 0f
-            var outerAxis: String? = null
-            var outerIsSwitchCandidate = false
-            outer.setOnTouchListener { _, ev ->
-                if (getSystemService(android.view.accessibility.AccessibilityManager::class.java).isTouchExplorationEnabled) return@setOnTouchListener false
-                if (ev.pointerCount != 1 || ev.actionMasked == android.view.MotionEvent.ACTION_POINTER_UP) {
-                    outerIsSwitchCandidate = false
-                    outerAxis = null
-                    return@setOnTouchListener false
-                }
-                // If touch started inside pill bounds, let pill handle it — do not also treat as outer switch
-                val pillBounds = android.graphics.Rect()
-                try { pill.getHitRect(pillBounds) } catch (_: Exception) {}
-                val isInsidePill = { x: Float, y: Float ->
-                    try {
-                        // Transform pill rect to outer coordinates: pill is child of outer, so its hit rect is in outer's coord
-                        pillBounds.contains(x.toInt(), y.toInt())
-                    } catch (_: Exception) { false }
-                }
-                when (ev.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> {
-                        // Only consider if start outside pill and above navigation inset
-                        if (isInsidePill(ev.x, ev.y)) {
-                            outerIsSwitchCandidate = false
-                            outerAxis = null
-                            false // let pill get it
-                        } else {
-                            // Check above navigation inset — use window insets bottom
-                            val navInset = try {
-                                androidx.core.view.ViewCompat.getRootWindowInsets(outer)?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
-                            } catch (_: Exception) { 0 }
-                            // Require start at least navInset+12dp above bottom (pill padding already accounts, but empty area must be usable)
-                            // Simplified: if y is within 48dp of bottom edge (nav area), ignore
-                            val thresholdFromBottom = navInset + dp(12)
-                            val outerHeight = outer.height.takeIf { it > 0 } ?: 200
-                            if (ev.y > outerHeight - thresholdFromBottom) {
-                                outerIsSwitchCandidate = false
-                                false
-                            } else {
-                                outerDownX = ev.x; outerDownY = ev.y
-                                outerAxis = null
-                                outerIsSwitchCandidate = true
-                                true
-                            }
-                        }
-                    }
-                    android.view.MotionEvent.ACTION_MOVE -> {
-                        if (!outerIsSwitchCandidate) return@setOnTouchListener false
-                        val dx = ev.x - outerDownX
-                        val dy = ev.y - outerDownY
-                        val absDx = kotlin.math.abs(dx); val absDy = kotlin.math.abs(dy)
-                        if (outerAxis == null && (absDx > touchSlop || absDy > touchSlop)) {
-                            outerAxis = if (absDx > absDy * 1.4f) "h" else if (absDy > absDx * 1.4f) "v" else null
-                        }
-                        true
-                    }
-                    android.view.MotionEvent.ACTION_UP -> {
-                        if (!outerIsSwitchCandidate) return@setOnTouchListener false
-                        val dx = ev.x - outerDownX
-                        val dy = ev.y - outerDownY
-                        val absDx = kotlin.math.abs(dx); val absDy = kotlin.math.abs(dy)
-                        val wasSwitch = outerAxis == "v" && dy <= -swipeSwitchThreshold && absDy >= 1.4f * absDx
-                        outerIsSwitchCandidate = false
-                        outerAxis = null
-                        if (wasSwitch) {
-                            // One irreversible switch — prefer previous IME, then next fallback with token
-                            val switched = try { switchToPreviousKeyboard() } catch (_: Exception) { false }
-                            val ok = if (switched) true else try { switchToNextKeyboardCompat() } catch (_: Exception) { false }
-                            if (!ok) {
-                                // No other keyboard enabled — no mutation, show hint
-                                try {
-                                    android.widget.Toast.makeText(this@SprichIME, getString(com.sprich.app.R.string.ime_no_keyboard), android.widget.Toast.LENGTH_SHORT).show()
-                                } catch (_: Exception) {}
-                            } else {
-                                // Haptic only after succeeds, one per action
-                                vibrateTick()
-                                try {
-                                    pill.animate().cancel()
-                                    pill.scaleX = 0.98f; pill.scaleY = 0.98f
-                                    pill.animate().scaleX(1f).scaleY(1f).setDuration(180).start()
-                                } catch (_: Exception) {}
-                            }
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    android.view.MotionEvent.ACTION_CANCEL -> {
-                        outerIsSwitchCandidate = false
-                        outerAxis = null
-                        false
-                    }
-                    else -> false
-                }
-            }
+            pill.onBeginDeletion = { beginGestureDeletion() }
+            pill.onAction = { performBarAction(it) }
+            pill.onPreview = { showGesturePreview(it) }
+            pill.onFinishGesture = { deletionGesture?.cancel(); deletionGesture = null }
+            pill.setOnLongClickListener { openSprichSettings(); true }
+
             // TalkBack receives the current state and one state-correct click action.
             androidx.core.view.ViewCompat.setAccessibilityDelegate(pill, object : androidx.core.view.AccessibilityDelegateCompat() {
                 override fun onInitializeAccessibilityNodeInfo(host: View, info: androidx.core.view.accessibility.AccessibilityNodeInfoCompat) {
                     super.onInitializeAccessibilityNodeInfo(host, info)
                     info.className = "android.widget.Button"
-                    info.contentDescription = "${status.text}. ${hint.text}"
+                    info.contentDescription = (if (whisperMode) getString(com.sprich.app.R.string.whisper_mode) + ". " else "") + "${status.text}. ${hint.text}"
                     info.removeAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK)
                     if (!isPasswordField) {
                         info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(
                             android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK,
                             getString(when { tapCancelsWork() -> com.sprich.app.R.string.cancel; isDictationRunning() -> com.sprich.app.R.string.ime_stop_action; else -> com.sprich.app.R.string.ime_start_action })))
-                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_delete_word, getString(com.sprich.app.R.string.ime_delete_action)))
+                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_delete_word, getString(com.sprich.app.R.string.ime_delete_unit_preview)))
+                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_delete_phrase, getString(com.sprich.app.R.string.ime_delete_sentence_preview)))
+                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_whisper_mode, getString(if (whisperMode) com.sprich.app.R.string.ime_whisper_off_action else com.sprich.app.R.string.ime_whisper_on_action)))
                         if (editorActionController.historySize() > 0) info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_undo_delete, getString(com.sprich.app.R.string.ime_undo_action)))
                     }
+                    info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_switch_keyboard, getString(com.sprich.app.R.string.switch_keyboard)))
+                    info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_hide_keyboard, getString(com.sprich.app.R.string.ime_hide_action)))
+                    info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_open_settings, getString(com.sprich.app.R.string.ime_settings_action)))
                 }
                 override fun performAccessibilityAction(host: View, action: Int, args: android.os.Bundle?): Boolean = when (action) {
-                    com.sprich.app.R.id.action_delete_word -> deleteLastWord()
+                    com.sprich.app.R.id.action_delete_word -> deleteOnce(EditorActionController.Unit.WORD_OR_SYMBOL)
+                    com.sprich.app.R.id.action_delete_phrase -> deleteOnce(EditorActionController.Unit.PHRASE)
                     com.sprich.app.R.id.action_undo_delete -> undoLastDelete()
+                    com.sprich.app.R.id.action_whisper_mode -> toggleWhisperMode()
+                    com.sprich.app.R.id.action_switch_keyboard -> switchToTypingKeyboard()
+                    com.sprich.app.R.id.action_hide_keyboard -> { dismissKeyboard(); true }
+                    com.sprich.app.R.id.action_open_settings -> { openSprichSettings(); true }
                     else -> super.performAccessibilityAction(host, action, args)
                 }
             })
@@ -707,11 +539,21 @@ class SprichIME : InputMethodService() {
                 theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, backgroundAttr, true)
                 setBackgroundResource(backgroundAttr.resourceId)
                 contentDescription = getString(com.sprich.app.R.string.switch_keyboard)
-                setOnClickListener {
-                    stopDictation(StopReason.WINDOW_HIDDEN)
-                    (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).showInputMethodPicker()
-                }
+                setOnClickListener { switchToTypingKeyboard() }
             }
+            val undo = android.widget.ImageButton(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+                setImageResource(com.sprich.app.R.drawable.ic_undo)
+                imageTintList = android.content.res.ColorStateList.valueOf(statusColor)
+                val backgroundAttr = android.util.TypedValue()
+                theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, backgroundAttr, true)
+                setBackgroundResource(backgroundAttr.resourceId)
+                contentDescription = getString(com.sprich.app.R.string.ime_undo_action)
+                visibility = View.GONE
+                setOnClickListener { undoLastDelete() }
+            }
+            undoButton = undo
+            pill.tapTargets = listOf(undo, switchButton)
 
             pillBgRef = pillBg
             // Allow glow/aura to draw beyond bounds
@@ -722,6 +564,7 @@ class SprichIME : InputMethodService() {
             textBlock.clipChildren = false
             textBlock.clipToPadding = false
             pill.addView(textBlock)
+            pill.addView(undo)
             pill.addView(switchButton)
             outer.addView(aura)   // behind the pill
             outer.addView(pill)
@@ -777,6 +620,7 @@ class SprichIME : InputMethodService() {
     }
 
     private fun renderRemoteProgress() {
+        if (gesturePreview != BarGestureRecognizer.Preview.NONE) return
         val progress = remotePreview ?: return
         if (remotePreviewId != currentUtteranceToken?.utteranceId || isPasswordField) return
         val hint = statusText?.tag as? TextView
@@ -821,7 +665,24 @@ class SprichIME : InputMethodService() {
         remotePreview = null; remotePreviewId = null
     }
 
+    private fun refreshSessionUi() {
+        if (!::session.isInitialized || dismissing || gesturePreview != BarGestureRecognizer.Preview.NONE) return
+        val state = session.state.value
+        if (state is SessionState.Error) return
+        updateImeUi(isDictationRunning())
+        if (state is SessionState.Preparing) {
+            statusText?.text = getString(com.sprich.app.R.string.ime_preparing)
+            (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_loading_hint)
+        } else if (state is SessionState.Finalizing && !utteranceActive.get()) {
+            statusText?.text = getString(com.sprich.app.R.string.ime_transcribing)
+            (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_writing_hint)
+        }
+    }
+
     private fun updateImeUi(isListening: Boolean) {
+        if (dismissing) return
+        updateEditingControls()
+        if (gesturePreview != BarGestureRecognizer.Preview.NONE) return
         try {
             val dark = isDark()
             val hint = statusText?.tag as? TextView
@@ -839,7 +700,7 @@ class SprichIME : InputMethodService() {
                 return
             }
             if (isListening) {
-                statusText?.text = getString(com.sprich.app.R.string.ime_listening)
+                statusText?.text = getString(if (whisperMode) com.sprich.app.R.string.ime_whisper_listening else com.sprich.app.R.string.ime_listening)
                 hint?.text = if (apiHint) getString(com.sprich.app.R.string.ime_cloud_listening) else getString(com.sprich.app.R.string.ime_stop_hint)
                 statusText?.setTextColor(statusColor)
                 micContainer?.contentDescription = if (apiHint) getString(com.sprich.app.R.string.ime_cloud_stop) else getString(com.sprich.app.R.string.ime_stop_action)
@@ -857,7 +718,7 @@ class SprichIME : InputMethodService() {
                 startVisualLane()
             } else {
                 stopVisualLane()
-                statusText?.text = getString(com.sprich.app.R.string.ime_start)
+                statusText?.text = getString(if (whisperMode) com.sprich.app.R.string.ime_whisper_start else com.sprich.app.R.string.ime_start)
                 hint?.text = getString(when { apiHint -> com.sprich.app.R.string.ime_api_idle_hint; runtimeConfig?.refinementMode != null && runtimeConfig?.refinementMode != RefinementMode.OFF -> com.sprich.app.R.string.ime_cleanup_idle_hint; else -> com.sprich.app.R.string.ime_idle_hint })
                 statusText?.setTextColor(statusColor)
                 micContainer?.contentDescription = getString(com.sprich.app.R.string.ime_start)
@@ -946,11 +807,13 @@ class SprichIME : InputMethodService() {
     }
 
     private fun cancelForEditorChange() {
+        cancelBarGesture()
         stopDictation(StopReason.CURSOR_MOVED)
         editorActionController.clearHistory()
         editorActionController.clearSprichInsertion()
         ownedSelections.clear()
         editorAuthority = null
+        updateEditingControls()
     }
 
     override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int, candidatesStart: Int, candidatesEnd: Int) {
@@ -970,6 +833,8 @@ class SprichIME : InputMethodService() {
     override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
         try {
             super.onStartInput(info, restarting)
+            cancelBarGesture()
+            resetBarMotion()
             resultNotice = null
             stopDictation(if (restarting) StopReason.INPUT_RESTARTED else StopReason.FIELD_LOST)
             val newFieldId = "field_${fieldGeneration.incrementAndGet()}"
@@ -986,7 +851,7 @@ class SprichIME : InputMethodService() {
             // Password early exit must clear deletion/undo history, cancel gesture state, discard preview, invalidate editor ownership BEFORE return
             if (isPasswordField) {
                 try { editorActionController.onPasswordFieldFocused() } catch (_: Exception) {}
-                try { stopDeleteRepeat() } catch (_: Exception) {}
+                try { cancelBarGesture() } catch (_: Exception) {}
                 try { composition.discardPartial(currentInputConnection) } catch (_: Exception) {}
                 try { activeUtterance = null } catch (_: Exception) {}
                 Log.i("SprichIME", "password field, silent — cleared editor history/gesture")
@@ -1012,6 +877,8 @@ class SprichIME : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        cancelBarGesture()
+        resetBarMotion()
         updateImeUi(isDictationRunning())
         if (isPassword(info)) return
         startJob?.cancel()
@@ -1028,12 +895,15 @@ class SprichIME : InputMethodService() {
 
     override fun onWindowHidden() {
         super.onWindowHidden()
+        cancelBarGesture()
+        resetBarMotion()
         try { stopVisualLane() } catch (_: Exception) {}
         try { stopDictation(StopReason.WINDOW_HIDDEN) } catch (_: Exception) {}
     }
 
     override fun onFinishInput() {
         try {
+            cancelBarGesture()
             // FIELD_LOST must discard speculative partial — never commit it
             try { composition.discardPartial(currentInputConnection) } catch (_: Exception) {}
             // FIELD_LOST must make every old callback permanently unable to insert.
@@ -1047,6 +917,7 @@ class SprichIME : InputMethodService() {
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
+        cancelBarGesture()
         stopDictation(StopReason.WINDOW_HIDDEN)
         try { stopVisualLane() } catch (_: Exception) {}
         super.onFinishInputView(finishingInput)
@@ -1055,6 +926,8 @@ class SprichIME : InputMethodService() {
     @Volatile private var cleanupScope: kotlinx.coroutines.CoroutineScope? = null
 
     override fun onDestroy() {
+        cancelBarGesture()
+        resetBarMotion()
         val t0 = android.os.SystemClock.elapsedRealtime()
         // Synchronous cheap invalidation — no runBlocking on main, ≈ negligible wall time
         try { startJob?.cancel() } catch (_: Exception) {}
@@ -1262,7 +1135,7 @@ class SprichIME : InputMethodService() {
                 )
                 return
             }
-            if (requiresLocalLoad) speechPresence.prepare()
+            if (requiresLocalLoad) speechPresence.prepare(snapAtStart.whisperMode)
             if (generation != sessionGeneration.get()) return
             // Ensure coordinator exists
             if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
@@ -1272,7 +1145,8 @@ class SprichIME : InputMethodService() {
             latency.mark("audioStartRequested")
             lastUtteranceEndSample = 0L
             composition.reset()
-            vad.reset()
+            captureWhisperMode = snapAtStart.whisperMode
+            vad.configureWhisperMode(captureWhisperMode)
             lastVadState = Vad.State.SILENCE
             utteranceActive.set(false)
             endpointPending.set(false)
@@ -1301,6 +1175,7 @@ class SprichIME : InputMethodService() {
 
             val started = try {
                 audio.startWithOffset(
+                    whisperMode = captureWhisperMode,
                     onChunkWithOffset = { samples, offset, length, timestampNanos, rms ->
                         handleAudioChunk(generation, samples, offset, length, timestampNanos, rms)
                     },
@@ -1346,6 +1221,8 @@ class SprichIME : InputMethodService() {
     // Hot-path: single RMS, zero extra PCM allocation (reuses readBuf), offset/length ownership
     private fun handleAudioChunk(generation: Long, samples: ShortArray, offset: Int, length: Int, timestampNanos: Long, precomputedRms: Float) {
         if (generation != sessionGeneration.get() || !session.requireActive()) { staleCallbackDrops++; return }
+        // A changed profile is applied by restarting capture, never to the old prebuffer.
+        if (runtimeConfig?.whisperMode != captureWhisperMode) return
         try {
             pipelineChunkCount++
             pipelineSampleCount += length
@@ -1901,6 +1778,7 @@ class SprichIME : InputMethodService() {
                                     protectedTerms = relevantTerms,
                                     context = plan.fieldContext,
                                     promptVersion = rp.config.promptVersion,
+                                    whisperMode = plan.whisperMode,
                                 )
                                 val deadlineMs = rp.config.deadlineMs
                                 val refinedResult = try {
@@ -2349,74 +2227,32 @@ class SprichIME : InputMethodService() {
         }
     }
 
-    @Suppress("NewApi")
-    private fun switchToNextKeyboard() {
-        // Legacy wrapper — delegates to compat that returns bool
-        switchToNextKeyboardCompat()
-    }
-
-    private fun switchToNextKeyboardCompat(): Boolean {
-        // Prefer previous IME (restores previous keyboard), fallback to next
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= 28) {
-                val previous = try { switchToPreviousInputMethod() } catch (_: Exception) { false }
-                if (previous) {
-                    Log.i("SprichIME", "switchToPreviousInputMethod success")
-                    return true
+    private fun switchToTypingKeyboard(): Boolean {
+        cancelBarGesture()
+        stopDictation(StopReason.WINDOW_HIDDEN)
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+        val choices = imm.enabledInputMethodList.filter { method ->
+            method.packageName != packageName && (method.subtypeCount == 0 ||
+                (0 until method.subtypeCount).any { method.getSubtypeAt(it).mode == "keyboard" && !method.getSubtypeAt(it).isAuxiliary })
+        }
+        val switched = runCatching {
+            if (choices.size == 1) {
+                switchInputMethod(choices.single().id)
+                true
+            } else if (choices.isNotEmpty()) {
+                if (android.os.Build.VERSION.SDK_INT >= 28) switchToPreviousInputMethod()
+                else {
+                    @Suppress("DEPRECATION")
+                    val token = window?.window?.attributes?.token
+                    token != null && imm.switchToLastInputMethod(token)
                 }
-            } else {
-                // API 26-27 token-based — use window token via InputMethodService window
-                try {
-                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                    val w = (this as? android.inputmethodservice.InputMethodService)?.window?.window
-                    val token = w?.attributes?.token
-                    if (token != null) {
-                        val ok = try { imm.switchToLastInputMethod(token) } catch (_: Exception) { false }
-                        if (ok) {
-                            Log.i("SprichIME", "switchToLastInputMethod (token) success")
-                            return true
-                        }
-                    }
-                } catch (_: Exception) {}
-            }
-        } catch (_: Exception) {}
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= 28) {
-                val next = try { switchToNextInputMethod(false) } catch (_: Exception) { false }
-                if (next) {
-                    Log.i("SprichIME", "switchToNextInputMethod success")
-                    return true
-                }
-            } else {
-                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                val w2 = (this as? android.inputmethodservice.InputMethodService)?.window?.window
-                val token = w2?.attributes?.token
-                if (token != null) {
-                    val ok = try { imm.switchToNextInputMethod(token, false) } catch (_: Exception) { false }
-                    if (ok) {
-                        Log.i("SprichIME", "switchToNextInputMethod (token) success")
-                        return true
-                    }
-                }
-            }
-        } catch (_: Exception) {}
+            } else false
+        }.getOrDefault(false)
+        if (switched) { vibrateTick(); return true }
+        // The picker is the safe fallback when Android has no remembered typing keyboard.
+        imm.showInputMethodPicker()
+        if (choices.isEmpty()) android.widget.Toast.makeText(this, com.sprich.app.R.string.ime_no_keyboard, android.widget.Toast.LENGTH_SHORT).show()
         return false
-    }
-
-    @Suppress("NewApi")
-    private fun switchToPreviousKeyboard(): Boolean {
-        return try {
-            if (android.os.Build.VERSION.SDK_INT >= 28) {
-                val ok = switchToPreviousInputMethod()
-                if (ok) Log.i("SprichIME", "switchToPreviousKeyboard success")
-                ok
-            } else {
-                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                val w = (this as? android.inputmethodservice.InputMethodService)?.window?.window
-                val token = w?.attributes?.token ?: return false
-                try { imm.switchToLastInputMethod(token) } catch (_: Exception) { false }
-            }
-        } catch (_: Exception) { false }
     }
 
     private fun vibrateTick() {
@@ -2454,51 +2290,144 @@ class SprichIME : InputMethodService() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    // ---- Swipe-to-delete editing — delegated to EditorActionController (single owner) ----
+    // The gesture owns the editor anchor. Each held repeat must earn a new anchor after its one mutation.
+    private fun beginGestureDeletion() {
+        if (isDictationRunning() || audio.isActive() || queueDepth.get() > 0) stopDictation(StopReason.CURSOR_MOVED)
+        deletionGesture?.cancel()
+        deletionGesture = editorActionController.beginDeletion(currentInputConnection, currentFieldId, fieldGeneration.get(), isPasswordField || isPassword(currentInputEditorInfo))
+    }
 
-    private fun deleteLastWord(): Boolean {
-        if (isDictationRunning()) stopDictation(StopReason.CURSOR_MOVED)
-        editorAuthority = EditorSnapshot.read(currentInputConnection)
-        // Password / selection / safe-read checks inside controller; zero mutation if cannot read
-        val ic = currentInputConnection
-        // Must independently check current field policy (password) even if isPasswordField stale
-        val isPass = isPasswordField || isPassword(currentInputEditorInfo)
-        if (isPass) {
-            Log.i("SprichIME", "deleteLastWord blocked password field")
-            try { editorActionController.onPasswordFieldFocused() } catch (_: Exception) {}
-            return false
-        }
+    private fun deleteOnce(unit: EditorActionController.Unit): Boolean {
+        beginGestureDeletion()
+        return try { performDeletion(unit) } finally { deletionGesture?.cancel(); deletionGesture = null }
+    }
+
+    private fun performDeletion(unit: EditorActionController.Unit): Boolean {
+        val gesture = deletionGesture ?: return false
+        val ic = currentInputConnection ?: return false
         val ok = try {
-            ic?.beginBatchEdit()
-            try { composition.discardPartial(ic) } catch (_: Exception) {}
-            val res = editorActionController.deletePreviousWord(ic, currentFieldId, fieldGeneration.get(), isPass)
-            ic?.endBatchEdit()
-            res
-        } catch (_: Exception) { try { ic?.endBatchEdit() } catch (_: Exception) {}; false }
-        if (ok) noteOwnEditorChange(true)
-        // Haptic only after meaningful action actually succeeds, ≤ one per user action
-        if (ok) vibrateTick()
+            ic.beginBatchEdit()
+            editorActionController.deleteStep(gesture, unit, ic, currentFieldId, fieldGeneration.get(), isPasswordField || isPassword(currentInputEditorInfo))
+        } catch (_: Exception) { gesture.cancel(); false }
+        finally { runCatching { ic.endBatchEdit() } }
+        if (ok) { noteOwnEditorChange(true); vibrateTick() }
+        updateEditingControls()
         return ok
     }
 
     private fun undoLastDelete(): Boolean {
         if (isDictationRunning()) stopDictation(StopReason.CURSOR_MOVED)
-        editorAuthority = EditorSnapshot.read(currentInputConnection)
-        val ic = currentInputConnection
-        val isPass = isPasswordField || isPassword(currentInputEditorInfo)
-        if (isPass) {
-            Log.i("SprichIME", "undo blocked password")
-            return false
-        }
-        val ok = editorActionController.undoDeletion(ic, currentFieldId, fieldGeneration.get(), isPass)
-        if (ok) noteOwnEditorChange(true)
-        if (ok) vibrateTick()
+        val ok = editorActionController.undoDeletion(currentInputConnection, currentFieldId, fieldGeneration.get(), isPasswordField || isPassword(currentInputEditorInfo))
+        if (ok) { noteOwnEditorChange(true); vibrateTick() }
+        updateEditingControls()
         return ok
     }
 
-    // Deleted: insertNewline (swipe-down newline removed), hold-to-repeat deletion removed per closure spec
-    private fun stopDeleteRepeat() {
-        // No-op: hold-to-repeat deleted. Keep for call sites that still invoke on ACTION_CANCEL/UP
+    private fun updateEditingControls() {
+        undoButton?.visibility = if (!isPasswordField && editorActionController.historySize() > 0) View.VISIBLE else View.GONE
+        whisperBadge?.visibility = if (whisperMode && !isPasswordField) View.VISIBLE else View.GONE
+    }
+
+    private fun performBarAction(action: BarGestureRecognizer.Action): Boolean = when (action) {
+        BarGestureRecognizer.Action.DELETE_UNIT -> performDeletion(EditorActionController.Unit.WORD_OR_SYMBOL)
+        BarGestureRecognizer.Action.DELETE_PHRASE -> performDeletion(EditorActionController.Unit.PHRASE)
+        BarGestureRecognizer.Action.DELETE_SENTENCE -> performDeletion(EditorActionController.Unit.SENTENCE)
+        BarGestureRecognizer.Action.WHISPER -> toggleWhisperMode()
+        BarGestureRecognizer.Action.SWITCH_KEYBOARD -> switchToTypingKeyboard()
+        BarGestureRecognizer.Action.HIDE -> { dismissKeyboard(); true }
+        BarGestureRecognizer.Action.SETTINGS -> { openSprichSettings(); true }
+        BarGestureRecognizer.Action.TAP -> { toggleDictation(); true }
+    }
+
+    private fun cancelBarGesture() {
+        pillViewRef?.cancelGesture()
+        deletionGesture?.cancel(); deletionGesture = null
+    }
+
+    private fun showGesturePreview(preview: BarGestureRecognizer.Preview) {
+        if (isPasswordField && preview !in setOf(BarGestureRecognizer.Preview.NONE, BarGestureRecognizer.Preview.HIDE)) {
+            gesturePreview = BarGestureRecognizer.Preview.NONE
+            refreshSessionUi()
+            return
+        }
+        if (gesturePreview == BarGestureRecognizer.Preview.NONE && preview != BarGestureRecognizer.Preview.NONE) {
+            statusBeforeGesture = statusText?.text
+            hintBeforeGesture = (statusText?.tag as? TextView)?.text
+        }
+        gesturePreview = preview
+        if (preview == BarGestureRecognizer.Preview.NONE) {
+            if (session.state.value is SessionState.Error) {
+                statusText?.text = statusBeforeGesture
+                (statusText?.tag as? TextView)?.text = hintBeforeGesture
+            } else refreshSessionUi()
+            statusBeforeGesture = null; hintBeforeGesture = null
+            return
+        }
+        val (title, hint) = when (preview) {
+            BarGestureRecognizer.Preview.DELETE_UNIT -> com.sprich.app.R.string.ime_delete_unit_preview to com.sprich.app.R.string.ime_delete_release_hint
+            BarGestureRecognizer.Preview.DELETE_SENTENCE -> com.sprich.app.R.string.ime_delete_sentence_preview to com.sprich.app.R.string.ime_delete_hold_hint
+            BarGestureRecognizer.Preview.REPEAT -> com.sprich.app.R.string.ime_delete_repeat_preview to com.sprich.app.R.string.ime_delete_repeat_hint
+            BarGestureRecognizer.Preview.WHISPER -> (if (whisperMode) com.sprich.app.R.string.ime_whisper_off_preview else com.sprich.app.R.string.ime_whisper_on_preview) to com.sprich.app.R.string.ime_switch_release_hint
+            BarGestureRecognizer.Preview.HIDE -> com.sprich.app.R.string.ime_hide_preview to com.sprich.app.R.string.ime_hide_hint
+            else -> return
+        }
+        statusText?.text = getString(title)
+        (statusText?.tag as? TextView)?.text = getString(hint)
+    }
+
+    private fun toggleWhisperMode(): Boolean {
+        if (isPasswordField || isPassword(currentInputEditorInfo) || runtimeConfig == null || whisperChangeJob?.isActive == true) return false
+        val target = !whisperMode
+        val resume = isDictationRunning()
+        if (resume) stopDictation(StopReason.CURSOR_MOVED)
+        val field = currentFieldId
+        val generation = fieldGeneration.get()
+        whisperChangeJob = scope.launch {
+            try {
+                prefs.setWhisperMode(target)
+                runtimeConfigFlow.first { it?.whisperMode == target }
+                refreshSessionUi()
+                if (resume && currentFieldId == field && fieldGeneration.get() == generation && isInputViewShown) {
+                    startJob = scope.launch { startDictationIfNeeded() }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { android.widget.Toast.makeText(this@SprichIME, com.sprich.app.R.string.ime_whisper_save_failed, android.widget.Toast.LENGTH_SHORT).show() }
+        }
+        return true
+    }
+
+    private fun openSprichSettings() {
+        cancelBarGesture()
+        stopDictation(StopReason.WINDOW_HIDDEN)
+        requestHideSelf(0)
+        val intent = android.content.Intent(this, com.sprich.app.ui.MainActivity::class.java).apply {
+            action = com.sprich.app.ui.MainActivity.ACTION_OPEN_SETTINGS
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        startActivity(intent)
+    }
+
+    private fun dismissKeyboard() {
+        cancelBarGesture()
+        dismissing = true
+        stopVisualLane()
+        stopDictation(StopReason.WINDOW_HIDDEN)
+        val stamp = ++dismissalGeneration
+        val bar = pillViewRef
+        if (bar == null || !android.animation.ValueAnimator.areAnimatorsEnabled()) { requestHideSelf(0); return }
+        bar.animate().cancel()
+        bar.animate().translationY(dp(112).toFloat()).scaleX(0.96f).scaleY(0.72f).alpha(0f)
+            .setDuration(180).setInterpolator(android.view.animation.PathInterpolator(0.32f, 0f, 0.8f, 0.4f))
+            .withEndAction { if (stamp == dismissalGeneration) requestHideSelf(0) }.start()
+    }
+
+    private fun resetBarMotion() {
+        dismissing = false
+        dismissalGeneration++
+        pillViewRef?.let { bar ->
+            bar.animate().withEndAction(null).cancel()
+            bar.translationY = 0f; bar.alpha = 1f; bar.scaleX = 1f; bar.scaleY = 1f
+        }
     }
 
     // ---- Liquid wow visual (color + width follow mic energy) ----------------------
@@ -2684,7 +2613,7 @@ class SprichIME : InputMethodService() {
             com.sprich.app.speech.refinement.DictationContext.beforeCursor(editorAuthority?.before)
         } else null
         val hints = if (s.personalVocabHintEnabled) vocabulary.entries.map { it.written }.filter { it.length in 1..100 && it.none { c -> c.isISOControl() } }.take(100) else emptyList()
-        return UtterancePlan(transcription, refinement, config, vocabulary, context, hints)
+        return UtterancePlan(transcription, refinement, config, vocabulary, context, hints, whisperMode = s.whisperMode)
     }
 
     private fun localRouteReady(route: LocalAsrRoute): Boolean {

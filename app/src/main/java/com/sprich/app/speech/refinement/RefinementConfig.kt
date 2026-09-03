@@ -29,6 +29,7 @@ data class RefinementRequest(
     val context: String? = null,
     val promptVersion: String = DictationPrompt.VERSION,
     val promptVariant: DictationPrompt.Variant = DictationPrompt.Variant.CONTRACT,
+    val whisperMode: Boolean = false,
 ) {
     override fun toString(): String {
         return "RefinementRequest(textLen=${text.length}, language=$language, mode=$mode, protectedTerms=${protectedTerms.size} terms [REDACTED])"

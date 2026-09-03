@@ -1,4 +1,9 @@
 <resources>
     <item name="action_delete_word" type="id" />
     <item name="action_undo_delete" type="id" />
+    <item name="action_delete_phrase" type="id" />
+    <item name="action_whisper_mode" type="id" />
+    <item name="action_hide_keyboard" type="id" />
+    <item name="action_switch_keyboard" type="id" />
+    <item name="action_open_settings" type="id" />
 </resources>

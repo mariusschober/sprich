@@ -18,6 +18,7 @@ data class UtterancePlan(
     val fieldContext: String? = null,
     val remoteVocabularyHints: List<String> = emptyList(),
     val apiPermissionEpoch: Long = com.sprich.app.api.ApiHttp.currentEpoch,
+    val whisperMode: Boolean = false,
 ) {
     override fun toString(): String {
         val mode = when (transcription) {

@@ -24,6 +24,7 @@ class Preferences(context: Context) {
     companion object {
         val KEY_ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
         val KEY_INSTANT_MODE = booleanPreferencesKey("instant_mode")
+        val KEY_WHISPER_MODE = booleanPreferencesKey("whisper_mode")
         val KEY_LANGUAGE = stringPreferencesKey("language")
         val KEY_ENGINE = stringPreferencesKey("engine")
         val KEY_HAPTICS = booleanPreferencesKey("haptics")
@@ -179,6 +180,7 @@ class Preferences(context: Context) {
             refinementContextEnabled = prefs[KEY_REFINEMENT_CONTEXT] ?: false,
             apiLocalFallback = prefs[KEY_API_LOCAL_FALLBACK] ?: false,
             voiceApiOptions = voiceOptions(prefs),
+            whisperMode = prefs[KEY_WHISPER_MODE] ?: false,
         ).enforceProviderAvailability()
     }
 
@@ -319,6 +321,7 @@ class Preferences(context: Context) {
     suspend fun clearLegacyApiKeys(){ context.ds.edit{ it.remove(KEY_STT_API_KEY); it.remove(KEY_AI_API_KEY) } }
     suspend fun setOnboardingDone(v: Boolean){ context.ds.edit{it[KEY_ONBOARDING_DONE]=v} }
     suspend fun setInstantMode(v: Boolean){ context.ds.edit{it[KEY_INSTANT_MODE]=v} }
+    suspend fun setWhisperMode(v: Boolean) { context.ds.edit { it[KEY_WHISPER_MODE] = v } }
     suspend fun setLanguage(v: Language){ context.ds.edit{it[KEY_LANGUAGE]=v.code} }
     suspend fun setSpeechLanguage(v: SpeechLanguage){ context.ds.edit{it[KEY_LANGUAGE]= v.toBcp47()} }
     /** Explicit first-run suggestion from Locale.getDefault() — only called once during onboarding. */

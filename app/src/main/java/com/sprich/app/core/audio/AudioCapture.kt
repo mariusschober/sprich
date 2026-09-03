@@ -58,12 +58,13 @@ class AudioCapture internal constructor(
     suspend fun startWithOffset(
         onChunkWithOffset: (ShortArray, Int, Int, Long, Float) -> Unit,
         onFailure: (String) -> Unit = {},
+        whisperMode: Boolean = false,
     ): Boolean {
         var created: Capture? = null
         return try {
             withContext(Dispatchers.IO) {
                 val context = currentCoroutineContext()
-                startCapture(onChunkWithOffset, onFailure, { context.ensureActive() }, { created = it })
+                startCapture(onChunkWithOffset, onFailure, whisperMode, { context.ensureActive() }, { created = it })
             }
         } catch (cancelled: CancellationException) {
             created?.let { owned ->
@@ -77,6 +78,7 @@ class AudioCapture internal constructor(
     @Synchronized private fun startCapture(
         onChunkWithOffset: (ShortArray, Int, Int, Long, Float) -> Unit,
         onFailure: (String) -> Unit,
+        whisperMode: Boolean,
         ensureActive: () -> Unit,
         onCreated: (Capture) -> Unit,
     ): Boolean {
@@ -90,6 +92,7 @@ class AudioCapture internal constructor(
         capture.thread = Thread({
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
             val samples = ShortArray(1024)
+            val quietGain = if (whisperMode) QuietSpeechGain() else null
             var failure: String? = null
             var emptyReads = 0
             try {
@@ -108,6 +111,8 @@ class AudioCapture internal constructor(
                     }
                     emptyReads = 0
                     if (state.get().active !== capture) break
+                    // Both the prebuffer and every consumer see precisely these same samples.
+                    quietGain?.process(samples, n)
                     var sum = 0.0
                     for (i in 0 until n) { val s = samples[i] / 32768.0; sum += s * s }
                     val rms = kotlin.math.sqrt(sum / n).toFloat()

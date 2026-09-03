@@ -24,7 +24,7 @@ class GeminiRefinementProvider(
         val payload = JSONObject().apply {
             put("model", model)
             put("store", false)
-            put("system_instruction", DictationPrompt.system(request.mode, request.promptVariant))
+            put("system_instruction", DictationPrompt.system(request.mode, request.promptVariant, request.whisperMode))
             put("input", DictationPrompt.data(request))
             put("generation_config", JSONObject().put("thinking_level", "minimal").put("thinking_summaries", "none")
                 .put("max_output_tokens", DictationPrompt.outputBudget(request.text)))

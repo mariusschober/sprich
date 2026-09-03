@@ -38,6 +38,7 @@ data class RuntimeConfigSnapshot(
     val refinementContextEnabled: Boolean = false,
     val apiLocalFallback: Boolean = false,
     val voiceApiOptions: com.sprich.app.speech.remote.VoiceApiOptions = com.sprich.app.speech.remote.VoiceApiOptions(),
+    val whisperMode: Boolean = false,
 ) {
     // Cheap derived for logging without PII
     override fun toString(): String {

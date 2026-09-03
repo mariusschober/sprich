@@ -18,6 +18,20 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class RuntimeConfigSnapshotTest {
+    @Test fun whisperPreferenceIsFrozenAndCannotEnableApis() = runBlocking {
+        val prefs = prefs()
+        prefs.clearAll()
+        val before = prefs.runtimeConfigSnapshot.first()
+        prefs.setWhisperMode(true)
+        val whispered = prefs.runtimeConfigSnapshot.first()
+        assertFalse(before.whisperMode)
+        assertTrue(whispered.whisperMode)
+        assertEquals(TranscriptionMode.ON_DEVICE, whispered.transcriptionMode)
+        assertEquals(RefinementMode.OFF, whispered.refinementMode)
+        prefs.setWhisperMode(false)
+        assertTrue(whispered.whisperMode)
+        assertFalse(prefs.runtimeConfigSnapshot.first().whisperMode)
+    }
     private fun prefs() = Preferences(ApplicationProvider.getApplicationContext<Context>())
     private fun choice(use: ApiUse = ApiUse.VOICE, ref: String = "bound_test") = ApiCatalog.preset("openai").let {
         ApiChoice(use, it.id, it.endpoint, if (use == ApiUse.VOICE) it.voiceModel else it.writingModel, ref)

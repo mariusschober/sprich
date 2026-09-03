@@ -30,10 +30,27 @@ import com.sprich.app.ui.vocab.VocabScreen
 import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
+    private var settingsRequest by mutableIntStateOf(0)
+
+    companion object { const val ACTION_OPEN_SETTINGS = "com.sprich.app.OPEN_SETTINGS" }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == ACTION_OPEN_SETTINGS) {
+            settingsRequest++
+            intent.action = Intent.ACTION_MAIN
+        }
+        setIntent(intent)
+    }
+
     @SuppressLint("WrongStartDestinationType")
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        if (intent.action == ACTION_OPEN_SETTINGS) {
+            settingsRequest++
+            intent.action = Intent.ACTION_MAIN
+        }
         enableEdgeToEdge()
         val prefs = Preferences(this)
         setContent {
@@ -43,6 +60,11 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     val done = try { prefs.onboardingDone.first() } catch (_: Exception) { false }
                     startDest = if (done) "home" else "onboarding"
+                }
+                LaunchedEffect(startDest, settingsRequest) {
+                    if (startDest != null && settingsRequest > 0) {
+                        nav.navigate("settings") { launchSingleTop = true }
+                    }
                 }
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),

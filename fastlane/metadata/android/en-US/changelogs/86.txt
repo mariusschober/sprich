@@ -1,0 +1,5 @@
+The voice bar now distinguishes quick word/symbol deletion, phrase deletion and held sentence deletion. Swipe right toggles Whisper mode, up switches keyboards, down hides Sprich, and a 2½-second hold opens Settings. Undo remains one tap away.
+
+Whisper mode adds a bounded quiet-input boost, more sensitive speech detection, gentler pause handling and careful writing cleanup when cleanup is enabled.
+
+Meta voice typing supports live partials or after-speech transcription, language and vocabulary hints, turn detection, progress updates and an independently enabled shared key for writing cleanup. This candidate is not yet a public release.

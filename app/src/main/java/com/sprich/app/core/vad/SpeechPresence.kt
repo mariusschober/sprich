@@ -14,16 +14,20 @@ class SpeechPresence(private val assets: AssetManager) {
     private val window = FloatArray(512)
     private var filled = 0
     private var speaking = false
+    private var onsetThreshold = 0.5f
+    private var releaseThreshold = 0.35f
     @Volatile var ready = false
         private set
 
-    suspend fun prepare() = withContext(Dispatchers.IO) {
+    suspend fun prepare(whisperMode: Boolean = false) = withContext(Dispatchers.IO) {
         synchronized(lock) {
             if (native == null) native = NativeVad(assets, VadModelConfig(
                 sileroVadModelConfig = SileroVadModelConfig(model = "vad/silero_vad.onnx"),
                 sampleRate = 16000, numThreads = 1, provider = "cpu", debug = false,
             ))
             native!!.reset()
+            onsetThreshold = if (whisperMode) 0.35f else 0.5f
+            releaseThreshold = if (whisperMode) 0.2f else 0.35f
             filled = 0
             speaking = false
             ready = true
@@ -41,7 +45,7 @@ class SpeechPresence(private val assets: AssetManager) {
                 val probability = model.compute(window)
                 check(probability.isFinite()) { "Invalid speech probability" }
                 // Hysteresis keeps soft word endings without treating steady room noise as speech.
-                speaking = probability >= if (speaking) 0.35f else 0.5f
+                speaking = probability >= if (speaking) releaseThreshold else onsetThreshold
                 anySpeech = anySpeech || speaking
                 filled = 0
             }

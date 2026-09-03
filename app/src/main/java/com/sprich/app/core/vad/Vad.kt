@@ -30,6 +30,15 @@ class Vad(
 
     data class Result(val state: State, val isSpeech: Boolean, val rms: Float)
 
+    /** Set only after the preceding capture has retired. */
+    @Synchronized fun configureWhisperMode(enabled: Boolean) {
+        speechOnsetMs = if (enabled) 96 else 45
+        utteranceEndMs = if (enabled) 950 else 650
+        longSilenceMs = if (enabled) 2400 else 1800
+        energyThreshold = if (enabled) 0.0008f else 0.0012f
+        reset()
+    }
+
     @Synchronized fun reset() {
         state = State.SILENCE
         calibrating = true

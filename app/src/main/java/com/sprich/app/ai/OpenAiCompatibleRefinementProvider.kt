@@ -43,7 +43,7 @@ class OpenAiCompatibleRefinementProvider(
             if (officialMeta) put("reasoning_effort", "minimal")
             // Provider defaults are safer than sending unsupported sampling/latency controls to custom APIs.
             put("messages", JSONArray()
-                .put(JSONObject().put("role", if (officialMeta) "developer" else "system").put("content", DictationPrompt.system(request.mode, request.promptVariant)))
+                .put(JSONObject().put("role", if (officialMeta) "developer" else "system").put("content", DictationPrompt.system(request.mode, request.promptVariant, request.whisperMode)))
                 .put(JSONObject().put("role", "user").put("content", DictationPrompt.data(request))))
         }
         val req = Request.Builder().url(baseUrl.trimEnd('/') + "/chat/completions")
