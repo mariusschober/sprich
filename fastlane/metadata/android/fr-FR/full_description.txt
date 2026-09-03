@@ -1,0 +1,24 @@
+Parlez au lieu de taper.
+
+Sprich est un clavier vocal pour Android. Dictez dans vos notes, messages et autres champs de texte, puis revenez à votre clavier habituel d’un simple toucher.
+
+• Parlez anglais, allemand, espagnol ou français.
+• Automatique reconnaît la langue pendant que vous parlez.
+• Précis utilise la langue que vous choisissez.
+• Apprenez à Sprich les noms et termes particuliers : dites-les trois fois, puis saisissez leur orthographe ou choisissez localement un nom d’application ou de contact.
+• Balayez pour supprimer, chuchoter, changer de clavier ou masquer la barre.
+• Amélioration du texte et reconnaissance par API facultatives avec vos propres clés.
+• Aucun compte Sprich, abonnement, publicité ou suivi.
+
+Téléchargez les fichiers vocaux une fois, puis dictez hors connexion. Automatique demande environ 219 Mo ; Précis est un téléchargement facultatif de 154 Mo. Votre voix reste sur votre téléphone lorsque les API personnelles sont désactivées.
+
+Vous souhaitez améliorer vos textes ou utiliser une API pour la reconnaissance ? Choisissez un fournisseur, collez votre propre clé et vérifiez la connexion. Chaque option reste désactivée tant que vous ne l’activez pas expressément. Les demandes vont directement au fournisseur ; aucun serveur Sprich ne sert d’intermédiaire. Ses tarifs et règles de confidentialité s’appliquent. Meta et les intégrations personnalisées sont expérimentales.
+
+Commencez à parler dès que Sprich s’ouvre. L’écoute immédiate est activée pendant la configuration et peut être désactivée dans les réglages. Faites une pause pour insérer vos mots, puis touchez la barre pour terminer. Déplacer le curseur ou quitter le champ arrête l’écoute et annule les mots qui n’ont pas encore été insérés. La dictée est indisponible dans les champs de mot de passe et de code PIN.
+
+Nécessite un téléphone ARM64 sous Android 8.0 ou version ultérieure. L’interface est disponible en anglais, allemand, français et espagnol et suit la langue d’Android. Cette version est une candidate à la publication. La reconnaissance vocale peut se tromper ; relisez votre texte avant de l’envoyer.
+
+Le code source de l’application Sprich est sous licence MIT. Les modèles vocaux et dépendances d’exécution ont leurs propres conditions, consultables dans Réglages → Licences et mentions.
+
+Confidentialité : https://github.com/mariusschober/sprich/blob/main/docs/PRIVACY.md
+Source et assistance : https://github.com/mariusschober/sprich

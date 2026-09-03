@@ -1,0 +1,24 @@
+Sprich, statt zu tippen.
+
+Sprich ist eine Sprachtastatur für Android. Diktiere in Notizen, Nachrichten und anderen Textfeldern und kehre mit einem Fingertipp zu deiner normalen Tastatur zurück.
+
+• Sprich Englisch, Deutsch, Spanisch oder Französisch.
+• Automatisch erkennt deine Sprache beim Sprechen.
+• Präzise verwendet eine Sprache, die du auswählst.
+• Bring Sprich Namen und besondere Begriffe bei: dreimal aussprechen, dann die Schreibweise eingeben oder lokal einen App- oder Kontaktnamen wählen.
+• Wische zum Löschen, Flüstern, Tastaturwechseln oder Ausblenden der Leiste.
+• Optionale Textüberarbeitung und API-Spracherkennung mit deinen eigenen Schlüsseln.
+• Kein Sprich-Konto, Abo, Werbung oder Analyse.
+
+Lade die Sprachdateien einmal herunter und diktiere danach offline. Automatisch benötigt etwa 219 MB; Präzise ist ein optionaler Download mit 154 MB. Solange persönliche APIs ausgeschaltet sind, bleibt deine Stimme auf deinem Smartphone.
+
+Du möchtest Textüberarbeitung oder API-Spracherkennung? Wähle einen Anbieter, füge deinen eigenen Schlüssel ein und prüfe die Verbindung. Jede Funktion bleibt aus, bis du sie ausdrücklich aktivierst. Anfragen gehen direkt an den Anbieter; Sprich hat keinen Server dazwischen. Kosten und Datenschutzregeln des Anbieters gelten. Meta und eigene Integrationen sind experimentell.
+
+Sprich los, sobald Sprich erscheint. Das sofortige Zuhören ist bei der Einrichtung aktiviert und kann in den Einstellungen ausgeschaltet werden. Mach eine Pause, um deine Worte einzufügen, und tippe zum Beenden auf die Leiste. Wenn du den Cursor bewegst oder das Feld verlässt, stoppt Sprich und verwirft noch nicht eingefügte Wörter. In Passwort- und PIN-Feldern ist kein Diktat möglich.
+
+Erfordert ein ARM64-Smartphone mit Android 8.0 oder neuer. Die Oberfläche ist auf Englisch, Deutsch, Französisch und Spanisch verfügbar und folgt deiner Android-Sprache. Dies ist ein Release Candidate. Spracherkennung kann Fehler machen; prüfe den Text vor dem Senden.
+
+Der App-Quellcode von Sprich steht unter der MIT-Lizenz. Sprachmodelle und Laufzeitabhängigkeiten haben eigene Bedingungen, die du unter Einstellungen → Lizenzen und Hinweise findest.
+
+Datenschutz: https://github.com/mariusschober/sprich/blob/main/docs/PRIVACY.md
+Quellcode und Support: https://github.com/mariusschober/sprich

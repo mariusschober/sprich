@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.annotation.StringRes
 import com.sprich.app.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -26,6 +27,43 @@ import kotlinx.serialization.json.Json
 @Serializable private data class NoticeEntry(val id: String, val name: String, val version: String, val license: String,
     val source: String, val description: String, val attribution: String, val documents: List<NoticeDocument>)
 private data class NoticeParagraph(val text: String, val heading: Boolean = false)
+
+private val NOTICE_DESCRIPTIONS: Map<String, Int> = mapOf(
+    "sprich" to R.string.notice_description_sprich,
+    "androidx" to R.string.notice_description_androidx,
+    "material" to R.string.notice_description_material,
+    "errorprone" to R.string.notice_description_errorprone,
+    "guava" to R.string.notice_description_guava,
+    "okhttp" to R.string.notice_description_okhttp,
+    "okio" to R.string.notice_description_okio,
+    "commons-codec" to R.string.notice_description_commons_codec,
+    "commons-io" to R.string.notice_description_commons_io,
+    "commons-compress" to R.string.notice_description_commons_compress,
+    "commons-lang" to R.string.notice_description_commons_lang,
+    "kotlin" to R.string.notice_description_kotlin,
+    "coroutines" to R.string.notice_description_coroutines,
+    "serialization" to R.string.notice_description_serialization,
+    "annotations" to R.string.notice_description_annotations,
+    "jspecify" to R.string.notice_description_jspecify,
+    "desugar" to R.string.notice_description_desugar,
+    "sherpa" to R.string.notice_description_sherpa,
+    "onnx" to R.string.notice_description_onnx,
+    "kaldi-native-fbank" to R.string.notice_description_kaldi_native_fbank,
+    "kaldi-decoder" to R.string.notice_description_kaldi_decoder,
+    "kaldifst" to R.string.notice_description_kaldifst,
+    "openfst" to R.string.notice_description_openfst,
+    "sentencepiece" to R.string.notice_description_sentencepiece,
+    "json" to R.string.notice_description_json,
+    "eigen" to R.string.notice_description_eigen,
+    "kissfft" to R.string.notice_description_kissfft,
+    "llvm" to R.string.notice_description_llvm,
+    "whisper" to R.string.notice_description_whisper,
+    "fastconformer" to R.string.notice_description_fastconformer,
+    "canary" to R.string.notice_description_canary,
+    "silero" to R.string.notice_description_silero,
+)
+
+@StringRes internal fun noticeDescriptionResource(id: String): Int? = NOTICE_DESCRIPTIONS[id]
 
 /** Reflow hard-wrapped source lines for the phone; the stored license document remains byte-for-byte intact. */
 private fun readableParagraph(raw: String): String {
@@ -89,7 +127,10 @@ private fun readableParagraph(raw: String): String {
             LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 item { Text(entry.name, style = MaterialTheme.typography.headlineMedium) }
                 item { Text(listOf(entry.version, entry.license).filter { it.isNotEmpty() }.joinToString(" · "), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                item { Text(entry.description, style = MaterialTheme.typography.bodyLarge) }
+                item {
+                    val description = noticeDescriptionResource(entry.id)?.let { stringResource(it) } ?: entry.description
+                    Text(description, style = MaterialTheme.typography.bodyLarge)
+                }
                 if (entry.attribution.isNotBlank()) item { Text(entry.attribution, style = MaterialTheme.typography.bodyMedium) }
                 if (entry.source.isNotBlank()) item { TextButton(onClick = { uri.openUri(entry.source) }) { Text(stringResource(R.string.licenses_source)) } }
                 item { HorizontalDivider() }

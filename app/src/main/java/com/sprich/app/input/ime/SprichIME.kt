@@ -79,6 +79,47 @@ class SprichIME : InputMethodService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
+    // Android applies a per-app locale to activities, but some IME hosts keep the service
+    // context in the phone locale. Resolve the selected Sprich locale for every visible IME
+    // string so the bar and its accessibility actions change with the rest of the app.
+    @Volatile private var localizedResourceKey: String? = null
+    @Volatile private var localizedResources: android.content.res.Resources? = null
+    @Volatile private var staticMessageIds: Pair<Int, Int>? = null
+
+    private fun uiResources(): android.content.res.Resources {
+        val locales = if (android.os.Build.VERSION.SDK_INT >= 33) {
+            getSystemService(android.app.LocaleManager::class.java).applicationLocales
+                .takeUnless { it.isEmpty } ?: resources.configuration.locales
+        } else resources.configuration.locales
+        val key = locales.toLanguageTags()
+        localizedResources?.takeIf { localizedResourceKey == key }?.let { return it }
+        val configuration = android.content.res.Configuration(resources.configuration).apply { setLocales(locales) }
+        return createConfigurationContext(configuration).resources.also {
+            localizedResources = it
+            localizedResourceKey = key
+        }
+    }
+
+    private fun uiString(id: Int, vararg arguments: Any): String = uiResources().getString(id, *arguments)
+
+    /** Render a status and hint from one locale snapshot so a live locale change cannot mix languages. */
+    private fun showStaticMessage(
+        title: Int,
+        hint: Int,
+        strings: android.content.res.Resources = uiResources(),
+    ) {
+        staticMessageIds = title to hint
+        statusText?.text = strings.getString(title)
+        (statusText?.tag as? TextView)?.text = strings.getString(hint)
+    }
+
+    private fun refreshLocalizedMessage() {
+        localizedResourceKey = null
+        localizedResources = null
+        staticMessageIds?.let { (title, hint) -> showStaticMessage(title, hint) }
+            ?: refreshSessionUi()
+    }
+
     private lateinit var prefs: Preferences
     private lateinit var latency: LatencyTracker
     private lateinit var session: DictationSession
@@ -323,6 +364,15 @@ class SprichIME : InputMethodService() {
         }
     }
 
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        localizedResourceKey = null
+        localizedResources = null
+        statusText?.post {
+            if (isInputViewShown) refreshLocalizedMessage()
+        }
+    }
+
     private fun isDark(): Boolean = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
 
     // The compact voice bar leaves room for the real editor, including in landscape.
@@ -393,7 +443,7 @@ class SprichIME : InputMethodService() {
             val statusColor = if (dark) Color.parseColor("#F5F5F3") else Color.parseColor("#111111")
             val hintColor = if (dark) Color.parseColor("#A0A0A0") else Color.parseColor("#595959")
             val status = TextView(this).apply {
-                text = getString(com.sprich.app.R.string.ime_start)
+                text = uiString(com.sprich.app.R.string.ime_start)
                 setTextColor(statusColor)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
                 gravity = Gravity.CENTER
@@ -403,7 +453,7 @@ class SprichIME : InputMethodService() {
                 ellipsize = android.text.TextUtils.TruncateAt.END
             }
             val hint = TextView(this).apply {
-                text = getString(com.sprich.app.R.string.ime_idle_hint)
+                text = uiString(com.sprich.app.R.string.ime_idle_hint)
                 setTextColor(hintColor)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 gravity = Gravity.CENTER
@@ -459,7 +509,7 @@ class SprichIME : InputMethodService() {
             wave.addView(glow)
             wave.addView(liquidBar)
             whisperBadge = TextView(this).apply {
-                text = getString(com.sprich.app.R.string.whisper_badge)
+                text = uiString(com.sprich.app.R.string.whisper_badge)
                 setTextColor(if (dark) Color.parseColor("#B6E5DA") else Color.parseColor("#245C51"))
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
                 setTypeface(null, android.graphics.Typeface.BOLD)
@@ -505,20 +555,20 @@ class SprichIME : InputMethodService() {
                 override fun onInitializeAccessibilityNodeInfo(host: View, info: androidx.core.view.accessibility.AccessibilityNodeInfoCompat) {
                     super.onInitializeAccessibilityNodeInfo(host, info)
                     info.className = "android.widget.Button"
-                    info.contentDescription = (if (whisperMode) getString(com.sprich.app.R.string.whisper_mode) + ". " else "") + "${status.text}. ${hint.text}"
+                    info.contentDescription = (if (whisperMode) uiString(com.sprich.app.R.string.whisper_mode) + ". " else "") + "${status.text}. ${hint.text}"
                     info.removeAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK)
                     if (!isPasswordField) {
                         info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(
                             android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK,
-                            getString(when { tapCancelsWork() -> com.sprich.app.R.string.cancel; isDictationRunning() -> com.sprich.app.R.string.ime_stop_action; else -> com.sprich.app.R.string.ime_start_action })))
-                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_delete_word, getString(com.sprich.app.R.string.ime_delete_unit_preview)))
-                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_delete_phrase, getString(com.sprich.app.R.string.ime_delete_sentence_preview)))
-                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_whisper_mode, getString(if (whisperMode) com.sprich.app.R.string.ime_whisper_off_action else com.sprich.app.R.string.ime_whisper_on_action)))
-                        if (editorActionController.historySize() > 0) info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_undo_delete, getString(com.sprich.app.R.string.ime_undo_action)))
+                            uiString(when { tapCancelsWork() -> com.sprich.app.R.string.cancel; isDictationRunning() -> com.sprich.app.R.string.ime_stop_action; else -> com.sprich.app.R.string.ime_start_action })))
+                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_delete_word, uiString(com.sprich.app.R.string.ime_delete_unit_preview)))
+                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_delete_phrase, uiString(com.sprich.app.R.string.ime_delete_sentence_preview)))
+                        info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_whisper_mode, uiString(if (whisperMode) com.sprich.app.R.string.ime_whisper_off_action else com.sprich.app.R.string.ime_whisper_on_action)))
+                        if (editorActionController.historySize() > 0) info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_undo_delete, uiString(com.sprich.app.R.string.ime_undo_action)))
                     }
-                    info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_switch_keyboard, getString(com.sprich.app.R.string.switch_keyboard)))
-                    info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_hide_keyboard, getString(com.sprich.app.R.string.ime_hide_action)))
-                    info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_open_settings, getString(com.sprich.app.R.string.ime_settings_action)))
+                    info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_switch_keyboard, uiString(com.sprich.app.R.string.switch_keyboard)))
+                    info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_hide_keyboard, uiString(com.sprich.app.R.string.ime_hide_action)))
+                    info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_open_settings, uiString(com.sprich.app.R.string.ime_settings_action)))
                 }
                 override fun performAccessibilityAction(host: View, action: Int, args: android.os.Bundle?): Boolean = when (action) {
                     com.sprich.app.R.id.action_delete_word -> deleteOnce(EditorActionController.Unit.WORD_OR_SYMBOL)
@@ -538,7 +588,7 @@ class SprichIME : InputMethodService() {
                 val backgroundAttr = android.util.TypedValue()
                 theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, backgroundAttr, true)
                 setBackgroundResource(backgroundAttr.resourceId)
-                contentDescription = getString(com.sprich.app.R.string.switch_keyboard)
+                contentDescription = uiString(com.sprich.app.R.string.switch_keyboard)
                 setOnClickListener { switchToTypingKeyboard() }
             }
             val undo = android.widget.ImageButton(this).apply {
@@ -548,7 +598,7 @@ class SprichIME : InputMethodService() {
                 val backgroundAttr = android.util.TypedValue()
                 theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, backgroundAttr, true)
                 setBackgroundResource(backgroundAttr.resourceId)
-                contentDescription = getString(com.sprich.app.R.string.ime_undo_action)
+                contentDescription = uiString(com.sprich.app.R.string.ime_undo_action)
                 visibility = View.GONE
                 setOnClickListener { undoLastDelete() }
             }
@@ -584,7 +634,7 @@ class SprichIME : InputMethodService() {
         } catch (e: Exception) {
             Log.e("SprichIME", "onCreateInputView failed, fallback", e)
             TextView(this).apply {
-                text = getString(com.sprich.app.R.string.ime_fallback)
+                text = uiString(com.sprich.app.R.string.ime_fallback)
                 setPadding(dp(16), dp(20), dp(16), dp(24))
                 gravity = Gravity.CENTER
                 setOnClickListener { toggleDictation() }
@@ -623,10 +673,13 @@ class SprichIME : InputMethodService() {
         if (gesturePreview != BarGestureRecognizer.Preview.NONE) return
         val progress = remotePreview ?: return
         if (remotePreviewId != currentUtteranceToken?.utteranceId || isPasswordField) return
+        staticMessageIds = null
+        val strings = uiResources()
+        fun text(id: Int, vararg arguments: Any): String = strings.getString(id, *arguments)
         val hint = statusText?.tag as? TextView
         if (progress.preview.isBlank() && queueDepth.get() > 0 && activeUtterance?.token?.utteranceId == remotePreviewId && progress.stage != VoiceApiStage.FAILED) {
-            statusText?.text = getString(com.sprich.app.R.string.ime_transcribing)
-            hint?.text = getString(if (tapCancelsWork()) com.sprich.app.R.string.ime_writing_hint else com.sprich.app.R.string.ime_keep_speaking)
+            statusText?.text = text(com.sprich.app.R.string.ime_transcribing)
+            hint?.text = text(if (tapCancelsWork()) com.sprich.app.R.string.ime_writing_hint else com.sprich.app.R.string.ime_keep_speaking)
             return
         }
         if (progress.preview.isNotBlank()) {
@@ -638,7 +691,7 @@ class SprichIME : InputMethodService() {
                 label.maxLines = 2
                 label.ellipsize = android.text.TextUtils.TruncateAt.END
             }
-        } else statusText?.text = getString(when (progress.stage) {
+        } else statusText?.text = text(when (progress.stage) {
             VoiceApiStage.CONNECTING -> com.sprich.app.R.string.ime_api_connecting
             VoiceApiStage.UPLOADING -> com.sprich.app.R.string.ime_api_uploading
             VoiceApiStage.PROCESSING, VoiceApiStage.FINISHING -> com.sprich.app.R.string.ime_transcribing
@@ -646,16 +699,16 @@ class SprichIME : InputMethodService() {
             else -> com.sprich.app.R.string.ime_listening
         })
         hint?.text = when {
-            progress.stage == VoiceApiStage.FAILED -> getString(com.sprich.app.R.string.ime_api_interrupted_hint)
-            progress.stage == VoiceApiStage.UPLOADING && progress.totalUploadBytes > 0 -> getString(com.sprich.app.R.string.ime_api_upload_percent,
+            progress.stage == VoiceApiStage.FAILED -> text(com.sprich.app.R.string.ime_api_interrupted_hint)
+            progress.stage == VoiceApiStage.UPLOADING && progress.totalUploadBytes > 0 -> text(com.sprich.app.R.string.ime_api_upload_percent,
                 (progress.uploadedBytes * 100 / progress.totalUploadBytes).coerceIn(0, 100).toInt())
-            progress.processedMs > 0 -> getString(com.sprich.app.R.string.ime_api_progress,
+            progress.processedMs > 0 -> text(com.sprich.app.R.string.ime_api_progress,
                 java.text.NumberFormat.getNumberInstance().apply { maximumFractionDigits = 1 }.format(progress.processedMs / 1000.0)) +
-                progress.speaker?.let { " · " + getString(com.sprich.app.R.string.ime_api_speaker, it) }.orEmpty()
-            else -> getString(com.sprich.app.R.string.ime_api_live_hint)
+                progress.speaker?.let { " · " + text(com.sprich.app.R.string.ime_api_speaker, it) }.orEmpty()
+            else -> text(com.sprich.app.R.string.ime_api_live_hint)
         }
         if (progress.stage != VoiceApiStage.FAILED && progress.stage != VoiceApiStage.UPLOADING) {
-            hint?.append(" · " + getString(if (tapCancelsWork())
+            hint?.append(" · " + text(if (tapCancelsWork())
                 com.sprich.app.R.string.ime_writing_hint else com.sprich.app.R.string.ime_stop_hint))
         }
     }
@@ -671,11 +724,9 @@ class SprichIME : InputMethodService() {
         if (state is SessionState.Error) return
         updateImeUi(isDictationRunning())
         if (state is SessionState.Preparing) {
-            statusText?.text = getString(com.sprich.app.R.string.ime_preparing)
-            (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_loading_hint)
+            showStaticMessage(com.sprich.app.R.string.ime_preparing, com.sprich.app.R.string.ime_loading_hint)
         } else if (state is SessionState.Finalizing && !utteranceActive.get()) {
-            statusText?.text = getString(com.sprich.app.R.string.ime_transcribing)
-            (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_writing_hint)
+            showStaticMessage(com.sprich.app.R.string.ime_transcribing, com.sprich.app.R.string.ime_writing_hint)
         }
     }
 
@@ -684,8 +735,8 @@ class SprichIME : InputMethodService() {
         updateEditingControls()
         if (gesturePreview != BarGestureRecognizer.Preview.NONE) return
         try {
+            val strings = uiResources()
             val dark = isDark()
-            val hint = statusText?.tag as? TextView
             statusText?.maxLines = 2
             statusText?.ellipsize = android.text.TextUtils.TruncateAt.END
             val statusColor = if (dark) Color.parseColor("#F5F5F3") else Color.parseColor("#111111")
@@ -693,17 +744,19 @@ class SprichIME : InputMethodService() {
             val apiHint = isApiPalette()
             if (isPasswordField) {
                 stopVisualLane()
-                statusText?.text = getString(com.sprich.app.R.string.ime_password)
-                hint?.text = getString(com.sprich.app.R.string.ime_password_hint)
+                showStaticMessage(com.sprich.app.R.string.ime_password, com.sprich.app.R.string.ime_password_hint, strings)
                 waveform?.visibility = View.INVISIBLE
-                micContainer?.contentDescription = getString(com.sprich.app.R.string.ime_password)
+                micContainer?.contentDescription = strings.getString(com.sprich.app.R.string.ime_password)
                 return
             }
             if (isListening) {
-                statusText?.text = getString(if (whisperMode) com.sprich.app.R.string.ime_whisper_listening else com.sprich.app.R.string.ime_listening)
-                hint?.text = if (apiHint) getString(com.sprich.app.R.string.ime_cloud_listening) else getString(com.sprich.app.R.string.ime_stop_hint)
+                showStaticMessage(
+                    if (whisperMode) com.sprich.app.R.string.ime_whisper_listening else com.sprich.app.R.string.ime_listening,
+                    if (apiHint) com.sprich.app.R.string.ime_cloud_listening else com.sprich.app.R.string.ime_stop_hint,
+                    strings,
+                )
                 statusText?.setTextColor(statusColor)
-                micContainer?.contentDescription = if (apiHint) getString(com.sprich.app.R.string.ime_cloud_stop) else getString(com.sprich.app.R.string.ime_stop_action)
+                micContainer?.contentDescription = strings.getString(if (apiHint) com.sprich.app.R.string.ime_cloud_stop else com.sprich.app.R.string.ime_stop_action)
                 waveform?.visibility = View.VISIBLE
                 waveform?.alpha = 0.95f
                 glowView?.alpha = 0.12f
@@ -718,10 +771,13 @@ class SprichIME : InputMethodService() {
                 startVisualLane()
             } else {
                 stopVisualLane()
-                statusText?.text = getString(if (whisperMode) com.sprich.app.R.string.ime_whisper_start else com.sprich.app.R.string.ime_start)
-                hint?.text = getString(when { apiHint -> com.sprich.app.R.string.ime_api_idle_hint; runtimeConfig?.refinementMode != null && runtimeConfig?.refinementMode != RefinementMode.OFF -> com.sprich.app.R.string.ime_cleanup_idle_hint; else -> com.sprich.app.R.string.ime_idle_hint })
+                showStaticMessage(
+                    if (whisperMode) com.sprich.app.R.string.ime_whisper_start else com.sprich.app.R.string.ime_start,
+                    when { apiHint -> com.sprich.app.R.string.ime_api_idle_hint; runtimeConfig?.refinementMode != null && runtimeConfig?.refinementMode != RefinementMode.OFF -> com.sprich.app.R.string.ime_cleanup_idle_hint; else -> com.sprich.app.R.string.ime_idle_hint },
+                    strings,
+                )
                 statusText?.setTextColor(statusColor)
-                micContainer?.contentDescription = getString(com.sprich.app.R.string.ime_start)
+                micContainer?.contentDescription = strings.getString(com.sprich.app.R.string.ime_start)
                 micContainer?.animate()?.cancel()
                 micContainer?.scaleX = 1f; micContainer?.scaleY = 1f
                 waveform?.visibility = View.INVISIBLE
@@ -740,7 +796,10 @@ class SprichIME : InputMethodService() {
                 pillBgRef?.setStroke(dp(1), if (dark) Color.parseColor("#6A4E5C") else Color.parseColor("#E9C9D5"))
             }
             if (session.state.value !is SessionState.Preparing && session.state.value !is SessionState.Finalizing) {
-                resultNotice?.let { hint?.text = getString(it) }
+                resultNotice?.let {
+                    staticMessageIds = null
+                    (statusText?.tag as? TextView)?.text = strings.getString(it)
+                }
             }
             renderRemoteProgress()
         } catch (_: Exception) {}
@@ -880,6 +939,11 @@ class SprichIME : InputMethodService() {
         cancelBarGesture()
         resetBarMotion()
         updateImeUi(isDictationRunning())
+        // Per-app locale propagation can trail focus by a frame for a resident IME service.
+        // Re-resolve once after the system has delivered the new application configuration.
+        statusText?.postDelayed({
+            if (isInputViewShown) refreshLocalizedMessage()
+        }, 300L)
         if (isPassword(info)) return
         if (info?.packageName == packageName && info.privateImeOptions == com.sprich.app.ui.vocab.TYPED_SPELLING_IME_OPTION) {
             switchToTypingKeyboard()
@@ -1015,20 +1079,17 @@ class SprichIME : InputMethodService() {
             val snapAtStart = runtimeConfig
             if (snapAtStart == null) {
                 Log.i("SprichIME", "startDictation gated: runtimeConfig not ready — Getting ready…")
-                statusText?.text = getString(com.sprich.app.R.string.ime_preparing)
-                (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_loading_settings)
+                showStaticMessage(com.sprich.app.R.string.ime_preparing, com.sprich.app.R.string.ime_loading_settings)
                 return
             }
             if (isPasswordField) {
                 // Password field → zero capture/mutation, clear history already done in onStartInput, also ensure no mic
-                statusText?.text = getString(com.sprich.app.R.string.ime_password)
-                (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_password_hint)
+                showStaticMessage(com.sprich.app.R.string.ime_password, com.sprich.app.R.string.ime_password_hint)
                 return
             }
             editorAuthority = EditorSnapshot.read(currentInputConnection)
             if (editorAuthority == null) {
-                statusText?.text = getString(com.sprich.app.R.string.ime_no_cursor)
-                (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_no_cursor_hint)
+                showStaticMessage(com.sprich.app.R.string.ime_no_cursor, com.sprich.app.R.string.ime_no_cursor_hint)
                 return
             }
             // Language handling: Automatic = Tiny LID + FastConformer (no Canary), Accurate = Canary explicit
@@ -1043,8 +1104,7 @@ class SprichIME : InputMethodService() {
                 if (!lidReady) {
                     Log.w("SprichIME", "Auto language requested but Tiny LID not downloaded — explicit selection required.")
                     try { session.error("language auto not supported without LID") } catch (_: Exception) {}
-                    statusText?.text = getString(com.sprich.app.R.string.ime_setup)
-                    (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_setup_hint)
+                    showStaticMessage(com.sprich.app.R.string.ime_setup, com.sprich.app.R.string.ime_setup_hint)
                     try { vibrateTick() } catch (_: Exception) {}
                     writeDiagnostics("blocked Auto (no LID) resolved=${activeConfig.resolvedLanguageTag()} speechLanguage=$speechLanguage")
                     return
@@ -1052,8 +1112,7 @@ class SprichIME : InputMethodService() {
                 if (!fastReady) {
                     Log.w("SprichIME", "Auto (winner FastConformer) requested but FastConformer 126M not downloaded — download required.")
                     try { session.error("auto not supported without FastConformer") } catch (_: Exception) {}
-                    statusText?.text = getString(com.sprich.app.R.string.ime_setup)
-                    (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_setup_hint)
+                    showStaticMessage(com.sprich.app.R.string.ime_setup, com.sprich.app.R.string.ime_setup_hint)
                     try { vibrateTick() } catch (_: Exception) {}
                     writeDiagnostics("blocked Auto (no FastConformer) speechLanguage=$speechLanguage")
                     return
@@ -1069,8 +1128,7 @@ class SprichIME : InputMethodService() {
             if (!permissionGranted) {
                 Log.w("SprichIME", "RECORD_AUDIO not granted, abort dictation")
                 try { session.error("mic permission") } catch (_: Exception) {}
-                statusText?.text = getString(com.sprich.app.R.string.ime_mic_permission)
-                (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_mic_permission_hint)
+                showStaticMessage(com.sprich.app.R.string.ime_mic_permission, com.sprich.app.R.string.ime_mic_permission_hint)
                 // Vibrate error
                 try { vibrateTick() } catch (_: Exception) {}
                 return
@@ -1080,7 +1138,7 @@ class SprichIME : InputMethodService() {
             val previousReaderStopped = withContext(Dispatchers.IO) { audio.requestStop()?.awaitStop(2000) != false }
             if (generation != sessionGeneration.get()) return
             if (!previousReaderStopped) {
-                failSession(generation, "microphone shutdown timed out", getString(com.sprich.app.R.string.ime_mic_unavailable), getString(com.sprich.app.R.string.ime_retry), null)
+                failSession(generation, "microphone shutdown timed out", com.sprich.app.R.string.ime_mic_unavailable, com.sprich.app.R.string.ime_retry, null)
                 return
             }
             pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L; pipelineStartElapsed = android.os.SystemClock.elapsedRealtime()
@@ -1098,8 +1156,7 @@ class SprichIME : InputMethodService() {
             } else {
                 Log.i("SprichIME", "reusing field session sid=${session.sessionId} gen=$generation")
             }
-            statusText?.text = getString(com.sprich.app.R.string.ime_loading)
-            (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_first_start)
+            showStaticMessage(com.sprich.app.R.string.ime_loading, com.sprich.app.R.string.ime_first_start)
 
             // Route-aware loading — only load required engines, do NOT load Canary for Automatic. For API_PRIMARY, local not required.
             val routeForSession = determineRoute(snapAtStart.speechLanguage)
@@ -1133,8 +1190,8 @@ class SprichIME : InputMethodService() {
                 failSession(
                     generation,
                     "engine load failed route=$routeForSession mode=$transcriptionMode",
-                    getString(com.sprich.app.R.string.ime_model_failed),
-                    getString(com.sprich.app.R.string.ime_model_failed_hint),
+                    com.sprich.app.R.string.ime_model_failed,
+                    com.sprich.app.R.string.ime_model_failed_hint,
                     loadResult.exceptionOrNull(),
                 )
                 return
@@ -1188,8 +1245,8 @@ class SprichIME : InputMethodService() {
                             failSession(
                                 generation,
                                 reason,
-                                getString(com.sprich.app.R.string.ime_mic_stopped),
-                                getString(com.sprich.app.R.string.ime_retry),
+                                com.sprich.app.R.string.ime_mic_stopped,
+                                com.sprich.app.R.string.ime_retry,
                                 null,
                             )
                         }
@@ -1201,8 +1258,8 @@ class SprichIME : InputMethodService() {
                 failSession(
                     generation,
                     "microphone start failed",
-                    getString(com.sprich.app.R.string.ime_mic_unavailable),
-                    getString(com.sprich.app.R.string.ime_mic_busy_hint),
+                    com.sprich.app.R.string.ime_mic_unavailable,
+                    com.sprich.app.R.string.ime_mic_busy_hint,
                     null,
                 )
                 return
@@ -1218,7 +1275,7 @@ class SprichIME : InputMethodService() {
         } catch (t: Throwable) {
             Log.e("SprichIME", "start dictation failed", t)
             val generation = sessionGeneration.get()
-            failSession(generation, "start failed", getString(com.sprich.app.R.string.ime_start_failed), getString(com.sprich.app.R.string.ime_retry), t)
+            failSession(generation, "start failed", com.sprich.app.R.string.ime_start_failed, com.sprich.app.R.string.ime_retry, t)
         }
     }
 
@@ -1418,8 +1475,8 @@ class SprichIME : InputMethodService() {
                 failSession(
                     generation,
                     "audio processing failed",
-                    getString(com.sprich.app.R.string.ime_audio_error),
-                    getString(com.sprich.app.R.string.ime_retry),
+                    com.sprich.app.R.string.ime_audio_error,
+                    com.sprich.app.R.string.ime_retry,
                     t,
                 )
             }
@@ -1559,13 +1616,11 @@ class SprichIME : InputMethodService() {
         scope.launch(Dispatchers.Main) {
             try {
                 if (isCatchingUp) {
-                    statusText?.text = getString(com.sprich.app.R.string.ime_catching_up)
-                    (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_pause_hint)
+                    showStaticMessage(com.sprich.app.R.string.ime_catching_up, com.sprich.app.R.string.ime_pause_hint)
                     Log.w("SprichIME", "UI Catching up — suppressed=${catchingUpSuppressedOnsets.get()} rejected=${catchingUpRejectedOnsets.get()} depth=${queueDepth.get()}")
                 } else {
                     if (session.state.value is SessionState.Listening || session.state.value is com.sprich.app.input.lifecycle.SessionState.Speech || session.state.value is com.sprich.app.input.lifecycle.SessionState.Finalizing) {
-                        statusText?.text = getString(com.sprich.app.R.string.ime_listening)
-                        (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_idle_hint)
+                        showStaticMessage(com.sprich.app.R.string.ime_listening, com.sprich.app.R.string.ime_idle_hint)
                     }
                 }
             } catch (_: Exception) {}
@@ -1859,7 +1914,7 @@ class SprichIME : InputMethodService() {
                     localFallbackUsed -> com.sprich.app.R.string.ime_local_fallback
                     else -> null
                 }
-                resultNotice?.let { micContainer?.announceForAccessibility(getString(it)) }
+                resultNotice?.let { micContainer?.announceForAccessibility(uiString(it)) }
                 latency.mark("textCommitted")
                 celebrateCommit()
             }
@@ -2032,8 +2087,8 @@ class SprichIME : InputMethodService() {
     private fun failSession(
         generation: Long,
         reason: String,
-        userStatus: String,
-        userHint: String,
+        userStatus: Int,
+        userHint: Int,
         throwable: Throwable?,
     ) {
         if (generation != sessionGeneration.get()) { staleCallbackDrops++; return }
@@ -2062,8 +2117,7 @@ class SprichIME : InputMethodService() {
         try { engine.clearUtteranceCapture() } catch (_: Exception) {}
         try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
         session.error(reason)
-        statusText?.text = userStatus
-        (statusText?.tag as? TextView)?.text = userHint
+        showStaticMessage(userStatus, userHint)
         writeDiagnostics("error=$reason generation=$generation staleDrops=$staleCallbackDrops claims=$finalizationClaims commits=$finalCommitCount")
     }
 
@@ -2087,8 +2141,7 @@ class SprichIME : InputMethodService() {
         // Do NOT stop audio if B active — audio is needed for B capture
         // Ensure composition speculative partial is discarded (not committed)
         try { composition.discardPartial(currentInputConnection) } catch (_: Exception) {}
-        statusText?.text = getString(com.sprich.app.R.string.ime_insert_failed)
-        (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_insert_retry)
+        showStaticMessage(com.sprich.app.R.string.ime_insert_failed, com.sprich.app.R.string.ime_insert_retry)
         writeDiagnostics("utteranceScopedFailure token=$token reason=$reason drops=$staleCallbackDrops claims=$finalizationClaims")
     }
 
@@ -2170,8 +2223,7 @@ class SprichIME : InputMethodService() {
                 // Enqueued — mark stop after drain, preserve FIFO order, no generation bump yet
                 stopRequested = true
                 stopRequestedGeneration = generationAtStop
-                statusText?.text = getString(com.sprich.app.R.string.ime_stopping)
-                (statusText?.tag as? TextView)?.text = getString(com.sprich.app.R.string.ime_finishing)
+                showStaticMessage(com.sprich.app.R.string.ime_stopping, com.sprich.app.R.string.ime_finishing)
                 Log.i("SprichIME", "USER_STOP awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
                 writeDiagnostics("USER_STOP awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
             }
@@ -2388,8 +2440,10 @@ class SprichIME : InputMethodService() {
             BarGestureRecognizer.Preview.HIDE -> com.sprich.app.R.string.ime_hide_preview to com.sprich.app.R.string.ime_hide_hint
             else -> return
         }
-        statusText?.text = getString(title)
-        (statusText?.tag as? TextView)?.text = getString(hint)
+        staticMessageIds = null
+        val strings = uiResources()
+        statusText?.text = strings.getString(title)
+        (statusText?.tag as? TextView)?.text = strings.getString(hint)
     }
 
     private fun toggleWhisperMode(): Boolean {

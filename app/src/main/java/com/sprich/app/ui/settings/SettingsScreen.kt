@@ -1,6 +1,11 @@
 package com.sprich.app.ui.settings
 
 import android.app.ActivityManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -53,7 +58,7 @@ import kotlinx.coroutines.launch
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
             SettingsGroup(stringResource(R.string.voice_typing)) {
-                SettingsLink(stringResource(R.string.recognition), if (apiVoice) ApiCatalog.preset(config!!.sttProviderId).name else stringResource(R.string.path_local)) { onApi(ApiUse.VOICE) }
+                SettingsLink(stringResource(R.string.recognition), if (apiVoice) apiProviderName(config!!.sttProviderId) else stringResource(R.string.path_local)) { onApi(ApiUse.VOICE) }
                 if (!apiVoice) {
                     HorizontalDivider()
                     Column(Modifier.selectableGroup()) {
@@ -69,13 +74,15 @@ import kotlinx.coroutines.launch
                 if (!apiVoice) ModelSetup(automatic)
             }
             SettingsGroup(stringResource(R.string.writing)) {
-                SettingsLink(stringResource(R.string.cleanup_title), if (cleanup) ApiCatalog.preset(config!!.refinementProviderId).name else stringResource(R.string.cleanup_off)) { onApi(ApiUse.WRITING) }
+                SettingsLink(stringResource(R.string.cleanup_title), if (cleanup) apiProviderName(config!!.refinementProviderId) else stringResource(R.string.cleanup_off)) { onApi(ApiUse.WRITING) }
                 Text(stringResource(R.string.cleanup_description), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
                 HorizontalDivider()
                 SettingsLink(stringResource(R.string.personal_vocabulary), stringResource(R.string.vocab_short)) { onVocab() }
                 SettingsToggle(stringResource(R.string.spoken_editing), stringResource(R.string.commands_description), config?.commandsEnabled != false) { scope.launch { prefs.setCommands(it) } }
             }
             SettingsGroup(stringResource(R.string.keyboard_title)) {
+                SettingsLink(stringResource(R.string.app_language), stringResource(R.string.app_language_description)) { openAppLanguageSettings(context) }
+                HorizontalDivider()
                 SettingsToggle(stringResource(R.string.instant_dictation), stringResource(R.string.instant_description), config?.instantMode == true) { scope.launch { prefs.setInstantMode(it) } }
                 SettingsToggle(stringResource(R.string.whisper_mode), stringResource(R.string.whisper_description), config?.whisperMode == true) { scope.launch { prefs.setWhisperMode(it) } }
                 SettingsToggle(stringResource(R.string.haptics), stringResource(R.string.haptics_description), config?.hapticsEnabled != false) { scope.launch { prefs.setHaptics(it) } }
@@ -113,6 +120,22 @@ import kotlinx.coroutines.launch
         }) { Text(stringResource(R.string.clear_data)) } },
         dismissButton = { TextButton(onClick = { clearConfirm = false }) { Text(stringResource(R.string.cancel)) } },
     )
+}
+
+@Composable private fun apiProviderName(id: String): String =
+    if (id in setOf("custom", "openai-compatible")) stringResource(R.string.api_custom_name) else ApiCatalog.preset(id).name
+
+private fun openAppLanguageSettings(context: Context) {
+    val appLanguage = if (Build.VERSION.SDK_INT >= 33) {
+        Intent(Settings.ACTION_APP_LOCALE_SETTINGS, Uri.parse("package:${context.packageName}"))
+    } else {
+        Intent(Settings.ACTION_LOCALE_SETTINGS)
+    }
+    try {
+        context.startActivity(appLanguage)
+    } catch (_: Exception) {
+        context.startActivity(Intent(Settings.ACTION_LOCALE_SETTINGS))
+    }
 }
 
 @Composable private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {

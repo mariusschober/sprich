@@ -13,7 +13,7 @@ Voice dictation for Android. Speak English, German, Spanish or French into the a
 
 Swipe left quickly to delete one word or symbol. A longer or slower swipe deletes the last phrase; hold at the end to keep deleting sentences. Swipe right to toggle Whisper mode, up out of the bar for your typing keyboard, or down to hide Sprich. Undo appears after a deletion, and holding the bar for 2½ seconds opens Settings. Moving the cursor or changing a selection stops listening and cancels words that have not been inserted. Password and PIN fields do not permit dictation. Spoken editing and personal vocabulary are in Settings.
 
-Android 8.0–16 (API 26–36), ARM64 only. UI copy is currently English; the four dictation languages are independent of Android's display language. Recognition quality depends on speech and recording conditions; review the inserted text.
+Android 8.0–16 (API 26–36), ARM64 only. The interface supports English, German, French and Spanish and follows Android by default. On Android 13+, Settings → App language can override it for Sprich. The dictation language remains an independent choice. Recognition quality depends on speech and recording conditions; review the inserted text.
 
 **Teach Sprich a word:** in Settings → Personal vocabulary, record a difficult name or term three times, then type its intended spelling or choose one app/contact name through Android's local picker. Choose which recognized forms to correct; two extra attempts are optional. Learned corrections apply to the recognition mode used for that lesson. Sprich never scans the address book or app list, audio is discarded, and only confirmed text observations are saved. [Design and safeguards](docs/VOCABULARY_LEARNING.md), [local-name privacy boundary](docs/LOCAL_NAME_LEARNING.md).
 
@@ -23,13 +23,14 @@ Use JDK 17+, SDK 36 and NDK 27.0.12077973. Configure the SDK with Android Studio
 
 ```sh
 ./gradlew :app:assembleDebug :app:testDebugUnitTest
-./gradlew -PsprichVersionCode=89 -PsprichVersionName=1.0.0-rc14 \
+python3 scripts/verify-locales.py
+./gradlew -PsprichVersionCode=90 -PsprichVersionName=1.0.0-rc15 \
   :app:lintRelease :app:assembleRelease :app:writeReleaseDependencyInventory
 python3 scripts/verify-inputs.py --inventory app/build/reports/release-runtime-dependencies.tsv
 python3 scripts/verify-release.py app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-Choose an unused, increasing version code for distribution. Version 89 identifies this unpublished QA candidate. Release packaging requires explicit version inputs. Without signing configuration, outputs are unsigned. See [release/SIGNING.md](release/SIGNING.md) for first-time signing; the QA signing key is not a public distribution key.
+Choose an unused, increasing version code for distribution. Version 90 identifies this unpublished multilingual QA candidate. Release packaging requires explicit version inputs. Without signing configuration, outputs are unsigned. See [release/SIGNING.md](release/SIGNING.md) for first-time signing; the QA signing key is not a public distribution key.
 
 The release build uses R8 and resource shrinking. Large recognition models are downloaded, hash-checked and installed atomically. A 644 KB speech detector is bundled. Native runtime provenance and build instructions are in [native/README.md](native/README.md).
 

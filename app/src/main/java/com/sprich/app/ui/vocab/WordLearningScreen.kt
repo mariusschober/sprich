@@ -64,7 +64,8 @@ const val TYPED_SPELLING_IME_OPTION = "com.sprich.app.TYPED_SPELLING"
     val name = when (profile.engine) {
         "automatic" -> stringResource(R.string.automatic)
         "accurate" -> stringResource(R.string.accurate)
-        else -> ApiCatalog.preset(profile.engine).name
+        else -> if (profile.engine in setOf("custom", "openai-compatible")) stringResource(R.string.api_custom_name)
+            else ApiCatalog.preset(profile.engine).name
     }
     return buildList {
         add(name)

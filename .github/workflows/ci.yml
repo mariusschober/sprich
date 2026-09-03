@@ -29,6 +29,8 @@ jobs:
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.0.12077973'
       - name: Tests, release lint, R8 APK and bundle (unsigned CI artifacts)
         run: ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease :app:bundleRelease :app:writeReleaseDependencyInventory --stacktrace
+      - name: Verify complete interface localizations
+        run: python3 scripts/verify-locales.py
       - name: Verify runtime inputs and notices
         run: ./scripts/verify-models.sh --inventory app/build/reports/release-runtime-dependencies.tsv
       - name: Verify actual release APK

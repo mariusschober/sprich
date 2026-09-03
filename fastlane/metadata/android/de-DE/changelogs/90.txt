@@ -1,0 +1,3 @@
+Sprich spricht jetzt deine Sprache. Die vollständige Oberfläche, Sprachleiste, Einrichtung, persönlichen APIs, der Wortschatz, Fehlermeldungen und die Lizenzerklärungen sind auf Englisch, Deutsch, Französisch und Spanisch verfügbar.
+
+Sprich folgt deiner Android-Sprache. Ab Android 13 kannst du unter Einstellungen → App-Sprache eine eigene Sprache für Sprich wählen. Die Diktatsprache bleibt davon unabhängig.

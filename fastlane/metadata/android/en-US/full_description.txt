@@ -16,7 +16,7 @@ Want writing cleanup or API recognition? Choose a provider, paste your own key a
 
 Start speaking as soon as Sprich opens. Instant listening is on from setup and can be turned off in Settings. Pause to insert your words, and tap the bar to finish. Moving the cursor or leaving the field stops listening and cancels words that have not been inserted. Dictation is unavailable in password and PIN fields.
 
-Requires an ARM64 phone with Android 8.0 or later. The interface is in English. This is a release candidate; speech recognition can make mistakes, so review your text before sending it.
+Requires an ARM64 phone with Android 8.0 or later. The interface supports English, German, French and Spanish and follows your Android language. This is a release candidate; speech recognition can make mistakes, so review your text before sending it.
 
 Sprich's app source is MIT licensed. Speech models and runtime dependencies have their own terms, available in Settings → Licenses and notices.
 

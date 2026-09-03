@@ -108,6 +108,14 @@ android {
         // (extractNativeLibs false is default with this packaging on API 23+, keep as is)
     }
 
+    // Per-app language selection must work in every distribution channel without fetching
+    // language splits. Four small resource sets are cheaper and more reliable than Play Core.
+    bundle {
+        language {
+            enableSplit = false
+        }
+    }
+
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }

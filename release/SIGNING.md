@@ -26,10 +26,10 @@ SPRICH_KEY_PASSWORD
 Incomplete signing configuration fails. No signing configuration produces an unsigned release. Build the committed source with explicit version inputs:
 
 ```sh
-./gradlew -PsprichVersionCode=89 -PsprichVersionName=1.0.0-rc14 :app:assembleRelease
+./gradlew -PsprichVersionCode=90 -PsprichVersionName=1.0.0-rc15 :app:assembleRelease
 ```
 
-Version 89 identifies the current unpublished QA candidate. Increase it for a later public payload rather than reusing a published code. Verify the APK with SDK `apksigner verify --verbose --print-certs` and retain its certificate SHA-256 with the release. Confirm it matches your designated key and is not `CN=Android Debug`. Keep the R8 mapping and native symbols for the same build.
+Version 90 identifies the current unpublished multilingual QA candidate. Increase it for a later public payload rather than reusing a published code. Verify the APK with SDK `apksigner verify --verbose --print-certs` and retain its certificate SHA-256 with the release. Confirm it matches your designated key and is not `CN=Android Debug`. Keep the R8 mapping and native symbols for the same build.
 
 Only then copy the verified signed APK to `release-output/zapstore/sprich-arm64-v8a.apk`. Unsigned and QA-signed copies are kept separately. Complete the narrow installation/dictation check with the permanent-key build before public distribution.
 

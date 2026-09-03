@@ -1,0 +1,24 @@
+Habla en lugar de escribir.
+
+Sprich es un teclado de voz para Android. Dicta en tus notas, mensajes y otros campos de texto, y vuelve a tu teclado habitual con un toque.
+
+• Habla inglés, alemán, español o francés.
+• Automático reconoce el idioma mientras hablas.
+• Preciso usa el idioma que elijas.
+• Enseña nombres y términos especiales: dilos tres veces y escribe su forma correcta o elige localmente el nombre de una aplicación o contacto.
+• Desliza para borrar, susurrar, cambiar de teclado u ocultar la barra.
+• Mejora del texto y reconocimiento por API opcionales con tus propias claves.
+• Sin cuenta de Sprich, suscripción, anuncios ni analítica.
+
+Descarga los archivos de voz una vez y dicta después sin conexión. Automático necesita unos 219 MB; Preciso es una descarga opcional de 154 MB. Tu voz se queda en el teléfono cuando las API personales están desactivadas.
+
+¿Quieres mejorar el texto o usar reconocimiento por API? Elige un proveedor, pega tu propia clave y comprueba la conexión. Cada opción permanece desactivada hasta que la actives expresamente. Las solicitudes van directamente al proveedor; no hay ningún servidor de Sprich de por medio. Se aplican sus costes y políticas de datos. Meta y las integraciones personalizadas son experimentales.
+
+Empieza a hablar en cuanto se abra Sprich. La escucha instantánea se activa durante la configuración y puede desactivarse en Ajustes. Haz una pausa para insertar tus palabras y toca la barra para terminar. Mover el cursor o salir del campo detiene la escucha y cancela las palabras que aún no se han insertado. El dictado no está disponible en campos de contraseña o PIN.
+
+Requiere un teléfono ARM64 con Android 8.0 o posterior. La interfaz está disponible en inglés, alemán, francés y español y sigue el idioma de Android. Esta versión es una candidata a publicación. El reconocimiento de voz puede cometer errores; revisa el texto antes de enviarlo.
+
+El código fuente de la aplicación Sprich tiene licencia MIT. Los modelos de voz y las dependencias de ejecución tienen sus propias condiciones, disponibles en Ajustes → Licencias y avisos.
+
+Privacidad: https://github.com/mariusschober/sprich/blob/main/docs/PRIVACY.md
+Código fuente y asistencia: https://github.com/mariusschober/sprich

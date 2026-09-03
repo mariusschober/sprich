@@ -7,7 +7,7 @@ Findings and qualification limits are in [REVIEW.md](REVIEW.md). The first packa
 ## Prepared
 
 - Root [zapstore.yaml](../zapstore.yaml): repository, description, tags, model-license disclosure, local icon/screenshots and release notes.
-- English copy and genuine screenshots in [fastlane/metadata/android/en-US](../fastlane/metadata/android/en-US). Fastlane is a metadata format consumed by `zsp`; using it does not submit to Play or F-Droid.
+- English, German, French and Spanish copy under [fastlane/metadata/android](../fastlane/metadata/android), with genuine English screenshots in `en-US`. Fastlane is a metadata format consumed by `zsp`; using it does not submit to Play or F-Droid.
 - [Privacy notice](../docs/PRIVACY.md), [complete notices](../licenses/THIRD_PARTY_NOTICES.txt), [native provenance](../native/README.md) and aggregated device evidence.
 - Final artifacts and provenance in the ignored `release-output/` directory: unsigned APK, QA-signed APK, hashes, certificate, R8 mapping and available native symbols. The production path is deliberately empty until a permanent signer is provided.
 

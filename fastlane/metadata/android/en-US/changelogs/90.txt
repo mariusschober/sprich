@@ -1,0 +1,3 @@
+Sprich now speaks your language. The complete interface, voice bar, setup, personal APIs, vocabulary, errors and license explanations are available in English, German, French and Spanish.
+
+Sprich follows your Android language. On Android 13 and later, choose a separate language for Sprich from Settings → App language. Dictation language remains an independent choice.

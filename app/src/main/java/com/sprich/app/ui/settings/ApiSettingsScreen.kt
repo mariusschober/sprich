@@ -67,6 +67,7 @@ import kotlinx.coroutines.flow.first
     var micAllowed by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) }
     val preset = ApiCatalog.preset(providerId)
     val custom = providerId == "custom" || providerId == "openai-compatible"
+    val providerName = if (custom) stringResource(R.string.api_custom_name) else preset.name
     val effectiveEndpoint = if (custom) endpoint.trim().trimEnd('/') else preset.endpoint
     val effectiveModel = if (custom) model.trim() else if (use == ApiUse.VOICE) preset.voiceModel else preset.writingModel
     val metaVoice = use == ApiUse.VOICE && providerId == "meta-muse-voice-transcribe"
@@ -220,9 +221,9 @@ import kotlinx.coroutines.flow.first
                 visualTransformation = PasswordVisualTransformation(), singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
                 modifier = Modifier.fillMaxWidth().onFocusChanged { keyFocused = it.isFocused })
-            if (savedRef.isNotEmpty() && other?.credentialRef == savedRef) Text(stringResource(R.string.api_shared_key, preset.name), style = MaterialTheme.typography.bodySmall)
-            if (preset.keyUrl.isNotEmpty()) TextButton(onClick = { uri.openUri(preset.keyUrl) }) { Text(stringResource(R.string.api_get_key, preset.name)) }
-            Text(stringResource(if (use == ApiUse.WRITING) R.string.api_text_disclosure else R.string.api_audio_disclosure, preset.name), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (savedRef.isNotEmpty() && other?.credentialRef == savedRef) Text(stringResource(R.string.api_shared_key, providerName), style = MaterialTheme.typography.bodySmall)
+            if (preset.keyUrl.isNotEmpty()) TextButton(onClick = { uri.openUri(preset.keyUrl) }) { Text(stringResource(R.string.api_get_key, providerName)) }
+            Text(stringResource(if (use == ApiUse.WRITING) R.string.api_text_disclosure else R.string.api_audio_disclosure, providerName), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(stringResource(R.string.api_key_privacy), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (use == ApiUse.VOICE && !micAllowed) MicrophoneAccess(onGranted = { micAllowed = true })
             if (busy) {
@@ -239,7 +240,7 @@ import kotlinx.coroutines.flow.first
             }
             message?.let {
                 Text(stringResource(it), color = MaterialTheme.colorScheme.error)
-                providerDetail?.let { detail -> Text(stringResource(R.string.api_provider_explanation, preset.name, detail), style = MaterialTheme.typography.bodySmall) }
+                providerDetail?.let { detail -> Text(stringResource(R.string.api_provider_explanation, providerName, detail), style = MaterialTheme.typography.bodySmall) }
             }
             result?.let { checked ->
                 Card(shape = RoundedCornerShape(20.dp)) {
@@ -267,20 +268,20 @@ import kotlinx.coroutines.flow.first
                 }
                 Text(stringResource(R.string.api_preferred_languages), style = MaterialTheme.typography.titleSmall)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("en" to "English", "de" to "Deutsch", "es" to "Español", "fr" to "Français").forEach { (code, name) ->
+                    listOf("en" to R.string.ime_subtype_en, "de" to R.string.ime_subtype_de, "es" to R.string.ime_subtype_es, "fr" to R.string.ime_subtype_fr).forEach { (code, name) ->
                         FilterChip(selected = code in voiceOptions.languageHints, enabled = !busy, onClick = {
                             val hints = voiceOptions.languageHints.toMutableSet()
                             if (!hints.add(code)) hints.remove(code)
                             voiceOptions = voiceOptions.copy(languageHints = hints.toSet()); result = null
-                        }, label = { Text(name) })
+                        }, label = { Text(stringResource(name)) })
                     }
                 }
                 Text(stringResource(R.string.api_language_bias_description), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                SettingsToggle(stringResource(R.string.api_vocabulary_title), stringResource(R.string.api_vocabulary_description, preset.name), config?.personalVocabHintEnabled == true) {
+                SettingsToggle(stringResource(R.string.api_vocabulary_title), stringResource(R.string.api_vocabulary_description, providerName), config?.personalVocabHintEnabled == true) {
                     changeSetting { prefs.setPersonalVocabHintEnabled(it) }
                 }
             }
-            if (use == ApiUse.WRITING && verified) SettingsToggle(stringResource(R.string.api_context_title), stringResource(R.string.api_context_description, preset.name), config?.refinementContextEnabled == true) {
+            if (use == ApiUse.WRITING && verified) SettingsToggle(stringResource(R.string.api_context_title), stringResource(R.string.api_context_description, providerName), config?.refinementContextEnabled == true) {
                 changeSetting { prefs.setRefinementContext(it) }
             }
             if (use == ApiUse.VOICE && verified) SettingsToggle(stringResource(R.string.api_fallback_title), stringResource(R.string.api_fallback_description), config?.apiLocalFallback == true) {

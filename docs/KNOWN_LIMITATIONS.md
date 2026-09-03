@@ -3,7 +3,7 @@
 See [release/REVIEW.md](../release/REVIEW.md) for measured acceptance against the current artifact. Dated sprint reports describe older builds.
 
 - ARM64 only, Android API 26–36. No 32-bit, x86 or pre-Android-8 package.
-- Dictation supports English, German, Spanish and French. The UI currently uses English. Unsupported speech is not a translation feature.
+- Dictation and the interface support English, German, Spanish and French. The interface follows Android, while dictation language is chosen independently. Unsupported speech is not translated.
 - Large offline speech files require a one-time download and spare installation space. Automatic detects the language per utterance; Accurate requires an explicit language.
 - Moving the cursor/selection, changing field or hiding the keyboard cancels uninserted words. Review inserted text; speech recognition is fallible.
 - Conservative editor checks can refuse an insertion/deletion in editors that do not expose sufficient reliable context. Sprich never retries an ambiguous mutation.
