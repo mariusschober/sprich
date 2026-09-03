@@ -2,6 +2,8 @@ package com.sprich.app.ui.onboarding
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -10,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.sprich.app.R
 import com.sprich.app.models.manager.ModelManager
@@ -26,6 +29,7 @@ import kotlinx.coroutines.launch
     val lid by manager.lidStatus.collectAsState()
     val fast by manager.fastConformerStatus.collectAsState()
     val keyboard = rememberKeyboardState()
+    val instantStart by prefs.instantMode.collectAsState(initial = true)
     val scope = rememberCoroutineScope()
     var step by rememberSaveable { mutableIntStateOf(0) }
     val ready = lid is ModelStatus.Ready && fast is ModelStatus.Ready
@@ -46,6 +50,20 @@ import kotlinx.coroutines.launch
             1 -> {
                 Text(stringResource(R.string.microphone_title), style = MaterialTheme.typography.headlineMedium)
                 Text(stringResource(R.string.microphone_description), style = MaterialTheme.typography.bodyLarge)
+                Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .toggleable(instantStart, role = Role.Switch) { scope.launch { prefs.setInstantMode(it) } }
+                            .padding(18.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(stringResource(R.string.instant_dictation), style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.instant_description), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = instantStart, onCheckedChange = null)
+                    }
+                }
                 if (keyboard.microphone) Button(onClick = { step = 2 }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_action)) }
                 else MicrophoneAccess { step = 2 }
             }

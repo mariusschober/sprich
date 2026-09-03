@@ -8,7 +8,7 @@ Voice dictation for Android. Speak English, German, Spanish or French into the a
 
 1. Open Sprich, allow microphone access and enable its keyboard.
 2. Download Automatic (219 MB). Accurate is an optional 154 MB download in Settings.
-3. Select Sprich in a text field, tap the voice bar and speak. Pause to insert a sentence; tap again to finish.
+3. Select Sprich in a text field and start speaking. It listens as soon as the keyboard opens. Pause to insert a sentence; tap the bar to finish.
 4. Use the keyboard button to return to your regular keyboard.
 
 Swipe left quickly to delete one word or symbol. A longer or slower swipe deletes the last phrase; hold at the end to keep deleting sentences. Swipe right to toggle Whisper mode, up out of the bar for your typing keyboard, or down to hide Sprich. Undo appears after a deletion, and holding the bar for 2½ seconds opens Settings. Moving the cursor or changing a selection stops listening and cancels words that have not been inserted. Password and PIN fields do not permit dictation. Spoken editing and personal vocabulary are in Settings.
@@ -23,13 +23,13 @@ Use JDK 17+, SDK 36 and NDK 27.0.12077973. Configure the SDK with Android Studio
 
 ```sh
 ./gradlew :app:assembleDebug :app:testDebugUnitTest
-./gradlew -PsprichVersionCode=88 -PsprichVersionName=1.0.0-rc13 \
+./gradlew -PsprichVersionCode=89 -PsprichVersionName=1.0.0-rc14 \
   :app:lintRelease :app:assembleRelease :app:writeReleaseDependencyInventory
 python3 scripts/verify-inputs.py --inventory app/build/reports/release-runtime-dependencies.tsv
 python3 scripts/verify-release.py app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-Choose an unused, increasing version code for distribution. Version 88 identifies this unpublished QA candidate. Release packaging requires explicit version inputs. Without signing configuration, outputs are unsigned. See [release/SIGNING.md](release/SIGNING.md) for first-time signing; the QA signing key is not a public distribution key.
+Choose an unused, increasing version code for distribution. Version 89 identifies this unpublished QA candidate. Release packaging requires explicit version inputs. Without signing configuration, outputs are unsigned. See [release/SIGNING.md](release/SIGNING.md) for first-time signing; the QA signing key is not a public distribution key.
 
 The release build uses R8 and resource shrinking. Large recognition models are downloaded, hash-checked and installed atomically. A 644 KB speech detector is bundled. Native runtime provenance and build instructions are in [native/README.md](native/README.md).
 

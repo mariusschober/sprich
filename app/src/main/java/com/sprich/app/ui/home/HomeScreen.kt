@@ -83,7 +83,11 @@ import com.sprich.app.ui.theme.VoiceMark
                         colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
                             focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
                     )
-                    Text(stringResource(R.string.dictation_help), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    Text(
+                        stringResource(if (config?.instantMode == true) R.string.dictation_help_instant else R.string.dictation_help_manual),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant,
+                    )
                 }
             }
         }

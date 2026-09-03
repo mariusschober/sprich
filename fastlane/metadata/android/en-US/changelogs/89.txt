@@ -1,0 +1,1 @@
+Sprich now starts listening as soon as its keyboard opens. The choice is on during first setup and can be turned off there or in Settings. Existing opt-outs stay off, and password/PIN fields remain silent.

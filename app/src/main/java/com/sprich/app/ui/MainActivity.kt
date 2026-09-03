@@ -28,7 +28,6 @@ import com.sprich.app.ui.settings.SettingsScreen
 import com.sprich.app.ui.theme.SprichTheme
 import com.sprich.app.ui.vocab.VocabScreen
 import com.sprich.app.ui.vocab.WordLearningScreen
-import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
     private var settingsRequest by mutableIntStateOf(0)
@@ -59,7 +58,7 @@ class MainActivity : ComponentActivity() {
                 val nav = rememberNavController()
                 var startDest by remember { mutableStateOf<String?>(null) }
                 LaunchedEffect(Unit) {
-                    val done = try { prefs.onboardingDone.first() } catch (_: Exception) { false }
+                    val done = try { prefs.initializeFirstRun() } catch (_: Exception) { false }
                     startDest = if (done) "home" else "onboarding"
                 }
                 LaunchedEffect(startDest, settingsRequest) {

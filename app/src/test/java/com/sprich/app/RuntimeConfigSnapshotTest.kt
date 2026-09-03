@@ -1,6 +1,7 @@
 package com.sprich.app
 
 import android.content.Context
+import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.test.core.app.ApplicationProvider
 import com.sprich.app.api.*
 import com.sprich.app.speech.TranscriptionMode
@@ -18,6 +19,29 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class RuntimeConfigSnapshotTest {
+    @Test fun instantStartIsTheFreshDefaultAndAnOptOutStaysOff() = runBlocking {
+        val prefs = prefs()
+        prefs.clearAll()
+
+        assertTrue(prefs.instantMode.first())
+        assertTrue(prefs.runtimeConfigSnapshot.first().instantMode)
+        assertFalse(prefs.initializeFirstRun())
+        assertTrue(prefs.runtimeConfigSnapshot.first().instantMode)
+
+        prefs.setInstantMode(false)
+        prefs.setOnboardingDone(true)
+        assertTrue(prefs.initializeFirstRun())
+        assertFalse(prefs.instantMode.first())
+        assertFalse(prefs.runtimeConfigSnapshot.first().instantMode)
+    }
+
+    @Test fun missingLegacyValueDoesNotSilentlyEnableACompletedInstall() {
+        val legacy = mutablePreferencesOf(Preferences.KEY_ONBOARDING_DONE to true)
+        assertFalse(Preferences.resolveInstantMode(legacy))
+        legacy[Preferences.KEY_INSTANT_MODE] = true
+        assertTrue(Preferences.resolveInstantMode(legacy))
+    }
+
     @Test fun whisperPreferenceIsFrozenAndCannotEnableApis() = runBlocking {
         val prefs = prefs()
         prefs.clearAll()

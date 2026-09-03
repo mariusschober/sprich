@@ -66,10 +66,18 @@ class Preferences(context: Context) {
         val KEY_DEBUG_WAV_CAPTURE = booleanPreferencesKey("debug_wav_capture")
         val KEY_DEBUG_TRANSCRIPT_TRACE = booleanPreferencesKey("debug_transcript_trace")
 
+        /**
+         * Instant start is the first-run experience. A completed installation with no stored
+         * value predates this default, so it stays off instead of silently opening its
+         * microphone after an update. Any explicit choice always wins.
+         */
+        internal fun resolveInstantMode(prefs: androidx.datastore.preferences.core.Preferences): Boolean =
+            prefs[KEY_INSTANT_MODE] ?: (prefs[KEY_ONBOARDING_DONE] != true)
+
     }
 
     val onboardingDone: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_ONBOARDING_DONE] ?: false }
-    val instantMode: Flow<Boolean> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{ it[KEY_INSTANT_MODE] ?: false }
+    val instantMode: Flow<Boolean> = context.ds.data.map(::resolveInstantMode).catch { if (it is IOException) emit(false) else throw it }
     val language: Flow<Language> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map{
         when(it[KEY_LANGUAGE]?.lowercase()){
             "en", "en-us", "en-gb" -> Language.EN; "de", "de-de" -> Language.DE; "es", "es-es" -> Language.ES; "fr", "fr-fr" -> Language.FR; else -> Language.AUTO
@@ -136,7 +144,11 @@ class Preferences(context: Context) {
 
     // Single atomic snapshot — one DataStore emission maps to one immutable RuntimeConfigSnapshot.
     // IME must copy one snapshot at speech onset; Settings mutations affect only next utterance.
-    val runtimeConfigSnapshot: Flow<RuntimeConfigSnapshot> = context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }.map { prefs ->
+    val runtimeConfigSnapshot: Flow<RuntimeConfigSnapshot> = context.ds.data.catch {
+        // A storage failure is not first-run consent. Preserve the established config fallbacks,
+        // but synthesize a completed install so automatic microphone start fails closed.
+        if (it is IOException) emit(mutablePreferencesOf(KEY_ONBOARDING_DONE to true)) else throw it
+    }.map { prefs ->
         val transcriptionMode = prefs[KEY_TRANSCRIPTION_MODE]?.let {
             try { com.sprich.app.speech.TranscriptionMode.valueOf(it) } catch (_: Exception) { null }
         } ?: com.sprich.app.speech.TranscriptionMode.fromRaw(prefs[KEY_STT_MODE] ?: "local")
@@ -172,7 +184,7 @@ class Preferences(context: Context) {
             personalVocabHintEnabled = prefs[KEY_PERSONAL_VOCAB_HINT] ?: false,
             debugWavCapture = prefs[KEY_DEBUG_WAV_CAPTURE] ?: false,
             debugTranscriptTrace = prefs[KEY_DEBUG_TRANSCRIPT_TRACE] ?: false,
-            instantMode = prefs[KEY_INSTANT_MODE] ?: false,
+            instantMode = resolveInstantMode(prefs),
             commandsEnabled = prefs[KEY_COMMANDS] ?: true,
             hapticsEnabled = prefs[KEY_HAPTICS] ?: true,
             sttVerification = prefs[KEY_STT_VERIFICATION] ?: "",
@@ -319,7 +331,26 @@ class Preferences(context: Context) {
     suspend fun setDebugTranscriptTrace(v: Boolean){ context.ds.edit{it[KEY_DEBUG_TRANSCRIPT_TRACE]=v} }
 
     suspend fun clearLegacyApiKeys(){ context.ds.edit{ it.remove(KEY_STT_API_KEY); it.remove(KEY_AI_API_KEY) } }
-    suspend fun setOnboardingDone(v: Boolean){ context.ds.edit{it[KEY_ONBOARDING_DONE]=v} }
+    /**
+     * Persist the first-run default before onboarding is drawn. Re-entering the app never
+     * overwrites an opt-out, and legacy completed installations remain on their old default.
+     * Returns whether onboarding was already complete.
+     */
+    suspend fun initializeFirstRun(): Boolean {
+        var done = false
+        context.ds.edit { stored ->
+            done = stored[KEY_ONBOARDING_DONE] ?: false
+            if (!done && !stored.contains(KEY_INSTANT_MODE)) stored[KEY_INSTANT_MODE] = true
+        }
+        return done
+    }
+
+    suspend fun setOnboardingDone(v: Boolean){
+        context.ds.edit {
+            if (v && !it.contains(KEY_INSTANT_MODE)) it[KEY_INSTANT_MODE] = true
+            it[KEY_ONBOARDING_DONE] = v
+        }
+    }
     suspend fun setInstantMode(v: Boolean){ context.ds.edit{it[KEY_INSTANT_MODE]=v} }
     suspend fun setWhisperMode(v: Boolean) { context.ds.edit { it[KEY_WHISPER_MODE] = v } }
     suspend fun setLanguage(v: Language){ context.ds.edit{it[KEY_LANGUAGE]=v.code} }

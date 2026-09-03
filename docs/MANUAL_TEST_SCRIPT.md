@@ -17,9 +17,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk   # 47M, arm64-v8a
 
 1. Install → open Sprich → grant microphone → enable Sprich keyboard in system Settings → switch to Sprich via globe.
 2. Permission → model ready/download state: Settings → Advanced → verify `files/canary` shows Ready or Download (SHA-256 `7a38ed8b…`, 147M). Download if needed over Wi-Fi; verify atomic rename and `isCanaryReady()` (encoder/decoder >50M).
-3. 5-second test phrase: focus any EditText → tap pill “Tap to speak” → speak “This is much faster than typing.” → verify composing appears <450ms, final commits <500ms after endpoint, one final commit, no duplication.
+3. 5-second test phrase: focus any EditText → verify the pill enters “Listening…” without a tap → speak “This is much faster than typing.” → verify one final commit and no duplication. Turn instant start off in Settings and repeat after tapping the idle pill.
 4. Language chip: Settings → Language shows `Auto` (or EN/DE/ES/FR). Switch to `Auto` → dictate English 10s, then German 10s — verify diagnostics (`files/diagnostics/latest.log` → `resolvedLanguage`, `task=TRANSCRIBE`, `sessionId`) logs correct tag without using `Locale.getDefault()`.
-5. Mic state discoverability: verify `Listening…` + liquid bar + glow + aura visible <150ms after tap, one-tap pause stops (mic released <1s, `adb shell dumpsys audio` shows no recording), no silent background listening.
+5. Mic state discoverability: verify `Listening…` + liquid bar + glow + aura appears when the keyboard opens, one-tap pause stops (mic released <1s, `adb shell dumpsys audio` shows no recording), no silent background listening.
 
 ## Phase B — Languages (30 trials)
 

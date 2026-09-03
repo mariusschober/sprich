@@ -14,7 +14,7 @@ Download the speech files once, then dictate offline. Automatic needs about 219 
 
 Want writing cleanup or API recognition? Choose a provider, paste your own key and check the connection. Each option stays off until you explicitly enable it. Requests go directly to that provider; Sprich has no server in between. Provider charges and data policies apply. Meta and custom integrations are experimental.
 
-Tap to speak. Pause to insert your words, and tap again to finish. Moving the cursor or leaving the field stops listening and cancels words that have not been inserted. Dictation is unavailable in password and PIN fields.
+Start speaking as soon as Sprich opens. Instant listening is on from setup and can be turned off in Settings. Pause to insert your words, and tap the bar to finish. Moving the cursor or leaving the field stops listening and cancels words that have not been inserted. Dictation is unavailable in password and PIN fields.
 
 Requires an ARM64 phone with Android 8.0 or later. The interface is in English. This is a release candidate; speech recognition can make mistakes, so review your text before sending it.
 
