@@ -25,4 +25,11 @@ sealed interface LocalAsrRoute {
         is AutomaticFastConformer -> "fastconformer-ctc-en-de-es-fr-14288-int8"
         is AccurateCanary -> "canary-180m-flash-int8"
     }
+
+    companion object {
+        fun fromLanguage(language: com.sprich.app.speech.api.SpeechLanguage): LocalAsrRoute {
+            val selected = language.toLegacyLanguage()
+            return if (selected == Language.AUTO) AutomaticFastConformer else AccurateCanary(selected)
+        }
+    }
 }

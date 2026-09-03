@@ -881,6 +881,10 @@ class SprichIME : InputMethodService() {
         resetBarMotion()
         updateImeUi(isDictationRunning())
         if (isPassword(info)) return
+        if (info?.packageName == packageName && info.privateImeOptions == com.sprich.app.ui.vocab.TYPED_SPELLING_IME_OPTION) {
+            switchToTypingKeyboard()
+            return
+        }
         startJob?.cancel()
         startJob = scope.launch {
             val snap = runtimeConfigFlow.first { it != null }!!
@@ -1747,11 +1751,11 @@ class SprichIME : InputMethodService() {
             } else {
                 // Non-command: deterministic text with vocab applied before refinement (P1-17 step 2)
                 var deterministic = preRefineParsed.text
-                // Ensure vocab applied deterministically before refinement (parser already did, but double-ensure)
-                if (!speakerDictation) deterministic = try { plan.vocabulary.apply(deterministic) } catch (_: Exception) { deterministic }
+                val vocabularyProfile = com.sprich.app.vocab.RecognitionProfile.result(plan, transcriptionResult.source)?.key
+                if (!speakerDictation) deterministic = try { plan.vocabulary.apply(deterministic, vocabularyProfile) } catch (_: Exception) { deterministic }
                 // For irrelevant vocab protection, compute relevant terms only (present in current transcript)
                 val relevantTerms: List<String> = try {
-                    val allEntries = plan.vocabulary.entries.map { it.written }.filter { it.isNotBlank() }
+                    val allEntries = plan.vocabulary.terms().filter { it.isNotBlank() }
                     if (allEntries.isEmpty()) emptyList()
                     else {
                         val lower = deterministic.lowercase()
@@ -2582,15 +2586,7 @@ class SprichIME : InputMethodService() {
 
     // ---------- Route determination (single source, based on speechLanguage) ----------
     private fun determineRoute(speechLang: com.sprich.app.speech.api.SpeechLanguage): LocalAsrRoute {
-        return when (speechLang) {
-            is com.sprich.app.speech.api.SpeechLanguage.Auto -> LocalAsrRoute.AutomaticFastConformer
-            is com.sprich.app.speech.api.SpeechLanguage.Fixed -> {
-                val legacy = speechLang.toLegacyLanguage()
-                // Explicit AUTO from legacy (should not happen when Fixed, but guard)
-                if (legacy == com.sprich.app.speech.api.Language.AUTO) LocalAsrRoute.AutomaticFastConformer
-                else LocalAsrRoute.AccurateCanary(legacy)
-            }
-        }
+        return LocalAsrRoute.fromLanguage(speechLang)
     }
 
     // Strict HTTPS validation — centralized via EndpointValidator (P1 centralization)
@@ -2625,7 +2621,7 @@ class SprichIME : InputMethodService() {
         val context = if (fieldAllowsContext && (refinement as? RefinementPlan.Enabled)?.config?.contextEnabled == true) {
             com.sprich.app.speech.refinement.DictationContext.beforeCursor(editorAuthority?.before)
         } else null
-        val hints = if (s.personalVocabHintEnabled) vocabulary.entries.map { it.written }.filter { it.length in 1..100 && it.none { c -> c.isISOControl() } }.take(100) else emptyList()
+        val hints = if (s.personalVocabHintEnabled) vocabulary.terms().filter { it.length in 1..100 && it.none { c -> c.isISOControl() } }.take(100) else emptyList()
         return UtterancePlan(transcription, refinement, config, vocabulary, context, hints, whisperMode = s.whisperMode)
     }
 

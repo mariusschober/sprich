@@ -15,6 +15,8 @@ Swipe left quickly to delete one word or symbol. A longer or slower swipe delete
 
 Android 8.0–16 (API 26–36), ARM64 only. UI copy is currently English; the four dictation languages are independent of Android's display language. Recognition quality depends on speech and recording conditions; review the inserted text.
 
+**Teach Sprich a word:** in Settings → Personal vocabulary, record a difficult name or term three times, type its intended spelling, then choose which recognized forms to correct. Two extra attempts are optional. Learned corrections apply to the recognition mode used for that lesson; manual rules remain available. Audio is discarded, and only confirmed text observations are saved. [Design, safeguards and evidence](docs/VOCABULARY_LEARNING.md).
+
 ## Build and verify
 
 Use JDK 17+, SDK 36 and NDK 27.0.12077973. Configure the SDK with Android Studio or `local.properties`.

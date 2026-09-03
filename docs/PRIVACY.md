@@ -16,6 +16,10 @@ Microphone audio is held in bounded memory while Sprich listens and processes an
 
 Sprich reads nearby editor text and the current selection locally to insert text and safely support deletion/undo. Text inserted into another app is controlled by that app and its privacy policy. The practice field in Sprich is temporary and is not saved across process recreation.
 
+**Teach Sprich a word** records three to five short attempts using the current primary voice recognizer. Local recognition stays on the phone; an already-enabled voice API receives the recordings directly under its own data policy. Learning does not call a writing API or send dictionary hints. Audio is discarded after each attempt. Completed draft text stays in memory while the lesson is open; leaving discards it unless you select **Save word**. Saving stores the correct spelling, the original recognition text, your selected replacements and an identifier for the recognition configuration in Sprich's private vocabulary storage. API credentials are not part of that identifier. The typing keyboard used to enter the spelling is governed by its own privacy policy.
+
+This is a correction dictionary, not voiceprint storage or speech-model training. Tap a learned word in Personal vocabulary to inspect its observations or remove it. Optional vocabulary sharing sends intended spellings, not the saved recognition errors or lesson history. Ordinary dictation is not added to this dictionary automatically.
+
 Writing cleanup sends only saved vocabulary terms already present in the transcript, up to 20. **Use my vocabulary** can separately share up to 100 saved terms with a voice API and is initially off. Selected language hints are also sent with voice requests. Partial transcripts and progress events stay in the temporary dictation bar; partials never modify the receiving editor.
 
 The optional **Use nearby text** setting lets the writing provider receive up to 512 Unicode code points before the cursor for spelling and continuity. It is initially off, and does not apply to password/PIN fields or fields marked private by the receiving app. Changing writing providers resets this permission. Turning it off cancels pending work that had the previous permission.
@@ -31,7 +35,7 @@ After local speech files are installed, dictation works offline with personal AP
 ## Data stored on the phone
 
 - Speech files, integrity receipts and temporary installation files.
-- Preferences and personal vocabulary entries you explicitly save.
+- Preferences and personal vocabulary entries you explicitly save, including the recognition text from confirmed word lessons.
 - API keys encrypted with Android Keystore in private storage, bound to their provider and endpoint. Preferences hold references, not plaintext keys. Unbound legacy keys require re-entry. Key-entry screens hide the key and block screenshots while you enter it.
 - A bounded local crash breadcrumb and numeric previous-process exit metadata. They contain no dictation or editor text and are not transmitted.
 

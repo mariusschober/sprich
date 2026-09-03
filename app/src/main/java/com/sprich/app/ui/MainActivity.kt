@@ -27,6 +27,7 @@ import com.sprich.app.ui.onboarding.OnboardingScreen
 import com.sprich.app.ui.settings.SettingsScreen
 import com.sprich.app.ui.theme.SprichTheme
 import com.sprich.app.ui.vocab.VocabScreen
+import com.sprich.app.ui.vocab.WordLearningScreen
 import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
@@ -101,7 +102,8 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             composable("notices") { NoticesScreen(onBack = { nav.popBackStack() }) }
-                            composable("vocab") { VocabScreen(onBack = { nav.popBackStack() }) }
+                            composable("vocab") { VocabScreen(onBack = { nav.popBackStack() }, onLearn = { nav.navigate("learn-word") }) }
+                            composable("learn-word") { WordLearningScreen(onBack = { nav.popBackStack() }) }
                             // Benchmark only in debug source set — in release this destination is not reachable (no route)
                             if (com.sprich.app.BuildConfig.ENABLE_BENCHMARK) {
                                 composable("benchmark") { BenchmarkScreen(onBack = { nav.popBackStack() }) }

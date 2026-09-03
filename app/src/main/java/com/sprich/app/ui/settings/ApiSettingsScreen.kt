@@ -139,7 +139,7 @@ import kotlinx.coroutines.flow.first
                     val vocabulary = if (previous.personalVocabHintEnabled) {
                         val repository = com.sprich.app.vocab.VocabRepository(context, prefs)
                         repository.load()
-                        repository.entries().map { it.written }.take(100)
+                        repository.store().snapshot().terms().filter { it.length in 1..100 && it.none(Char::isISOControl) }.take(100)
                     } else emptyList()
                     ApiConnectionCheck.recordAndCheck(choice, secret, vocabulary,
                         onRecording = { recording = it },
