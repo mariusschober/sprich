@@ -166,18 +166,10 @@ class SprichIME : InputMethodService() {
     private val fieldGeneration = AtomicLong(0L)
     private val utteranceIdCounter = AtomicLong(0L)
     @Volatile private var currentUtteranceToken: UtteranceToken? = null
-    // Bounded exactly-once history: keep last 128 utterance IDs to prevent unbounded growth while retaining safety for recent duplicates
-    private val finalizedUtterances: MutableSet<Long> = java.util.Collections.synchronizedSet(object : LinkedHashSet<Long>() {
-        override fun add(element: Long): Boolean {
-            val added = super.add(element)
-            // Evict oldest if over bound (128)
-            if (size > 128) {
-                val it = iterator()
-                if (it.hasNext()) { it.next(); it.remove() }
-            }
-            return added
-        }
-    })
+    // Bounded exactly-once history (plan §6.5, Gate C): pure-JVM claim set,
+    // host-tested in P03P07QueueDeadlineTelemetryTest. First claim wins;
+    // history holds the last 128 utterance IDs.
+    private val finalizedUtterances = com.sprich.app.input.lifecycle.FinalizationClaims()
     @Volatile private var currentFieldTokenIcHash: Int = 0
 
     // --- Phase 0A+2: immutable active utterance descriptor — frozen at onset, Settings changes apply to NEXT utterance only.
@@ -1866,9 +1858,7 @@ class SprichIME : InputMethodService() {
         try {
             if (pending.plan.apiPermissionEpoch != ApiHttp.currentEpoch) return
             // Atomically claim — second caller for same utteranceId drops silently (exactly-once)
-            val claimed = synchronized(finalizedUtterances) {
-                if (finalizedUtterances.contains(token.utteranceId)) false else { finalizedUtterances.add(token.utteranceId); true }
-            }
+            val claimed = finalizedUtterances.claim(token.utteranceId)
             if (!claimed) {
                 Log.w("SprichIME", "finalizePending duplicate claim dropped token=$token reason=$reason")
                 staleCallbackDrops++
@@ -2427,7 +2417,8 @@ class SprichIME : InputMethodService() {
         currentFieldId = null
         currentUtteranceToken = null
         activeUtterance = null
-        synchronized(finalizedUtterances) { /* keep claimed ids to prevent reuse, but clear old if needed */ }
+        // Claimed ids are intentionally retained (bounded to 128 inside
+        // FinalizationClaims) to prevent utterance-id reuse after failure.
         // Off-main audio teardown — Main does only cheap requestStop, join off-thread
         val retiredCapture = try { audio.requestStop() } catch (_: Exception) { null }
         scope.launch(kotlinx.coroutines.Dispatchers.IO) { try { retiredCapture?.awaitStop() } catch (_: Exception) {} }

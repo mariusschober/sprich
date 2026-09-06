@@ -9,6 +9,7 @@ import com.sprich.app.diagnostics.TelemetryEvent
 import com.sprich.app.diagnostics.TelemetryEventType
 import com.sprich.app.diagnostics.UtteranceOutcome
 import com.sprich.app.diagnostics.UtteranceTelemetry
+import com.sprich.app.input.lifecycle.FinalizationClaims
 import com.sprich.app.input.lifecycle.QueueAdmission
 import com.sprich.app.input.lifecycle.QueuedUtterance
 import com.sprich.app.input.lifecycle.RejectionReason
@@ -109,6 +110,63 @@ class P03P07QueueDeadlineTelemetryTest {
         assertNotNull(head)
         assertTrue(head!!.failed)
         assertFalse(head.resultReady)
+    }
+
+    @Test
+    fun stuckHeadCleanup_starvesLane_untilExpiryReleasesInOrder() {
+        // Gate C: a slow/failing optional cleanup must not starve subsequent
+        // recognition — the lane holds (no overtake) until expiry, then both
+        // drain head-first with the faithful result for the expired head.
+        val q = UtteranceQueue()
+        q.admit(entry(1))
+        q.admit(entry(2))
+        q.markRecognitionDone(1)
+        q.markCleanupPending(1)
+        q.markRecognitionDone(2)
+        q.markCleanupDone(2)
+        assertNull(q.pollCommittable()) // head 1 stuck: 2 waits
+        q.expireCleanup(1)
+        val first = q.pollCommittable()
+        assertNotNull(first)
+        assertEquals(1L, first!!.seq)
+        assertTrue(first.useFaithfulFallback)
+        assertEquals(2L, q.pollCommittable()?.seq)
+        assertNull(q.pollCommittable())
+    }
+
+    @Test
+    fun lateCleanupDone_afterExpiry_keepsFaithfulFallback() {
+        // Gate C: a cleanup response arriving after expiry must not resurrect
+        // or reorder the entry — the faithful flag survives a late done.
+        val q = UtteranceQueue()
+        q.admit(entry(1))
+        q.markRecognitionDone(1)
+        q.markCleanupPending(1)
+        q.expireCleanup(1)
+        q.markCleanupDone(1) // late arrival: idempotent, keeps faithful
+        val head = q.pollCommittable()
+        assertNotNull(head)
+        assertTrue(head!!.useFaithfulFallback)
+        assertTrue(head.resultReady)
+    }
+
+    @Test
+    fun shedEntry_stillCommitsBeforeNewcomer() {
+        // Gate C: shedding converts the newest pending-cleanup entry to
+        // faithful-ready, but commit order stays head-first — the shed entry
+        // never jumps ahead, the newcomer never overtakes it.
+        val q = UtteranceQueue()
+        for (seq in 1L..4L) q.admit(entry(seq))
+        q.markCleanupPending(4)
+        val admitted = q.admit(entry(5))
+        assertTrue(admitted is QueueAdmission.Admitted)
+        for (seq in 1L..5L) {
+            q.markRecognitionDone(seq)
+            if (seq != 4L) q.markCleanupDone(seq)
+        }
+        // Entry 4 was shed to faithful-ready at admission; the rest completed.
+        val order = generateSequence { q.pollCommittable() }.map { it.seq }.toList()
+        assertEquals(listOf(1L, 2L, 3L, 4L, 5L), order)
     }
 
     // --- Finish vs Cancel (§6.5) ---
@@ -238,5 +296,40 @@ class P03P07QueueDeadlineTelemetryTest {
         assertTrue(store.save("x".repeat(20_000)))
         assertEquals(RecoveryDraftStore.MAX_CHARS, store.peek()!!.length)
         assertEquals(16_384, RecoveryDraftStore.MAX_CHARS)
+    }
+
+    // --- Exactly-once finalization claims (Gate C: at-most-once mutation) ---
+
+    @Test
+    fun claims_firstWins_duplicateDrops() {
+        val claims = FinalizationClaims()
+        assertTrue(claims.claim(7L))
+        assertFalse(claims.claim(7L))
+        assertTrue(claims.contains(7L))
+        assertTrue(claims.claim(8L))
+        assertEquals(2, claims.size())
+    }
+
+    @Test
+    fun claims_bounded_oldestEvicted() {
+        val claims = FinalizationClaims(maxClaims = 4)
+        for (id in 1L..4L) assertTrue(claims.claim(id))
+        assertEquals(4, claims.size())
+        assertTrue(claims.claim(5L))
+        assertEquals(4, claims.size())
+        assertFalse(claims.contains(1L)) // oldest evicted: reclaimable
+        assertTrue(claims.claim(1L))
+        assertTrue(claims.contains(5L)) // newest retained
+    }
+
+    @Test
+    fun claims_defaultBound_is128() {
+        assertEquals(128, FinalizationClaims.MAX_CLAIMS)
+        val claims = FinalizationClaims()
+        for (id in 1L..130L) claims.claim(id)
+        assertEquals(128, claims.size())
+        assertFalse(claims.contains(1L))
+        assertFalse(claims.contains(2L))
+        assertTrue(claims.contains(130L))
     }
 }

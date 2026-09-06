@@ -21,7 +21,7 @@ credentials/fixtures/signing only (see bottom).
 | S06 formatting grammar | IMPLEMENTED, TESTED (host + device) | `PipelineCorrectnessDeviceTest` 12/12 ON DEVICE with real Canary engine |
 | P01 capture-ready split + 8 s startup buffer (§5.1) | WIRED + TESTED (unit + device) | `StartupAudioBuffer.kt` fed by real `AudioCapture` loop (`P01StartupWiringTest`, Robolectric); device: `AudioDeviceValidationTest` 2/2, QueueActorStress 3/3 |
 | P02 neural VAD in every route (§5.2) | IMPLEMENTED + TESTED (policy + device) | `VadRoutePolicy.kt`; per-utterance `hadSpeech` threading; device LID/speech-flag paths exercised via winner tests |
-| P03 bounded queue + ordered commit lane (§6.2) | IMPLEMENTED + TESTED (host 17/17) BUT UNWIRED | `UtteranceQueue.kt`; IME still uses its own bounded channel |
+| P03 bounded queue + ordered commit lane (§6.2) | WIRED + TESTED (host 23/23 incl. 6 new Gate C; IME admit/shed/done/failed/cleanup/expire/cancel/finish verified in code) | `UtteranceQueue.kt` + `FinalizationClaims.kt` (bounded exactly-once claim set, transplanted from IME); IME admits at enqueue (count+24 MiB, shed-then-reject), marks done/failed on every finalize path, expires cleanup to faithful, cancels on session fail/stop. Serial actor keeps one commit order; lane cannot stall (failed advances, expiry releases). Gate C host tests: starvation-release order, late-cleanup-keeps-faithful, shed-order, first-wins/bounded claims |
 | P04 streaming admission + handshake (§8.1) | IMPLEMENTED + TESTED (host 5/5) | `MetaRealtimeSession.kt`, `MetaMuseSttProvider.kt`, `RemoteProviderFactory.kt`, `LiveRemoteUtterance.kt`; `RemoteAdmissionContractTest` (Robolectric). Live-provider acceptance BLOCKED (credentials) |
 | P05 bounded continuous speech (§5.3) | IMPLEMENTED + TESTED (host) BUT UNWIRED | `SegmentReconciler.kt`; no production callers yet |
 | P06 language/engine decoupling (§7) | IMPLEMENTED + TESTED (host 5/5 + device) | `LocalAsrRoute.kt` + fail-closed per-utterance LID; device: LID 8/8 alternation, Auto-without-Canary 2/2, ContinuousWinner 10+10, WerCer LID 4/4 correct |
@@ -35,6 +35,7 @@ credentials/fixtures/signing only (see bottom).
 | E03/E04 docs + release (§12) | DOCS CURRENT; release unsigned-internal | This file, `SPRICH_RELEASE_REPORT.md`, `DEVICE_RUNBOOK.md` (needs §0–3 refresh for direct-instrument method), `DEVICE_EVIDENCE_S23_2026-09-06.md` (new), `evidence-s23/` (new) |
 
 ## Tests run (this session, sandbox-free)
+- `:app:testDebugUnitTest` 554/554 green (548 + 6 P03 Gate C: starvation/late-cleanup/shed order + first-wins/bounded claims)
 - `:app:testDebugUnitTest` 548/548 green (539 baseline + 9 U02 wordAtCursor/plan/undo: `CorrectionPlanTest`)
 - U02 device E2E (S23, debug IME, QA editor): sheet open/edit/apply/proposal/remember/undo, 0 FATALs — `evidence-s23/u02-sheet-*.png`
 - `:app:testDebugUnitTest` 539/539 green (incl. 2 new sign-preservation tests) [earlier same-session baseline]
