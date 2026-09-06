@@ -61,6 +61,38 @@ credentials/fixtures/signing only (see bottom).
 - Live providers (Meta/Gemini/OpenAI-live): credentials; Meta API profile unchanged (`meta-muse-voice-transcribe` default)
 - Wispr comparison: no harness/credentials in repo
 
+## Session handoff (2026-09-06 night — dogfood week starts)
+
+**Branch:** `agent/sprich-integrity-sprint` (pushed to `origin`). **Tip at handoff:** see log.
+**Week build:** `app-debug.apk` v120/1.0.0, sha256 `7decefa9…`, installed on S23
+(R3CW404GVBL) + TCL T807D (ZXKRS4VKGQ8PWGEQ). Unsigned internal, Meta AI API
+profiles unchanged. S23 system settings restored (dark/1.0/auto/LTR/de-DE).
+
+**Achieved tonight:** P05 29 s split device-proven (2 splits + 16 k overlap,
+all committed) + audio-thread view-touch fix (222→0 violations);
+U03 stop-during-decode hole fixed (decode finishes, stale-gen abandons to
+draft) + Home card E2E (card→discard) + card Insert button (host-tested,
+needs one live voice run); U04/U05 9-shot visual matrix (no clipping;
+landscape needs one scroll; 200% wraps; RTL static-only); E01 Canary
+re-check (RTF 0.133); E02 48/48 device battery on current binary; runbook
+§2b (unsigned loop, toggle zone y≈2050–2550, afplay method); wedge
+"defect" retracted (was automation coordinate error). Host 572/572, lint
+clean, tree clean. Evidence: `evidence-s23/` (p05-*, u03-*, u0405/*, e01-*).
+
+**Remains:** (a) live voice run: dictate ~15 s → HOME mid-decode → card →
+"Hier einfügen" → text lands in field (user offered, pending);
+(b) TalkBack order/roles/focus walkthrough (hands-on);
+(c) real RTL-locale screenshot (force_rtl ineffective);
+(d) 320/411dp widths (single 384dp device);
+(e) 1000-utterance acoustic corpus, Nemotron models, signed release,
+live-provider credentials, Wispr comparison (all externally blocked);
+(f) intermittent blank decodes on loud looped audio (open flake; quiet
+clips always decode).
+
+**Next session:** pull branch, read this file, continue from (a)→(d) with
+user's week bug list; then unblock (e) as credentials/hardware allow.
+Session log: `~/.local/share/muse/sessions/2026/09/06/01a07638-5f0f-7723-8a02-0480f5d06b9d/`.
+
 ## Decisions (standing)
 - Stay unsigned for internal testing; Meta AI API recommended profiles kept; Gemini/OpenAI-live deferred by specification
 - Fixtures: natural archive speech (sherpa test_wavs); a same-day macOS-TTS detour was staged then fully replaced — no result rests on it
