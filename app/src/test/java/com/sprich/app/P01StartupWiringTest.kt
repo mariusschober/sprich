@@ -4,17 +4,22 @@ import com.sprich.app.core.audio.AudioCapture
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
- * P01 wiring test (§5.1): the real [AudioCapture] read loop (fake [Recorder],
- * no Android runtime — `SystemClock` is shadowed in /tmp for the host run)
- * feeds the bounded startup buffer until the pipeline drains it, exactly
+ * P01 wiring test (§5.1): the real [AudioCapture] read loop (fake [Recorder];
+ * runs under Robolectric so `SystemClock` works) feeds the bounded startup
+ * buffer until the pipeline drains it, exactly
  * once; [requestStop] invalidates the stale generation; restart re-arms.
  *
  * Deterministic by construction: the fake feeds an explicit bounded budget
  * (below the 128,000-sample cap, so nothing is ever dropped) then parks;
  * the parked thread is a daemon and never blocks test exit.
  */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class P01StartupWiringTest {
 
     private class FakeRecorder(val fed: ShortArray) : AudioCapture.Recorder {

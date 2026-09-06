@@ -20,8 +20,13 @@ object CriticalTokens {
 
     // Amount with optional sign, decimals, ranges (3-5 / 3–5), times (9:30), dates (2026-09-01),
     // decimals with . or , kept literally so 1.000 != 1,000.
+    // The leading signed alternative comes first so a directly attached sign sticks
+    // to its number ("-5" is one token, never bare "5"): dropping a minus flips
+    // meaning (freeze vs heat) and must reject. findAll is left-to-right and
+    // non-overlapping, so longer established spans ("5-10", "2026-09-01") still win
+    // and hyphenated words ("well-known", no digit after the sign) never match.
     private val amount = Regex(
-        "[+−\\-–—]?\\d[\\d.,:/\\-–—]*\\d|\\d[+−\\-–—]?|\\d",
+        "[+−\\-–—]\\d[\\d.,:/\\-–—]*\\d?|[+−\\-–—]?\\d[\\d.,:/\\-–—]*\\d|\\d[+−\\-–—]?|\\d",
     )
     // Unit directly attached or adjacent: mg, g, kg, ml, €-words, %, °, etc.
     private val unitWord = Regex("[\\p{L}µ%°$€£¥₹₩₽]{1,20}")

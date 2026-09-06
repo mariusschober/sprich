@@ -1,5 +1,6 @@
 package com.sprich.app.speech
 
+import com.sprich.app.speech.refinement.CriticalTokens
 import com.sprich.app.speech.refinement.RefinementMode
 import com.sprich.app.speech.refinement.RefinementValidator
 import org.junit.Assert.*
@@ -144,5 +145,41 @@ class CriticalMeaningTest {
         val snap = RefinementValidator.ValidationStats.snapshot()
         assertTrue((snap["total"] ?: 0) > 0)
         assertTrue((snap["reject:number_changed"] ?: 0) > 0)
+    }
+
+    @Test fun attachedSignSticksToItsNumber() {
+        // Dropping a minus flips meaning (freeze vs heat): the sign is one token
+        // with its number, never bare digits.
+        assertEquals(listOf("-5"), CriticalTokens.sequence("set the temperature to -5"))
+        assertEquals(listOf("+5"), CriticalTokens.sequence("adjust by +5"))
+        assertEquals(listOf("5-10"), CriticalTokens.sequence("pages 5-10"))
+        assertEquals(listOf("2026-09-01"), CriticalTokens.sequence("on 2026-09-01"))
+        assertEquals(emptyList<String>(), CriticalTokens.sequence("well-known fact"))
+    }
+
+    @Test fun droppedSignRejects() {
+        val mode = RefinementMode.CLEAN_DICTATION
+        assertTrue(
+            RefinementValidator.validate("set the temperature to -5", "Set the temperature to 5.", mode)
+                is RefinementValidator.Result.Reject,
+        )
+        assertTrue(
+            RefinementValidator.validate("adjust by +5", "Adjust by 5.", mode)
+                is RefinementValidator.Result.Reject,
+        )
+        assertTrue(
+            RefinementValidator.validate("take -5 mg daily", "Take 5 mg daily.", mode)
+                is RefinementValidator.Result.Reject,
+        )
+        // Signed currency: stripping the sign flips debt into credit.
+        assertTrue(
+            RefinementValidator.validate("transfer -€500 today", "Transfer €500 today.", mode)
+                is RefinementValidator.Result.Reject,
+        )
+        // Ranges, dates and hyphenated words keep prior behavior.
+        assertTrue(
+            RefinementValidator.validate("pages 5-10", "Pages 5-10.", mode)
+                is RefinementValidator.Result.Accept,
+        )
     }
 }

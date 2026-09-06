@@ -125,6 +125,14 @@ object RefinementValidator {
         if (currency.containsMatchIn(original) && literals(currency, original) != literals(currency, candidate)) {
             return Result.Reject("currency_changed")
         }
+        // A sign glued to currency ("-€500", "+$5") is meaning: stripping it flips
+        // debt into credit. Same preservation rule as amounts.
+        val signedCurrency = Regex("[-+–—−]\\s?[$€£¥₹₩₽]")
+        if (signedCurrency.containsMatchIn(original)) {
+            val oldSigned = signedCurrency.findAll(original).map { it.value }.toSet()
+            val newSigned = signedCurrency.findAll(candidate).map { it.value }.toSet()
+            if (oldSigned != newSigned) return Result.Reject("currency_changed")
+        }
 
         // Negation: presence plus clause scope — moved negation across clauses rejects.
         val semanticOriginal = correctionCue.replace(numericallyResolved, "$1 $2")

@@ -17,6 +17,9 @@ import com.sprich.app.speech.refinement.TermCanonical
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Privacy/security red-team, host-runnable subset (plan section 11):
@@ -25,7 +28,7 @@ import org.junit.Test
  * provider candidates, UTF-8/codepoint budget edges, protected-term folding and
  * transport/redaction isolation — all through the S01–S04 production pipeline.
  *
- * Device-only attacks remain BLOCKED (no Gradle/adb/network here):
+ * Device-only attacks remain BLOCKED (need the S23 + signed artifact for these):
  * - model-download cancellation, corrupt archives, receipt mismatch, interrupted
  *   promotion, low storage, path traversal/oversized extraction and concurrent
  *   load/replace against DownloadManager/ModelManager
@@ -40,6 +43,8 @@ import org.junit.Test
  * - log/clipboard/screenshot/WAV-tmp leak inspection on the built artifact:
  *   Unblock with the release APK + device (apksigner/sha256, logcat capture).
  */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class RedTeamPrivacySecurityTest {
 
     private val en = ResolvedUtteranceLanguage.Known(Language.EN)

@@ -26,12 +26,18 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * P04 admission/pacing/lifetime + 8.2/8.3 first-wave adapter conformance.
- * JVM-pure fixture contracts: no network, no device, no credentials.
+ * Fixture contracts: no network, no device, no credentials. Runs under Robolectric
+ * because the Meta voice protocol fixture uses org.json (android.jar stub on JVM).
  * Live-provider acceptance for every adapter remains BLOCKED (needs device + credentials).
  */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class RemoteAdmissionContractTest {
 
     private fun request(model: String = "fixture") = RemoteSttRequest(
