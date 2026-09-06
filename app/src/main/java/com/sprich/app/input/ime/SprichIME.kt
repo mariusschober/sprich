@@ -23,7 +23,11 @@ import com.sprich.app.core.audio.AudioCapture
 import com.sprich.app.diagnostics.Diagnostics
 import com.sprich.app.core.perf.LatencyTracker
 import com.sprich.app.core.vad.Vad
+import com.sprich.app.input.commands.AcousticBasis
+import com.sprich.app.input.commands.CommandPolicy
+import com.sprich.app.input.commands.ParsedDictation
 import com.sprich.app.input.commands.SpokenEditingParser
+import com.sprich.app.input.commands.TranscriptOrigin
 import com.sprich.app.input.composition.CompositionManager
 import com.sprich.app.input.lifecycle.DictationSession
 import com.sprich.app.input.lifecycle.FieldSessionController
@@ -178,11 +182,13 @@ class SprichIME : InputMethodService() {
     )
     @Volatile private var activeUtterance: ActiveUtterance? = null
 
-    // Prepared final action — command vs text separation (P0-7: refinement must never gain command authority)
+    // Prepared final action — command vs text separation (S01: switch on the parsed type,
+    // never reinterpret text; refinement receives/returns text only and can never gain
+    // command authority). Sentence deletion has no variant: the editor authority cannot prove
+    // an exact owned sentence span, so the spoken grammar does not offer it (S06).
     sealed interface PreparedFinalAction {
         data class Text(val text: String, val resolved: ResolvedUtteranceLanguage) : PreparedFinalAction
         data class DeleteLast(val token: UtteranceToken) : PreparedFinalAction
-        data class DeleteSentence(val token: UtteranceToken) : PreparedFinalAction
     }
 
     // Overlapping utterance queue — immutable per-utterance snapshots, serialized finalization actor
@@ -1781,8 +1787,10 @@ class SprichIME : InputMethodService() {
                 return
             }
 
-            // P0-7: Single-parse command isolation — parse exactly once, refinement never gains command authority
-            // P1-17: Apply personal vocabulary before refinement, send only relevant terms
+            // S01: typed command authority — parse exactly once via the trusted parser and
+            // switch on the result type; never reinterpret text. Refinement receives/returns
+            // text only. Remote-origin destructive phrases arrive as Text (confirmation-only).
+            // P1-17: Apply personal vocabulary before refinement, send only relevant terms.
             val raw = transcriptionResult.text.trim()
             // A labeled conversation keeps the provider's final spans intact; commands and cleanup
             // must not turn one speaker's words into an edit or move text between speakers.
@@ -1792,30 +1800,48 @@ class SprichIME : InputMethodService() {
             val localFallbackUsed = plan.transcription is TranscriptionPlan.ApiPrimary &&
                 transcriptionResult.source in setOf(TranscriptionSourceId.LOCAL_FAST, TranscriptionSourceId.LOCAL_CANARY)
             Log.i("SprichIME", "pipeline: token=${token.utteranceId} source=${transcriptionResult.source} mode=${plan.transcription::class.simpleName} rawLen=${raw.length} lang=${effectiveConfig.resolvedLanguageTag()} refinement=${plan.refinement::class.simpleName}")
-            // Parse exactly once on raw transcription
-            val preRefineParsed = try {
-                if (speakerDictation) SpokenEditingParser.EditResult(raw, false)
-                else SpokenEditingParser.parse(raw, postProcessResolved, plan.speechConfig.enableCommands)
+            val origin = if (transcriptionResult.source == TranscriptionSourceId.LOCAL_FAST ||
+                transcriptionResult.source == TranscriptionSourceId.LOCAL_CANARY
+            ) TranscriptOrigin.LOCAL else TranscriptOrigin.REMOTE
+            // AcousticBasis.UNKNOWN until a per-utterance VAD speech-episode flag exists (P02):
+            // symbol-only transcripts stay suppressed as possible no-speech hallucinations.
+            val commandPolicy = CommandPolicy(
+                commandsEnabled = plan.speechConfig.enableCommands,
+                origin = origin,
+                speakerLabelsPresent = speakerDictation,
+            )
+            val parsed: ParsedDictation = try {
+                if (speakerDictation) ParsedDictation.Text(raw)
+                else SpokenEditingParser.parseTyped(raw, postProcessResolved, commandPolicy, AcousticBasis.UNKNOWN)
             } catch (_: Exception) {
-                SpokenEditingParser.EditResult(raw, false)
+                ParsedDictation.Text(raw)
             }
-            val isDeleteCmd = SpokenEditingParser.isDeleteCommand(preRefineParsed.text)
-            val prepared: PreparedFinalAction = if (isDeleteCmd) {
-                Log.i("SprichIME", "spoken editing command detected")
-                if (preRefineParsed.text == "__DELETE_SENTENCE__") PreparedFinalAction.DeleteSentence(token) else PreparedFinalAction.DeleteLast(token)
-            } else {
+            val prepared: PreparedFinalAction = when (parsed) {
+                is ParsedDictation.Editing -> {
+                    // Only local-origin destructive commands reach here, and only for an exact
+                    // whole-utterance phrase in a Known language with commands enabled.
+                    // Mutation still requires fresh owned-span proof in executeSpokenDeleteLast.
+                    Log.i("SprichIME", "spoken editing command action=${parsed.action} origin=$origin")
+                    PreparedFinalAction.DeleteLast(token)
+                }
+                is ParsedDictation.Formatting -> {
+                    // Whole-utterance formatting command: deterministic, no cleanup round-trip.
+                    Log.i("SprichIME", "spoken formatting command action=${parsed.action}")
+                    PreparedFinalAction.Text(parsed.rendered, postProcessResolved)
+                }
+                is ParsedDictation.Rejected -> {
+                    Log.i("SprichIME", "parse rejected reason=${parsed.reason} — zero mutation token=$token")
+                    PreparedFinalAction.Text("", postProcessResolved)
+                }
+                is ParsedDictation.Text -> {
                 // Non-command: deterministic text with vocab applied before refinement (P1-17 step 2)
-                var deterministic = preRefineParsed.text
+                var deterministic = parsed.value
                 val vocabularyProfile = com.sprich.app.vocab.RecognitionProfile.result(plan, transcriptionResult.source)?.key
                 if (!speakerDictation) deterministic = try { plan.vocabulary.apply(deterministic, vocabularyProfile) } catch (_: Exception) { deterministic }
-                // For irrelevant vocab protection, compute relevant terms only (present in current transcript)
+                // S04: relevant-term discovery uses the same canonical comparison as enforcement,
+                // so discovery and the validator can never disagree about a term's presence.
                 val relevantTerms: List<String> = try {
-                    val allEntries = plan.vocabulary.terms().filter { it.isNotBlank() }
-                    if (allEntries.isEmpty()) emptyList()
-                    else {
-                        val lower = deterministic.lowercase()
-                        allEntries.filter { lower.contains(it.lowercase()) }.take(20)
-                    }
+                    com.sprich.app.speech.refinement.TermCanonical.relevantTerms(deterministic, plan.vocabulary.terms())
                 } catch (_: Exception) { emptyList<String>() }
                 val refinedText: String = when (val rp = plan.refinement) {
                     is RefinementPlan.Off -> deterministic
@@ -1871,10 +1897,12 @@ class SprichIME : InputMethodService() {
                     }
                 }
                 PreparedFinalAction.Text(refinedText, postProcessResolved)
+                }
             }
 
-            // P0-7: Refined text must NEVER be reinterpreted as command — commit prepared action directly
-            // Spoken delete: only delete exact owned insertion if proof holds, else zero mutation (no 40/120 guess)
+            // S01: the prepared action commits directly — refined text is NEVER reinterpreted
+            // as a command, and no late cleanup/provider response may rewrite committed text.
+            // Spoken delete: only delete exact owned insertion if proof holds, else zero mutation.
             currentCoroutineContext().ensureActive()
             if (plan.apiPermissionEpoch != ApiHttp.currentEpoch) return
             val applied: Boolean = when (prepared) {
@@ -1882,11 +1910,6 @@ class SprichIME : InputMethodService() {
                     val ok = executeSpokenDeleteLast(token)
                     if (ok) finalCommitCount++
                     ok
-                }
-                is PreparedFinalAction.DeleteSentence -> {
-                    // For this release: sentence delete disabled unless exact span can be safely established — zero mutation
-                    Log.i("SprichIME", "spoken deleteSentence requested but disabled for release — zero mutation token=$token")
-                    false
                 }
                 is PreparedFinalAction.Text -> {
                     val finalText = (prepared as PreparedFinalAction.Text).text

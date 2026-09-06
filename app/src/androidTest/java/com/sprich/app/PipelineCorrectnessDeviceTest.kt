@@ -84,9 +84,9 @@ class PipelineCorrectnessDeviceTest {
 
     @Test
     fun punctuationGermanOnDevice() {
-        // SpokenEditingParser
+        // SpokenEditingParser (S06: utterance-final singles convert, medial singles stay literal)
         assertEquals("Hallo.", SpokenEditingParser.parse("Hallo Punkt", Language.DE, true).text)
-        assertEquals("Hallo, Welt", SpokenEditingParser.parse("Hallo Komma Welt", Language.DE, true).text)
+        assertEquals("Hallo Komma Welt", SpokenEditingParser.parse("Hallo Komma Welt", Language.DE, true).text)
         assertEquals("Wie geht es?", SpokenEditingParser.parse("Wie geht es Fragezeichen", Language.DE, true).text)
         assertEquals("Hallo!", SpokenEditingParser.parse("Hallo Ausrufezeichen", Language.DE, true).text)
         // Typography raw
@@ -107,10 +107,11 @@ class PipelineCorrectnessDeviceTest {
 
     @Test
     fun punctuationEnglishSpanishOnDevice() {
-        assertEquals("Hello, world", SpokenEditingParser.parse("Hello comma world", Language.EN, true).text)
+        // S06: medial single-word punctuation stays literal; final singles and multiwords convert.
+        assertEquals("Hello comma world", SpokenEditingParser.parse("Hello comma world", Language.EN, true).text)
         assertEquals("Hello.", SpokenEditingParser.parse("Hello period", Language.EN, true).text)
         assertEquals("How are you?", SpokenEditingParser.parse("How are you question mark", Language.EN, true).text)
-        assertEquals("hola, mundo", SpokenEditingParser.parse("hola coma mundo", Language.ES, true).text)
+        assertEquals("hola coma mundo", SpokenEditingParser.parse("hola coma mundo", Language.ES, true).text)
         assertEquals("hola.", SpokenEditingParser.parse("hola punto", Language.ES, true).text)
         Log.i("PipelineDevice", "punctuation EN/ES PASS")
     }

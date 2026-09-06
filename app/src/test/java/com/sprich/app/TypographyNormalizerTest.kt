@@ -14,8 +14,11 @@ class TypographyNormalizerTest {
     }
 
     @Test fun germanHalloKommaWelt() {
+        // S06: medial single-word punctuation stays literal; utterance-final converts.
         val r = SpokenEditingParser.parse("Hallo Komma Welt", Language.DE, true)
-        assertEquals("Hallo, Welt", r.text)
+        assertEquals("Hallo Komma Welt", r.text)
+        val fin = SpokenEditingParser.parse("Hallo Welt Komma", Language.DE, true)
+        assertEquals("Hallo Welt,", fin.text)
     }
 
     @Test fun germanWieGehtEsFragezeichen() {
@@ -65,7 +68,7 @@ class TypographyNormalizerTest {
         val r1 = SpokenEditingParser.parse("Hello period", Language.EN, true)
         // "period" is whole-utterance command -> "." ; when inline? test inline
         val r2 = SpokenEditingParser.parse("Hello comma world", Language.EN, true)
-        assertEquals("Hello, world", r2.text)
+        assertEquals("Hello comma world", r2.text) // S06: medial single stays literal
         val r3 = SpokenEditingParser.parse("How are you question mark", Language.EN, true)
         assertEquals("How are you?", r3.text)
         val r4 = SpokenEditingParser.parse("Hello exclamation mark", Language.EN, true)
@@ -80,7 +83,7 @@ class TypographyNormalizerTest {
 
     @Test fun spanishPunctuation() {
         val r1 = SpokenEditingParser.parse("hola coma mundo", Language.ES, true)
-        assertEquals("hola, mundo", r1.text)
+        assertEquals("hola coma mundo", r1.text) // S06: medial single stays literal
         val r2 = SpokenEditingParser.parse("hola punto", Language.ES, true)
         assertEquals("hola.", r2.text)
         assertEquals("hola.", TypographyNormalizer.normalize("hola .", Language.ES))

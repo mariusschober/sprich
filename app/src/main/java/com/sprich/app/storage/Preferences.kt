@@ -270,7 +270,8 @@ class Preferences(context: Context) {
                 p[KEY_TRANSCRIPTION_MODE] = (if (enabled) TranscriptionMode.API_PRIMARY else TranscriptionMode.ON_DEVICE).name
                 p[KEY_STT_MODE] = if (enabled) "remote" else "local"
             } else {
-                p[KEY_REFINEMENT_MODE] = (if (enabled) RefinementMode.CLEAN_DICTATION else RefinementMode.OFF).name
+                // Faithful is the default automatic cleanup policy (S03); Polished is explicit opt-in.
+                p[KEY_REFINEMENT_MODE] = (if (enabled) RefinementMode.FAITHFUL else RefinementMode.OFF).name
                 p[KEY_AI_ENABLED] = enabled
             }
         }
