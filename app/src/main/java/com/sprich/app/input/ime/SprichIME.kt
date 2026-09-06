@@ -21,6 +21,9 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import com.sprich.app.core.audio.AudioCapture
 import com.sprich.app.diagnostics.Diagnostics
+import com.sprich.app.diagnostics.TelemetryEventType
+import com.sprich.app.diagnostics.UtteranceOutcome
+import com.sprich.app.diagnostics.UtteranceTelemetry
 import com.sprich.app.core.perf.LatencyTracker
 import com.sprich.app.core.vad.Vad
 import com.sprich.app.input.commands.AcousticBasis
@@ -218,6 +221,15 @@ class SprichIME : InputMethodService() {
     private val pendingChannel = Channel<PendingUtterance>(capacity = maxPendingQueueDepth)
     private val queueDepth = AtomicInteger(0)
     private val pendingQueuePeak = AtomicLong(0)
+    // P07: per-utterance attempt telemetry — ids and timing only, never transcripts.
+    private val utteranceTelemetry = UtteranceTelemetry()
+    private val telemetrySeq = AtomicLong(0)
+    /** Records telemetry; observability must never break dictation. */
+    private fun tel(utteranceId: Long, type: TelemetryEventType, outcome: UtteranceOutcome? = null, code: Int = 0) {
+        try {
+            utteranceTelemetry.record(utteranceId, telemetrySeq.incrementAndGet(), type, outcome, 0, code)
+        } catch (_: Exception) { }
+    }
     private val finalizationQueueOverflows = AtomicLong(0)
     private val catchingUpSuppressedOnsets = AtomicLong(0)
     private val catchingUpRejectedOnsets = AtomicLong(0)
@@ -1609,6 +1621,8 @@ class SprichIME : InputMethodService() {
         lastQueueDepth = newDepth
         if (newDepth.toLong() > pendingQueuePeak.get()) pendingQueuePeak.set(newDepth.toLong())
         Log.i("SprichIME", "enqueuePending token=${pending.token} pcm=${pending.pcm.size} queueDepth=$newDepth peak=${pendingQueuePeak.get()} reason=${pending.reason} catchingUp=$catchingUp")
+        tel(pending.token.utteranceId, TelemetryEventType.QUEUE_ADMISSION)
+        if (pending.reason == StopReason.ENDPOINT) tel(pending.token.utteranceId, TelemetryEventType.ENDPOINT)
         // Bounded channel (capacity=4) — trySend without suspension avoids unbounded PCM retention via parked coroutines
         val result = pendingChannel.trySend(pending)
         if (!result.isSuccess) {
@@ -1724,6 +1738,8 @@ class SprichIME : InputMethodService() {
             val plan = pending.plan
             val t0 = android.os.SystemClock.elapsedRealtime()
             // P0-12: truthful metrics — increment path-specific counters after transcribe, not blindly
+            tel(token.utteranceId, TelemetryEventType.RECOGNITION_START)
+            var recognitionFailed = false
             val transcriptionResult: TranscriptionResult = try {
                 ensureTranscriptionCoordinator().transcribe(pending.pcm, plan, pending.token.utteranceId, pending.live) {
                     updateRemoteProgress(pending.token, it)
@@ -1732,9 +1748,20 @@ class SprichIME : InputMethodService() {
                 throw e
             } catch (e: Exception) {
                 Log.w("SprichIME", "transcriptionCoordinator failed utt=${token.utteranceId}", e)
+                recognitionFailed = true
+                tel(token.utteranceId, TelemetryEventType.RECOGNITION_END, UtteranceOutcome.INFERENCE_FAILURE)
                 TranscriptionResult("", ResolvedUtteranceLanguage.Unknown, plan.speechConfig, TranscriptionSourceId.LOCAL_FAST)
             }
             val elapsed = android.os.SystemClock.elapsedRealtime() - t0
+            // Coarse outcome at this layer (blank = nothing recognized); per-attempt
+            // transport/model detail arrives with transcribeWithOutcome adoption.
+            if (!recognitionFailed) {
+                tel(
+                    token.utteranceId,
+                    TelemetryEventType.RECOGNITION_END,
+                    if (transcriptionResult.text.isBlank()) UtteranceOutcome.NO_SPEECH else UtteranceOutcome.SUCCESS,
+                )
+            }
             // P0-12: increment truthful path counters
             when (transcriptionResult.source) {
                 TranscriptionSourceId.LOCAL_FAST, TranscriptionSourceId.LOCAL_CANARY -> { localNativeDecodeStarts++; nativeDecodeStarts++ }
@@ -1915,6 +1942,7 @@ class SprichIME : InputMethodService() {
             // Spoken delete: only delete exact owned insertion if proof holds, else zero mutation.
             currentCoroutineContext().ensureActive()
             if (plan.apiPermissionEpoch != ApiHttp.currentEpoch) return
+            tel(token.utteranceId, TelemetryEventType.COMMIT_ATTEMPT)
             val applied: Boolean = when (prepared) {
                 is PreparedFinalAction.DeleteLast -> {
                     val ok = executeSpokenDeleteLast(token)
@@ -1934,6 +1962,11 @@ class SprichIME : InputMethodService() {
                     }
                 }
             }
+            tel(
+                token.utteranceId,
+                TelemetryEventType.COMMIT_RESULT,
+                if (applied) UtteranceOutcome.SUCCESS else UtteranceOutcome.CANCELLED,
+            )
             if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isNotEmpty() && !applied) {
                 // UTTERANCE-SCOPED: editor ambiguous must NOT destroy active B
                 failUtteranceScoped(token, "final text insertion ambiguous token=$token", null)
@@ -2163,6 +2196,7 @@ class SprichIME : InputMethodService() {
      */
     private fun failUtteranceScoped(token: UtteranceToken, reason: String, throwable: Throwable?) {
         if (throwable != null) Log.w("SprichIME", "utteranceScopedFailure token=$token reason=$reason", throwable) else Log.w("SprichIME", "utteranceScopedFailure token=$token reason=$reason")
+        tel(token.utteranceId, TelemetryEventType.CANCELLATION)
         // Do not increment global generation — preserve B's token validity
         // Only clear active capture state if this token still owns it
         maybeClearActiveStateForToken(token)
