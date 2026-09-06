@@ -46,6 +46,44 @@ adb -s <serial> shell dumpsys package <package> | grep -A2 version
 
 Update path: reinstalling with the same signature must preserve data; a signature change requires `adb -s <serial> uninstall <package>` first (record which path was tested). Rollback: uninstall, reinstall the prior signed artifact.
 
+## 2b. Unsigned internal loop (debug IME on S23 — validated 2026-09-06)
+
+```bash
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+adb -s <serial> install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s <serial> install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+# Fresh IME per run (kills wedged focus/session state):
+adb -s <serial> shell am force-stop com.sprich.app.debug
+adb -s <serial> shell ime set com.sprich.app.debug/com.sprich.app.input.ime.SprichIME
+adb -s <serial> shell am start -n com.sprich.app.debug/com.sprich.app.ui.MainActivity
+adb -s <serial> shell logcat -c
+# Focus field via dump coordinates (never eyeball): uiautomator dump → EditText center → input tap → confirm:
+adb -s <serial> logcat -d | grep -c "dictation started"   # expect 1
+```
+
+Rules learned the hard way: same-field re-taps are Android no-ops (no new
+onStartInput) — dumps give truth, screenshots deceive. Bar toggle zone is
+≈y2050–2550 display px (aim y2300); every toggle must log
+`toggle running=… sessionState=…` — confirm in logcat, never by screenshot
+alone. Force-stop also resets the demo screen (setup screen shows when the
+IME isn't selected — `ime set` again, no reinstall).
+
+Acoustic dictation (no on-device loopback — shell cannot open
+`/dev/snd/pcmC0D0p`; `tinyplay` never emits): play from the Mac with
+`afplay -v 1.0 <wav>` at system volume ≈60. Dense-speech fixture recipe for
+cap tests: loop `app/src/debug/assets/jfk.wav` with 100 ms crossfades, peak
+normalize, squeeze sub-threshold regions to 120 ms pads (see session notes).
+Key log greps: `toggle`, `dictation started`, `utterance onset`,
+`endpoint detected` (frozenSamples), `split continuation`, `abandoned`,
+`finalized source`, `COMMIT_RESULT`, `non-UI thread` (must stay zero).
+
+Abandon E2E: play ~15 s dense speech, press HOME (`input keyevent 3`) right
+at playback end so decode completes post-stop → `abandoned … stale
+generation` + recovery draft. Settings matrix (night/font/rotation/rtl):
+snapshot first (`uimode night`, `font_scale`, `accelerometer_rotation`,
+`debug.force_rtl`), restore all after — `force_rtl` may not mirror; use
+static start/end-attribute analysis plus a real RTL locale for verdicts.
+
 ## 3. Device tests (Gates C/E/F)
 
 WARNING: `:app:connectedDebugAndroidTest` UNINSTALLS the app (marker-proven:

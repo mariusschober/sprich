@@ -1,0 +1,11 @@
+device=samsung SM-S918B
+soc=qcom socModel=SM8550
+android=16 sdk=36 ramMaxHeapMb=256
+engine=canary-180m-flash-int8 quantization=INT8 threads=2 backend=cpu
+loadMs=1641
+jfkDurationMs=11000 samples=176000
+coldMs=1557 coldRtf=0.14154545454545456
+warmTimesMs=[1390, 1406, 1437, 1451, 1635]
+p50=1437 p95=1635 avgRtf=0.1330727272727273 peakRssMb=16
+coldTextLen=108
+coldText=And so, my fellow Americans, ask not what your country can do for you. Ask what you can do for your country.
