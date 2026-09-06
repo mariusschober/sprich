@@ -171,6 +171,7 @@
     <string name="ime_kept_retry">Non inséré — conservé. Touchez réessayer pour insérer.</string>
     <string name="recovery_title">Dictée conservée</string>
     <string name="recovery_hint">Retournez au champ et touchez réessayer pour insérer, ou ignorez-la ici.</string>
+    <string name="recovery_insert">Insérer ici</string>
     <string name="recovery_discard">Ignorer</string>
     <string name="download_failed">Échec du téléchargement. Vérifiez votre connexion et réessayez.</string>
     <string name="download_storage">Espace insuffisant. Libérez de la place et réessayez.</string>

@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.sprich.app.BuildConfig
 import com.sprich.app.R
@@ -52,7 +53,8 @@ import com.sprich.app.ui.theme.VoiceMark
     // Plan §9.2: never expose the practice field as ready while another keyboard remains selected.
     val ready = config != null && keyboard.enabled && keyboard.selected && keyboard.microphone && (if (api) keyAvailable == true else modelsReady)
     // Dictation is deliberately ephemeral, including across process recreation.
-    var trial by remember { mutableStateOf("") }
+    // TextFieldValue (not String) so recovery insert lands at the live cursor.
+    var trial by remember { mutableStateOf(TextFieldValue("")) }
     val colors = MaterialTheme.colorScheme
     Column(
         Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp),
@@ -74,7 +76,8 @@ import com.sprich.app.ui.theme.VoiceMark
                 style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         }
         // U03 recovery: recognized-but-never-inserted text, kept ≤120 s in memory.
-        // Review + discard here; re-insert happens at the field via the IME retry button. No clipboard involved.
+        // Review + discard here; insert into the newly selected valid field here,
+        // or re-insert at the field via the IME retry button. No clipboard involved.
         val app = context.applicationContext as? com.sprich.app.SprichApp
         val recoveryRev by remember(app) { app?.recoveryRevision ?: kotlinx.coroutines.flow.MutableStateFlow(0L) }.collectAsState()
         val recoveryDraft = remember(recoveryRev) { app?.recoveryDrafts?.peek() }
@@ -84,7 +87,17 @@ import com.sprich.app.ui.theme.VoiceMark
                     Text(stringResource(R.string.recovery_title), style = MaterialTheme.typography.titleSmall)
                     Text(recoveryDraft.take(140), style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     Text(stringResource(R.string.recovery_hint), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                    TextButton(onClick = { app?.recoveryDrafts?.discard(); app?.noteRecoveryChanged() }) { Text(stringResource(R.string.recovery_discard)) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            val live = app?.recoveryDrafts?.peek()
+                            if (recoveryInsertTargetValid(live, false) && live != null) {
+                                trial = insertRecoveryDraft(trial, live)
+                                app?.recoveryDrafts?.consume()
+                                app?.noteRecoveryChanged()
+                            }
+                        }) { Text(stringResource(R.string.recovery_insert)) }
+                        TextButton(onClick = { app?.recoveryDrafts?.discard(); app?.noteRecoveryChanged() }) { Text(stringResource(R.string.recovery_discard)) }
+                    }
                 }
             }
         }
