@@ -48,6 +48,8 @@
 - `AcousticBasis.UNKNOWN` conservative default retained at production call site; P02 policy file is new logic, device acoustic proof still open.
 - No version bump, no dependency change, no model/native pin change in this diff.
 - APKs under `app/build/outputs/` predate this work and MUST NOT be presented as containing it; release APK is unsigned — no installable deliverable from this work yet.
+- Owner decisions 2026-09-06: stay unsigned for internal testing; internal-testing scope includes the 1,000-utterance corpus (text-level dev corpus v1 committed; natural-speech collection still BLOCKED); cloud keeps current recommended profiles with Meta AI API (`meta-muse-voice-transcribe`, already the default) — Gemini/OpenAI-live integrations DEFERRED BY SPECIFICATION, live-model guards stay.
+- E01 text corpus v1: `ThousandUtteranceCorpusTest` (1,001 cases + 35 validator pairs + 40 correction cases, EN/DE/ES/FR, executed green 2026-09-06). Text-in/decision-out ONLY — not acoustic, latency, WER, or Wispr evidence.
 
 ## Artifact paths
 
