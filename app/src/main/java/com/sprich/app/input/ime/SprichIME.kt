@@ -192,6 +192,15 @@ class SprichIME : InputMethodService() {
     sealed interface PreparedFinalAction {
         data class Text(val text: String, val resolved: ResolvedUtteranceLanguage) : PreparedFinalAction
         data class DeleteLast(val token: UtteranceToken) : PreparedFinalAction
+
+        companion object {
+            /**
+             * Zero-mutation text for rejected parses: commits nothing (consumed via
+             * `isBlank` below). A named constant — never a display string — so the
+             * locale gate does not mistake it for a hard-coded UI label.
+             */
+            const val REJECTED_PARSE_TEXT = ""
+        }
     }
 
     // Overlapping utterance queue — immutable per-utterance snapshots, serialized finalization actor
@@ -1868,7 +1877,7 @@ class SprichIME : InputMethodService() {
                 }
                 is ParsedDictation.Rejected -> {
                     Log.i("SprichIME", "parse rejected reason=${parsed.reason} — zero mutation token=$token")
-                    PreparedFinalAction.Text("", postProcessResolved)
+                    PreparedFinalAction.Text(PreparedFinalAction.REJECTED_PARSE_TEXT, postProcessResolved)
                 }
                 is ParsedDictation.Text -> {
                 // Non-command: deterministic text with vocab applied before refinement (P1-17 step 2)
