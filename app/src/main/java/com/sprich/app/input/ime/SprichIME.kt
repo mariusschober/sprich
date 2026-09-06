@@ -2765,9 +2765,14 @@ class SprichIME : InputMethodService() {
         val newGeneration = sessionGeneration.incrementAndGet()
         fieldGeneration.incrementAndGet()
         cancelLiveUtterances()
-        // Cancel any pending endpoint finalization immediately — never insert after cancellation
-        try { endpointJob?.cancel() } catch (_: Exception) {}
-        endpointJob = null
+        // U03: abandon-type stops must not kill an in-flight snapshot decode —
+        // post-decode validation still refuses insertion (stale generation) and
+        // preserves obtainable text as a recovery draft. Only user cancel,
+        // sensitive fields, and teardown cancel immediately.
+        if (reason.cancelsInflightDecode()) {
+            try { endpointJob?.cancel() } catch (_: Exception) {}
+            endpointJob = null
+        }
         // For FIELD_LOST etc., field is no longer owned
         currentFieldId = when (reason) {
             StopReason.FIELD_LOST, StopReason.INPUT_RESTARTED, StopReason.WINDOW_HIDDEN,
