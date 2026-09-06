@@ -1,8 +1,8 @@
 # Sprich — Implementation status (plan §§2,12 working record)
 
 **Branch:** `agent/sprich-integrity-sprint`
-**HEAD:** `287f6c3` (audit baseline `20be03c`; full log: S01–S06, wave P/U/E slices, validator sign fix `8d1f9b0`, locale-const `0304fcd`, device-gate repairs `46aa5da`/`70848f1`/`287f6c3`)
-**Tree:** clean
+**HEAD:** `9a1a4a7` (P05 wiring + thread-fix + `LiquidVisualThreadTest`; prior: P07 `8834f41`, P03 `13ef290`, U02 `ea7a9e9`)
+**Tree:** dirty — only this file (status update)
 **Updated:** 2026-09-06 UTC (sandbox-free session; S23 Ultra SM-S918B attached)
 **Env truth (now):** Gradle 9.3.1 + JDK 17 work, loopback fine, `adb` sees
 R3CW404GVBL (S23, Android 16/SDK 36) + a T807D tablet (commands pinned `-s`).
@@ -23,7 +23,7 @@ credentials/fixtures/signing only (see bottom).
 | P02 neural VAD in every route (§5.2) | IMPLEMENTED + TESTED (policy + device) | `VadRoutePolicy.kt`; per-utterance `hadSpeech` threading; device LID/speech-flag paths exercised via winner tests |
 | P03 bounded queue + ordered commit lane (§6.2) | WIRED + TESTED (host 23/23 incl. 6 new Gate C; IME admit/shed/done/failed/cleanup/expire/cancel/finish verified in code) | `UtteranceQueue.kt` + `FinalizationClaims.kt` (bounded exactly-once claim set, transplanted from IME); IME admits at enqueue (count+24 MiB, shed-then-reject), marks done/failed on every finalize path, expires cleanup to faithful, cancels on session fail/stop. Serial actor keeps one commit order; lane cannot stall (failed advances, expiry releases). Gate C host tests: starvation-release order, late-cleanup-keeps-faithful, shed-order, first-wins/bounded claims |
 | P04 streaming admission + handshake (§8.1) | IMPLEMENTED + TESTED (host 5/5) | `MetaRealtimeSession.kt`, `MetaMuseSttProvider.kt`, `RemoteProviderFactory.kt`, `LiveRemoteUtterance.kt`; `RemoteAdmissionContractTest` (Robolectric). Live-provider acceptance BLOCKED (credentials) |
-| P05 bounded continuous speech (§5.3) | IMPLEMENTED + TESTED (host) BUT UNWIRED | `SegmentReconciler.kt`; no production callers yet |
+| P05 bounded continuous speech (§5.3) | WIRED + TESTED (host 564/564) + DEVICE-PROVEN split | `SegmentReconciler.kt` wired: per-utterance 29 s hard cap (464,000 samples) forces endpoint with 16,000-sample overlap tail re-seeded into next utterance (`split continuation` lines); soft-cap safe-pause preferred when a VAD silence sits in the overlap window. Device (S23, 66.4 s dense JFK via Mac-speaker acoustic): utt-1 froze at exactly 464,128 samples → split, utt-2 another 464,512 → split, utt-3 remainder; all three committed applied=true (435+503+135 chars, continuous JFK text visible in field, full P07 tel chains). Zero `non-UI thread` violations post-fix. Evidence: `evidence-s23/p05-split-field.png`, `evidence-s23/p05-split-log.txt`. Device-found bug en route: audio-thread view touch → `E/ViewRootImpl: Accessibility content change on non-UI thread` 222×/run (fatal on future Android) + StrictMode DiskRead from dead `mmForLoad` line — fixed (main-thread guard + dead-code delete), `LiquidVisualThreadTest` 2/2 |
 | P06 language/engine decoupling (§7) | IMPLEMENTED + TESTED (host 5/5 + device) | `LocalAsrRoute.kt` + fail-closed per-utterance LID; device: LID 8/8 alternation, Auto-without-Canary 2/2, ContinuousWinner 10+10, WerCer LID 4/4 correct |
 | P07 typed outcomes + telemetry (§6.4) | WIRED + TESTED (host 25/25 incl. stage guard; DEVICE TRACE-PROVEN for local route) | `UtteranceTelemetry.kt` + `TelemetryStageGuard.kt` (once-per-utterance-type, bounded) + IME boundaries: SPEECH_ONSET, FIRST_PCM, QUEUE_ADMISSION, ENDPOINT, RECOGNITION_START/END (typed outcomes), PROVIDER_FINAL (local; remote via COMPLETE stage), CLEANUP_START/END/VALIDATED, COMMIT_ATTEMPT/RESULT, CANCELLATION, RELEASE (lane exit + audio-free rejects). DEBUG-only `tel utt=` trace lines. Device: live S23 dictation trace (speaker loopback) shows full per-utterance chains incl. overlapping onset — `evidence-s23/p07-tel-trace.txt`. Explicitly excluded: FOCUS/CAPTURE_REQUESTED (pre-utterance-identity, unkeyable), REMOTE_ACK (no ack signal exists), remote CONNECT/PREVIEW/BACKLOG/FINAL (mapped in `updateRemoteProgress`, unrunnable without provider credentials — BLOCKED) |
 | U01 first-run incl. select step (§9.2) | IMPLEMENTED, SCREENSHOT-PROVEN (DE dark+light step 1/5) | Onboarding renders correctly both themes; `evidence-s23/` screenshots + UI dump |
@@ -35,6 +35,10 @@ credentials/fixtures/signing only (see bottom).
 | E03/E04 docs + release (§12) | DOCS CURRENT; release unsigned-internal | This file, `SPRICH_RELEASE_REPORT.md`, `DEVICE_RUNBOOK.md` (needs §0–3 refresh for direct-instrument method), `DEVICE_EVIDENCE_S23_2026-09-06.md` (new), `evidence-s23/` (new) |
 
 ## Tests run (this session, sandbox-free)
+- `:app:testDebugUnitTest` 564/564 green (562 + 2 `LiquidVisualThreadTest`: bg-call marshals to main, main-call synchronous) + `:app:lintRelease` clean
+- P05 device (S23, Mac-speaker acoustic, the repo's `qa-editor/scripts/acoustic-stress.py` method): 87 s JFK → 24 onsets, 24 applied commits; 66.4 s dense variant → 2 hard-cap splits + remainder, all committed. Method correction: on-device `tinyplay` loopback is NOT viable (shell cannot open `/dev/snd/pcmC0D0p`; earlier captures were room audio) — use Mac `afplay` at full volume
+- P05 device smoke #1 (S23, room audio — tinyplay never emitted): dictation gen-7, 5 endpointed utterances with full tel stage chains, utt-5 SUCCESS commit 57 chars applied=true; `Wird geschrieben…` finalizing strip state screenshot-proven
+- NEW DEFECT (device-found, unfiled): after a no-speech stop (`Keine Sprache erkannt`), field/strip taps no longer restart dictation (zero IME log lines) until force-stop + restart — tap-to-speak wedge, needs a ticket
 - `:app:testDebugUnitTest` 556/556 green (554 + 2 P07 stage-guard: first-wins/bounded)
 - `:app:testDebugUnitTest` 554/554 green (548 + 6 P03 Gate C: starvation/late-cleanup/shed order + first-wins/bounded claims)
 - `:app:testDebugUnitTest` 548/548 green (539 baseline + 9 U02 wordAtCursor/plan/undo: `CorrectionPlanTest`)
