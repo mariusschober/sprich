@@ -55,6 +55,17 @@ class AudioCapture internal constructor(
     val ringBuffer: AudioRingBuffer get() = latestBuffer
     fun isActive(): Boolean = state.get().active?.stopped?.get() == false
 
+    /**
+     * P01: bounded pre-ready bridge. Armed with a fresh generation on every
+     * successful start; the read loop feeds it until the pipeline drains it
+     * (engine warm) or [requestStop] invalidates it (stale by construction).
+     * Cap bounds retention even if the engine never becomes ready.
+     */
+    private val startupBuffer = StartupAudioBuffer()
+    @Volatile private var startupGeneration = 0L
+    fun drainStartupBuffer(): ShortArray = startupBuffer.drainOnce(startupGeneration)
+    fun startupBufferedBytes(): Int = startupBuffer.sizeBytes()
+
     suspend fun startWithOffset(
         onChunkWithOffset: (ShortArray, Int, Int, Long, Float) -> Unit,
         onFailure: (String) -> Unit = {},
@@ -117,6 +128,7 @@ class AudioCapture internal constructor(
                     for (i in 0 until n) { val s = samples[i] / 32768.0; sum += s * s }
                     val rms = kotlin.math.sqrt(sum / n).toFloat()
                     capture.buffer.write(samples, 0, n)
+                    startupBuffer.append(samples, 0, n, startupGeneration)
                     onChunkWithOffset(samples, 0, n, SystemClock.elapsedRealtimeNanos(), rms)
                 }
             } catch (_: Exception) {
@@ -142,6 +154,8 @@ class AudioCapture internal constructor(
             }
             onCreated(capture)
             latestBuffer = capture.buffer
+            startupGeneration += 1
+            startupBuffer.begin(startupGeneration)
             capture.thread.start()
             return true
         } catch (e: Exception) {
@@ -158,6 +172,9 @@ class AudioCapture internal constructor(
 
     /** Detach synchronously; stop and release run off Main. Retain this handle when awaiting cleanup. */
     fun requestStop(): Capture? {
+        // Undrained startup audio dies with the capture: a resumed continuation
+        // must never feed or drain samples from a previous generation.
+        startupBuffer.invalidate()
         val previous = state.getAndUpdate { State(retired = it.active ?: it.retired) }
         return (previous.active ?: previous.retired)?.also { it.requestStop() }
     }
