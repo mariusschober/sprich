@@ -199,6 +199,9 @@ class AutomaticWithoutCanaryDeviceTest {
                 }
             } catch (_: Exception) {}
         }
+        // Mirror production startup (SprichApp: process-wide install verification):
+        // readiness is disk verification (sha256 + receipt), never assumed.
+        mm.verifyInstalled("accurate")
         val canaryReady = mm.isCanaryReady()
         if (!canaryReady) fail("BLOCKED: canary model not ready — need encoder/decoder >50M")
         val canaryEngine = com.sprich.app.speech.canary.CanaryEngine(app, mm)
