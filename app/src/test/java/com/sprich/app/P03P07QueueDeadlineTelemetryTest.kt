@@ -9,6 +9,7 @@ import com.sprich.app.diagnostics.TelemetryEvent
 import com.sprich.app.diagnostics.TelemetryEventType
 import com.sprich.app.diagnostics.UtteranceOutcome
 import com.sprich.app.diagnostics.UtteranceTelemetry
+import com.sprich.app.diagnostics.TelemetryStageGuard
 import com.sprich.app.input.lifecycle.FinalizationClaims
 import com.sprich.app.input.lifecycle.QueueAdmission
 import com.sprich.app.input.lifecycle.QueuedUtterance
@@ -331,5 +332,29 @@ class P03P07QueueDeadlineTelemetryTest {
         assertFalse(claims.contains(1L))
         assertFalse(claims.contains(2L))
         assertTrue(claims.contains(130L))
+    }
+
+    // --- Stage emission guard (§6.4: boundary events recorded once) ---
+
+    @Test
+    fun stageGuard_firstEmitWins_repeatDrops() {
+        val guard = TelemetryStageGuard()
+        assertTrue(guard.shouldEmit(7L, TelemetryEventType.FIRST_PREVIEW))
+        assertFalse(guard.shouldEmit(7L, TelemetryEventType.FIRST_PREVIEW))
+        // Independence across utterances and types.
+        assertTrue(guard.shouldEmit(8L, TelemetryEventType.FIRST_PREVIEW))
+        assertTrue(guard.shouldEmit(7L, TelemetryEventType.PROVIDER_FINAL))
+        assertEquals(3, guard.size())
+    }
+
+    @Test
+    fun stageGuard_bounded_oldestEvicted() {
+        val guard = TelemetryStageGuard(maxTracked = 4)
+        for (id in 1L..4L) assertTrue(guard.shouldEmit(id, TelemetryEventType.REMOTE_CONNECT))
+        assertTrue(guard.shouldEmit(5L, TelemetryEventType.REMOTE_CONNECT))
+        assertEquals(4, guard.size())
+        // Oldest evicted: re-emits (callers scope by generation, not by guard).
+        assertTrue(guard.shouldEmit(1L, TelemetryEventType.REMOTE_CONNECT))
+        assertFalse(guard.shouldEmit(5L, TelemetryEventType.REMOTE_CONNECT))
     }
 }

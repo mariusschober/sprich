@@ -241,11 +241,23 @@ class SprichIME : InputMethodService() {
     private val pendingQueuePeak = AtomicLong(0)
     // P07: per-utterance attempt telemetry — ids and timing only, never transcripts.
     private val utteranceTelemetry = UtteranceTelemetry()
+    /** P07 §6.4: once-per-(utterance, type) guard for repeatable emissions. */
+    private val telemetryStageGuard = com.sprich.app.diagnostics.TelemetryStageGuard()
     private val telemetrySeq = AtomicLong(0)
     /** Records telemetry; observability must never break dictation. */
     private fun tel(utteranceId: Long, type: TelemetryEventType, outcome: UtteranceOutcome? = null, code: Int = 0) {
         try {
             utteranceTelemetry.record(utteranceId, telemetrySeq.incrementAndGet(), type, outcome, 0, code)
+            // P07 §6.4 trace verification: DEBUG-only per-event line so a
+            // device run can prove boundary coverage from logcat.
+            if (com.sprich.app.BuildConfig.DEBUG) {
+                Log.d(
+                    "SprichIME",
+                    "tel utt=$utteranceId $type" +
+                        (if (outcome != null) " outcome=$outcome" else "") +
+                        (if (code != 0) " code=$code" else ""),
+                )
+            }
         } catch (_: Exception) { }
     }
     private val finalizationQueueOverflows = AtomicLong(0)
@@ -785,6 +797,33 @@ class SprichIME : InputMethodService() {
     }
 
     private fun updateRemoteProgress(token: UtteranceToken, progress: RemoteTranscriptUpdate) {
+        // P07 §6.4: utterance-scoped remote boundaries, once each. Recorded
+        // regardless of field ownership — the provider event happened for
+        // this utterance even if the field moved on.
+        try {
+            val id = token.utteranceId
+            if (progress.stage == VoiceApiStage.CONNECTING &&
+                telemetryStageGuard.shouldEmit(id, TelemetryEventType.REMOTE_CONNECT)
+            ) {
+                tel(id, TelemetryEventType.REMOTE_CONNECT)
+            }
+            if (progress.preview.isNotBlank() &&
+                telemetryStageGuard.shouldEmit(id, TelemetryEventType.FIRST_PREVIEW)
+            ) {
+                tel(id, TelemetryEventType.FIRST_PREVIEW)
+            }
+            val backlog = progress.totalUploadBytes - progress.uploadedBytes
+            if (progress.stage == VoiceApiStage.UPLOADING && backlog > 0 &&
+                telemetryStageGuard.shouldEmit(id, TelemetryEventType.UPLOAD_BACKLOG)
+            ) {
+                tel(id, TelemetryEventType.UPLOAD_BACKLOG)
+            }
+            if (progress.stage == VoiceApiStage.COMPLETE &&
+                telemetryStageGuard.shouldEmit(id, TelemetryEventType.PROVIDER_FINAL)
+            ) {
+                tel(id, TelemetryEventType.PROVIDER_FINAL)
+            }
+        } catch (_: Exception) {}
         scope.launch(Dispatchers.Main) {
             if (tokenOwnsCurrentField(token) && currentUtteranceToken?.utteranceId == token.utteranceId) {
                 remotePreview = progress; remotePreviewId = token.utteranceId
@@ -1530,6 +1569,11 @@ class SprichIME : InputMethodService() {
                 activeUtterance = ActiveUtterance(token, routeAtOnset, planAtOnset.speechConfig, planAtOnset, live)
                 live?.offerAudio(preRoll)
                 Log.i("SprichIME", "utterance onset id=${token.utteranceId} preRollSamples=${preRoll.size}")
+                // P07 §6.4: utterance identity starts here — onset + first audio.
+                try {
+                    tel(token.utteranceId, TelemetryEventType.SPEECH_ONSET)
+                    tel(token.utteranceId, TelemetryEventType.FIRST_PCM)
+                } catch (_: Exception) {}
                 scope.launch {
                     if (generation == sessionGeneration.get() && session.state.value is SessionState.Listening) {
                         session.onSpeechOnset()
@@ -1725,6 +1769,8 @@ class SprichIME : InputMethodService() {
         }
         liveUtterances.remove(pending.token.utteranceId)?.cancel()
         pending.pcm.fill(0)
+        // P07 §6.4: retained audio released on bounded reject.
+        try { tel(pending.token.utteranceId, TelemetryEventType.RELEASE) } catch (_: Exception) {}
     }
 
     private fun enqueuePending(pending: PendingUtterance) {
@@ -1784,6 +1830,8 @@ class SprichIME : InputMethodService() {
             updateCatchUpUi(true)
             liveUtterances.remove(pending.token.utteranceId)?.cancel()
             pending.pcm.fill(0)
+            // P07 §6.4: retained audio released on bounded-race reject.
+            try { tel(pending.token.utteranceId, TelemetryEventType.RELEASE) } catch (_: Exception) {}
             return
         }
         endpointPending.set(true)
@@ -1952,11 +2000,14 @@ class SprichIME : InputMethodService() {
                     Log.i("SprichIME", "remote attempt utt=${token.utteranceId} failure=${coordinatorOutcome.remoteFailure} fallback=${coordinatorOutcome.fellBackToLocal} blank=${transcriptionResult.text.isBlank()}")
                     tel(token.utteranceId, TelemetryEventType.RECOGNITION_END, remoteOutcome, code)
                 } else {
-                    tel(
-                        token.utteranceId,
-                        TelemetryEventType.RECOGNITION_END,
-                        if (transcriptionResult.text.isBlank()) UtteranceOutcome.NO_SPEECH else UtteranceOutcome.SUCCESS,
-                    )
+                    val outcome =
+                        if (transcriptionResult.text.isBlank()) UtteranceOutcome.NO_SPEECH else UtteranceOutcome.SUCCESS
+                    tel(token.utteranceId, TelemetryEventType.RECOGNITION_END, outcome)
+                    // P07 §6.4: local provider produced its final transcript.
+                    // Remote finals arrive via updateRemoteProgress COMPLETE.
+                    if (!coordinatorOutcome.remoteAttempted) {
+                        tel(token.utteranceId, TelemetryEventType.PROVIDER_FINAL, outcome)
+                    }
                 }
                 markQueueDone(token.utteranceId, failed = false)
             }
@@ -2210,6 +2261,14 @@ class SprichIME : InputMethodService() {
                 if (applied) UtteranceOutcome.SUCCESS else UtteranceOutcome.CANCELLED,
             )
             drainQueueLane(token.utteranceId)
+            // P07 §6.4: lane exit — the entry is popped above, retained
+            // audio eligible for release. Guard dedups against the
+            // maybeClearActiveStateForToken path below.
+            try {
+                if (telemetryStageGuard.shouldEmit(token.utteranceId, TelemetryEventType.RELEASE)) {
+                    tel(token.utteranceId, TelemetryEventType.RELEASE)
+                }
+            } catch (_: Exception) {}
             if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isNotEmpty() && !applied) {
                 // UTTERANCE-SCOPED: editor ambiguous must NOT destroy active B
                 failUtteranceScoped(token, "final text insertion ambiguous token=$token", null)
@@ -2266,6 +2325,12 @@ class SprichIME : InputMethodService() {
         // Clear frozen descriptor if it belongs to this token (phase 0A)
         if (activeUtterance?.token?.utteranceId == token.utteranceId) {
             activeUtterance = null
+            // P07 §6.4: this token's active capture ownership is released.
+            try {
+                if (telemetryStageGuard.shouldEmit(token.utteranceId, TelemetryEventType.RELEASE)) {
+                    tel(token.utteranceId, TelemetryEventType.RELEASE)
+                }
+            } catch (_: Exception) {}
         }
         // Collector may be cleared for next utterance only when no B active — handled by begin()
         
