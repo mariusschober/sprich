@@ -2,7 +2,7 @@
 
 Scope: exact commands to run on a machine with working Gradle + Android SDK + adb and a Samsung S23 (ARM64 flagship) on the final source+APK.
 2026-09-06: fully executed on SM-S918B (Android 16) — see `docs/DEVICE_EVIDENCE_S23_2026-09-06.md`.
-When a second device is attached, pin every command with `-s R3CW404GVBL` (`adb -d` fails).
+Define `serial=R3CW404GVBL` (S23) and pin every command with `-s <serial>` — bare `adb -d` fails when a second device is attached.
 
 ## Prerequisites (capable machine only)
 
@@ -39,12 +39,12 @@ Sign per `release/SIGNING.md` (QA key labelled as QA; never commit the keystore)
 ## 2. Install (S23)
 
 ```bash
-adb -d install -r <signed-release.apk>
-adb -d shell pm list packages | grep -i sprich
-adb -d shell dumpsys package <package> | grep -A2 version
+adb -s <serial> install -r <signed-release.apk>
+adb -s <serial> shell pm list packages | grep -i sprich
+adb -s <serial> shell dumpsys package <package> | grep -A2 version
 ```
 
-Update path: reinstalling with the same signature must preserve data; a signature change requires `adb -d uninstall <package>` first (record which path was tested). Rollback: uninstall, reinstall the prior signed artifact.
+Update path: reinstalling with the same signature must preserve data; a signature change requires `adb -s <serial> uninstall <package>` first (record which path was tested). Rollback: uninstall, reinstall the prior signed artifact.
 
 ## 3. Device tests (Gates C/E/F)
 
@@ -69,10 +69,10 @@ Require: zero unauthorized/cross-field/duplicate mutations in the adversarial su
 ## 4. Screenshots + accessibility walkthrough (§9.8)
 
 ```bash
-adb -d exec-out screencap -p > screenshot-home-light.png
-adb -d exec-out screencap -p > screenshot-bar-listening-dark.png
-adb -d exec-out uiautomator dump /sdcard/ui.xml
-adb -d pull /sdcard/ui.xml ./ui-home.xml
+adb -s <serial> exec-out screencap -p > screenshot-home-light.png
+adb -s <serial> exec-out screencap -p > screenshot-bar-listening-dark.png
+adb -s <serial> exec-out uiautomator dump /sdcard/ui.xml
+adb -s <serial> pull /sdcard/ui.xml ./ui-home.xml
 ```
 
 Capture matrix: light/dark × 320/360/411 dp widths, landscape, 200% font, one RTL layout; states: missing-setup, preparing, listening, preview, finishing, added, failed, paused, password-field, recovery "Not inserted". TalkBack order/roles/state/focus + reduced-motion (animator scale 0) verified by hand on the S23; an unrendered diff is not a pass.
@@ -80,8 +80,8 @@ Capture matrix: light/dark × 320/360/411 dp widths, landscape, 200% font, one R
 ## 5. Benchmark (§10/E01, same final build)
 
 ```bash
-adb -d shell am instrument -w -e class com.sprich.app.BenchmarkInstrumentedTest <package>.test/androidx.test.runner.AndroidJUnitRunner
-adb -d pull /sdcard/Android/data/<package>/files/benchmark-results.json ./s23-benchmark-results.json
+adb -s <serial> shell am instrument -w -e class com.sprich.app.BenchmarkInstrumentedTest <package>.test/androidx.test.runner.AndroidJUnitRunner
+adb -s <serial> pull /sdcard/Android/data/<package>/files/benchmark-results.json ./s23-benchmark-results.json
 ```
 
 Corpus: ≥1,000 held-out utterances EN/DE/ES/FR, ≥20 speakers, code-switching; same phones/acoustic setup/network, randomized order for Wispr comparison; report p50/p95 post-speech wait + quality tolerance + critical-error gates with confidence intervals per language/device. Failures stay in the denominator. Record device, OS, app version, build hash, clocks, temperature, charging state in `SPRICH_BENCHMARK_PROTOCOL.md`.
@@ -89,9 +89,9 @@ Corpus: ≥1,000 held-out utterances EN/DE/ES/FR, ≥20 speakers, code-switching
 ## 6. Log pull (failure triage)
 
 ```bash
-adb -d logcat -d -v threadtime '*:W' > logcat-warn.txt
-adb -d logcat -d -v threadtime --pid=$(adb -d shell pidof <package>) > logcat-sprich.txt
-adb -d bugreport ./s23-bugreport.zip
+adb -s <serial> logcat -d -v threadtime '*:W' > logcat-warn.txt
+adb -s <serial> logcat -d -v threadtime --pid=$(adb -s <serial> shell pidof <package>) > logcat-sprich.txt
+adb -s <serial> bugreport ./s23-bugreport.zip
 ```
 
 Scrub transcripts/secrets/endpoints before attaching; check no sensitive text/audio in logs, crash reports, tmp WAVs, clipboard, or screenshots (§11 red-team).
