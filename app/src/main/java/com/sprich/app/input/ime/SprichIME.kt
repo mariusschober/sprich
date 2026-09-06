@@ -1260,6 +1260,7 @@ class SprichIME : InputMethodService() {
 
     private fun toggleDictation() {
         try {
+            Log.i("SprichIME", "toggle running=${isDictationRunning()} sessionState=${session.state.value} utterActive=${utteranceActive.get()}")
             if (isDictationRunning()) {
                 stopDictation(if (tapCancelsWork()) StopReason.CURSOR_MOVED else StopReason.USER_STOP)
             } else {
@@ -1333,7 +1334,10 @@ class SprichIME : InputMethodService() {
                 Log.i("SprichIME", "API_PRIMARY with Auto — skipping local LID/FastConformer gate, provider handles language (Phase 4 independence)")
                 // Local fallback will be loaded lazily on remote failure if available
             }
-            if (session.state.value is SessionState.Listening || session.state.value is SessionState.Speech) return
+            if (session.state.value is SessionState.Listening || session.state.value is SessionState.Speech) {
+                Log.i("SprichIME", "start skipped already ${session.state.value} gen=${sessionGeneration.get()}")
+                return
+            }
             val permissionGranted = ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
             Log.i("SprichIME", "permission RECORD_AUDIO granted=$permissionGranted inputType=${currentInputConnection?.let { try { currentInputInfo()?.inputType } catch (_: Exception) { -1 } } ?: -1}")
             if (!permissionGranted) {
@@ -2803,7 +2807,7 @@ class SprichIME : InputMethodService() {
         try { utteranceQueue.cancel() } catch (_: Exception) {}
         updateImeUi(false)
         if (wasActive) vibrateStop()
-        Log.i("SprichIME", "dictation stopped reason=$reason newGen=$newGeneration field=$currentFieldId")
+        Log.i("SprichIME", "dictation stopped reason=$reason newGen=$newGeneration field=$currentFieldId sessionState=${session.state.value}")
         writeDiagnostics("stopped reason=$reason newGen=$newGeneration fieldGen=${fieldGeneration.get()} claims=$finalizationClaims commits=$finalCommitCount drops=$staleCallbackDrops")
     }
 
