@@ -204,6 +204,13 @@ class SprichIME : InputMethodService() {
         val reason: StopReason,
         val endpointTimestampNanos: Long,
         val live: LiveRemoteUtterance? = null,
+        /**
+         * P02: VAD speech-episode flag snapshotted at endpoint/freeze time, while the Vad
+         * still holds this utterance's state (the finalization actor runs later, after a
+         * possible reset). Session-latched hasSpeechEver: true means speech occurred during
+         * this capture session. Default false = legacy behavior (UNKNOWN basis).
+         */
+        val hadSpeech: Boolean = false,
     )
     // Single authoritative long-lived finalization actor — exactly one consumer, FIFO, no worker start/stop race, genuinely bounded.
     // Bounded capacity 4 ensures PCM retention bounded (max ~4 utterances). Overload is explicit via rejected/suppressed counters, not silent loss.
@@ -1467,6 +1474,7 @@ class SprichIME : InputMethodService() {
                     reason = StopReason.ENDPOINT,
                     endpointTimestampNanos = System.nanoTime(),
                     live = captured.live,
+                    hadSpeech = try { vad.hasSpeech() } catch (_: Exception) { false },
                 )
                 captured.live?.sealInput(frozenSnap)
                 // Active utterance completed — clear descriptor so next onset creates fresh one; but retain until next onset for overlapping queue isolation.
@@ -1803,8 +1811,10 @@ class SprichIME : InputMethodService() {
             val origin = if (transcriptionResult.source == TranscriptionSourceId.LOCAL_FAST ||
                 transcriptionResult.source == TranscriptionSourceId.LOCAL_CANARY
             ) TranscriptOrigin.LOCAL else TranscriptOrigin.REMOTE
-            // AcousticBasis.UNKNOWN until a per-utterance VAD speech-episode flag exists (P02):
-            // symbol-only transcripts stay suppressed as possible no-speech hallucinations.
+            // P02: per-utterance VAD speech-episode flag snapshotted at endpoint time
+            // (pending.hadSpeech). Fail-safe mapping: speech present enables legitimate
+            // symbol output; otherwise legacy UNKNOWN (symbol-only stays suppressed).
+            // The flag is session-latched, so this never drops genuine dictation.
             val commandPolicy = CommandPolicy(
                 commandsEnabled = plan.speechConfig.enableCommands,
                 origin = origin,
@@ -1812,7 +1822,7 @@ class SprichIME : InputMethodService() {
             )
             val parsed: ParsedDictation = try {
                 if (speakerDictation) ParsedDictation.Text(raw)
-                else SpokenEditingParser.parseTyped(raw, postProcessResolved, commandPolicy, AcousticBasis.UNKNOWN)
+                else SpokenEditingParser.parseTyped(raw, postProcessResolved, commandPolicy, AcousticBasis.fromHadSpeech(pending.hadSpeech))
             } catch (_: Exception) {
                 ParsedDictation.Text(raw)
             }
@@ -2021,6 +2031,7 @@ class SprichIME : InputMethodService() {
             reason = reason,
             endpointTimestampNanos = System.nanoTime(),
             live = captured.live,
+            hadSpeech = try { vad.hasSpeech() } catch (_: Exception) { false },
         )
         captured.live?.sealInput(snap)
         // P0 item 3: all accepted final utterances enter same FIFO actor — ENDPOINT, USER_STOP, 30s cap, explicit finish
@@ -2214,6 +2225,7 @@ class SprichIME : InputMethodService() {
                     reason = StopReason.USER_STOP,
                     endpointTimestampNanos = System.nanoTime(),
                     live = captured.live,
+                    hadSpeech = try { vad.hasSpeech() } catch (_: Exception) { false },
                 )
                 captured.live?.sealInput(snap)
                 enqueuePending(pending)

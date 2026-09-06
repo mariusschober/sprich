@@ -72,7 +72,22 @@ enum class AcousticBasis {
 
     /** Unknown (legacy path, VAD signal not yet wired per utterance): conservative legacy
      * behavior — symbol-only transcripts are suppressed as possible hallucinations. */
-    UNKNOWN,
+    UNKNOWN;
+
+    companion object {
+        /**
+         * Maps a per-utterance VAD speech-episode flag to the parse-time basis (P02).
+         *
+         * Fail-safe direction: `true` enables legitimate symbol output (SPEECH_PRESENT);
+         * `false` keeps legacy behavior (UNKNOWN), never NO_SPEECH — a missed VAD onset
+         * (whisper, quiet room) must not drop genuine dictation. Only an explicitly
+         * observed no-speech episode may use NO_SPEECH. The flag is a session-latched
+         * `hasSpeechEver` snapshot, so `true` means "speech occurred during this capture
+         * session", which is sufficient for the symbol-legitimacy question.
+         */
+        fun fromHadSpeech(hadSpeech: Boolean): AcousticBasis =
+            if (hadSpeech) SPEECH_PRESENT else UNKNOWN
+    }
 }
 
 /**
