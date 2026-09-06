@@ -73,6 +73,21 @@ import com.sprich.app.ui.theme.VoiceMark
             Text(stringResource(when { api && cleanup -> R.string.path_api_cleanup; api -> R.string.path_api; cleanup -> R.string.path_local_cleanup; else -> R.string.path_local }),
                 style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         }
+        // U03 recovery: recognized-but-never-inserted text, kept ≤120 s in memory.
+        // Review + discard here; re-insert happens at the field via the IME retry button. No clipboard involved.
+        val app = context.applicationContext as? com.sprich.app.SprichApp
+        val recoveryRev by remember(app) { app?.recoveryRevision ?: kotlinx.coroutines.flow.MutableStateFlow(0L) }.collectAsState()
+        val recoveryDraft = remember(recoveryRev) { app?.recoveryDrafts?.peek() }
+        if (recoveryDraft != null) {
+            Surface(shape = RoundedCornerShape(28.dp), color = colors.surfaceContainerLow, border = BorderStroke(1.dp, colors.outlineVariant), shadowElevation = 2.dp) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.recovery_title), style = MaterialTheme.typography.titleSmall)
+                    Text(recoveryDraft.take(140), style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.recovery_hint), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    TextButton(onClick = { app?.recoveryDrafts?.discard(); app?.noteRecoveryChanged() }) { Text(stringResource(R.string.recovery_discard)) }
+                }
+            }
+        }
         if (ready) {
             Surface(shape = RoundedCornerShape(28.dp), color = colors.surfaceContainerLow, border = BorderStroke(1.dp, colors.outlineVariant), shadowElevation = 2.dp) {
                 Column(Modifier.background(Brush.linearGradient(listOf(Color(0x0FFF7A67), Color.Transparent))).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

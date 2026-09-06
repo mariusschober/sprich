@@ -156,6 +156,11 @@
     <string name="ime_undo_action">Deshacer borrado</string>
     <string name="ime_finishing">Escribiendo tus últimas palabras</string>
     <string name="ime_insert_retry">Toca el campo e inténtalo de nuevo</string>
+    <string name="ime_retry_insert">Reintentar inserción</string>
+    <string name="ime_kept_retry">No insertado — guardado. Toca reintentar para insertar.</string>
+    <string name="recovery_title">Dictado guardado</string>
+    <string name="recovery_hint">Vuelve al campo y toca reintentar para insertar, o descártalo aquí.</string>
+    <string name="recovery_discard">Descartar</string>
     <string name="download_failed">La descarga ha fallado. Comprueba la conexión e inténtalo de nuevo.</string>
     <string name="download_storage">No hay espacio suficiente. Libera espacio e inténtalo de nuevo.</string>
     <string name="download_invalid">No se pudo verificar la descarga. Inténtalo de nuevo.</string>

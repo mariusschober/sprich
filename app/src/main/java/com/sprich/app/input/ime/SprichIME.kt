@@ -328,6 +328,15 @@ class SprichIME : InputMethodService() {
     private var pillViewRef: VoiceGestureBar? = null
     private var whisperBadge: TextView? = null
     private var undoButton: View? = null
+    /**
+     * U03 recovery (plan §9.6). [lastFailedCommit] keeps recognized-but-never-
+     * committed text for explicit same-field retry; the app-scoped
+     * [SprichApp.recoveryDrafts] store backs the Home review/discard card.
+     * Both clear on screen lock; the store additionally TTL-expires (120 s).
+     */
+    private var lastFailedCommit: FailedCommit? = null
+    private var retryButton: View? = null
+    private var screenOffReceiver: android.content.BroadcastReceiver? = null
     private var dismissalGeneration = 0L
     private var dismissing = false
     private var whisperChangeJob: Job? = null
@@ -375,6 +384,26 @@ class SprichIME : InputMethodService() {
             composition = CompositionManager()
             fieldController = FieldSessionController(session, composition)
             audio = AudioCapture(ringSeconds = 1)
+            // U03: screen lock clears recovery state (store contract) + hides retry.
+            try {
+                screenOffReceiver = object : android.content.BroadcastReceiver() {
+                    override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+                        try {
+                            (application as? SprichApp)?.let { it.recoveryDrafts.onLock(); it.noteRecoveryChanged() }
+                        } catch (_: Exception) {}
+                        lastFailedCommit = null
+                        try { retryButton?.visibility = View.GONE } catch (_: Exception) {}
+                    }
+                }
+                androidx.core.content.ContextCompat.registerReceiver(
+                    this,
+                    screenOffReceiver,
+                    android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF),
+                    androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+            } catch (_: Exception) {
+                screenOffReceiver = null
+            }
             vad = Vad()
             speechPresence = com.sprich.app.core.vad.SpeechPresence(assets)
             engine = CanaryEngine(this, com.sprich.app.models.manager.ModelManager(this))
@@ -654,7 +683,22 @@ class SprichIME : InputMethodService() {
                 setOnClickListener { undoLastDelete() }
             }
             undoButton = undo
-            pill.tapTargets = listOf(undo, switchButton)
+            // U03: retry-insert for recognized-but-never-committed text. Hidden
+            // unless a same-field retry is eligible; joins the bar tap targets
+            // so touch exploration and taps reach it like undo/switch.
+            val retry = android.widget.ImageButton(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+                setImageResource(com.sprich.app.R.drawable.ic_retry)
+                imageTintList = android.content.res.ColorStateList.valueOf(statusColor)
+                val backgroundAttr = android.util.TypedValue()
+                theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, backgroundAttr, true)
+                setBackgroundResource(backgroundAttr.resourceId)
+                contentDescription = uiString(com.sprich.app.R.string.ime_retry_insert)
+                visibility = View.GONE
+                setOnClickListener { retryFailedCommit() }
+            }
+            retryButton = retry
+            pill.tapTargets = listOf(undo, switchButton, retry)
 
             pillBgRef = pillBg
             // Allow glow/aura to draw beyond bounds
@@ -666,6 +710,7 @@ class SprichIME : InputMethodService() {
             textBlock.clipToPadding = false
             pill.addView(textBlock)
             pill.addView(undo)
+            pill.addView(retry)
             pill.addView(switchButton)
             outer.addView(aura)   // behind the pill
             outer.addView(pill)
@@ -1060,6 +1105,11 @@ class SprichIME : InputMethodService() {
         try { pendingChannel.close() } catch (_: Exception) {}
         // P03: invalidate and discard all lane state.
         try { utteranceQueue.cancel() } catch (_: Exception) {}
+        try {
+            screenOffReceiver?.let { unregisterReceiver(it) }
+        } catch (_: Exception) {
+        }
+        screenOffReceiver = null
         // Signal audio stop synchronously without join (join moved off-main)
         val retiredCapture = try { audio.requestStop() } catch (_: Exception) { null }
         // Cancel network/work without blocking
@@ -1908,6 +1958,7 @@ class SprichIME : InputMethodService() {
             if (token.generation != sessionGeneration.get() || !session.requireActive()) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode stale generation token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(token, transcriptionResult.text, postProcessResolved)
                 markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
@@ -1915,6 +1966,7 @@ class SprichIME : InputMethodService() {
             if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode invalid session token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(token, transcriptionResult.text, postProcessResolved)
                 markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
@@ -1922,6 +1974,7 @@ class SprichIME : InputMethodService() {
             if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode field mismatch token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(token, transcriptionResult.text, postProcessResolved)
                 markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
@@ -1930,6 +1983,7 @@ class SprichIME : InputMethodService() {
             if (currentIc == null) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode no InputConnection token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(token, transcriptionResult.text, postProcessResolved)
                 markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
@@ -1937,6 +1991,7 @@ class SprichIME : InputMethodService() {
             if (!fieldController.isCurrentSession(token.sessionId)) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode fieldController stale token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(token, transcriptionResult.text, postProcessResolved)
                 markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
@@ -2115,6 +2170,11 @@ class SprichIME : InputMethodService() {
             if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isBlank() && !applied) {
                 // P07: per-utterance remote failure (never the legacy global) decides the notice.
                 resultNotice = if (plan.transcription is TranscriptionPlan.ApiPrimary && coordinatorOutcome.remoteFailure != null) com.sprich.app.R.string.ime_api_failure else com.sprich.app.R.string.ime_no_speech
+            } else if (prepared is PreparedFinalAction.Text && !applied) {
+                // U03: recognized text, nothing committed — keep for explicit retry + Home review.
+                saveRecoveryDraft(token, prepared.text, prepared.resolved)
+                resultNotice = com.sprich.app.R.string.ime_kept_retry
+                try { micContainer?.announceForAccessibility(uiString(resultNotice!!)) } catch (_: Exception) {}
             } else if (applied) {
                 resultNotice = when {
                     cleanupNotice != null -> cleanupNotice
@@ -2616,6 +2676,60 @@ class SprichIME : InputMethodService() {
     private fun updateEditingControls() {
         undoButton?.visibility = if (!isPasswordField && editorActionController.historySize() > 0) View.VISIBLE else View.GONE
         whisperBadge?.visibility = if (whisperMode && !isPasswordField) View.VISIBLE else View.GONE
+        retryButton?.visibility = if (retryVisibleNow()) View.VISIBLE else View.GONE
+    }
+
+    private fun retryVisibleNow(): Boolean = try {
+        val record = lastFailedCommit ?: return false
+        val icPresent = try { currentInputConnection != null } catch (_: Exception) { false }
+        val controllerCurrent = try { fieldController.isCurrentSession(record.token.sessionId) } catch (_: Exception) { false }
+        retryEligible(record, currentFieldId, icPresent, controllerCurrent, isPasswordField)
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * U03: keep recognized-but-uncommitted text for explicit retry + Home
+     * review. Call with non-blank text only, on paths where recognition
+     * produced text but nothing was committed (failed insert, abandoned
+     * field) — never on user-cancelled or empty paths.
+     */
+    private fun saveRecoveryDraft(token: UtteranceToken, text: String, resolved: ResolvedUtteranceLanguage) {
+        if (text.isBlank()) return
+        lastFailedCommit = FailedCommit(token, text, resolved)
+        try {
+            val app = application as? SprichApp ?: return
+            if (app.recoveryDrafts.save(text)) app.noteRecoveryChanged()
+        } catch (_: Exception) {
+        }
+        try { updateEditingControls() } catch (_: Exception) {}
+    }
+
+    /**
+     * U03: explicit user-tap retry of the failed insert, same field only.
+     * [commitFinalText] revalidates generation/session/field/IC-identity/
+     * password/editor-ownership itself, so a stale record can only fail
+     * honestly — never corrupt another field or session.
+     */
+    private fun retryFailedCommit() {
+        val record = lastFailedCommit ?: return
+        if (!retryVisibleNow()) {
+            lastFailedCommit = null
+            try { updateEditingControls() } catch (_: Exception) {}
+            return
+        }
+        val ok = try { commitFinalText(record.token, record.text, record.resolved) } catch (_: Exception) { false }
+        if (ok) {
+            finalCommitCount++
+            lastFailedCommit = null
+            try {
+                (application as? SprichApp)?.let { it.recoveryDrafts.consume(); it.noteRecoveryChanged() }
+            } catch (_: Exception) {}
+            Log.i("SprichIME", "recovery retry inserted utt=${record.token.utteranceId} chars=${record.text.length}")
+        } else {
+            Log.w("SprichIME", "recovery retry still failing utt=${record.token.utteranceId} — draft kept")
+        }
+        try { updateEditingControls() } catch (_: Exception) {}
     }
 
     private fun performBarAction(action: BarGestureRecognizer.Action): Boolean = when (action) {

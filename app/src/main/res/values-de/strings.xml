@@ -156,6 +156,11 @@
     <string name="ime_undo_action">Löschen rückgängig machen</string>
     <string name="ime_finishing">Letzte Wörter werden geschrieben</string>
     <string name="ime_insert_retry">Tippe auf das Feld und versuch es erneut</string>
+    <string name="ime_retry_insert">Einfügen wiederholen</string>
+    <string name="ime_kept_retry">Nicht eingefügt – behalten. Tippe auf Wiederholen zum Einfügen.</string>
+    <string name="recovery_title">Diktat aufbewahrt</string>
+    <string name="recovery_hint">Kehre zum Feld zurück und tippe auf Wiederholen, oder verwerfe den Text hier.</string>
+    <string name="recovery_discard">Verwerfen</string>
     <string name="download_failed">Download fehlgeschlagen. Prüfe deine Verbindung und versuch es erneut.</string>
     <string name="download_storage">Nicht genug Speicherplatz. Gib Speicher frei und versuch es erneut.</string>
     <string name="download_invalid">Der Download konnte nicht geprüft werden. Versuch es bitte erneut.</string>

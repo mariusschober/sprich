@@ -156,6 +156,11 @@
     <string name="ime_undo_action">Undo deletion</string>
     <string name="ime_finishing">Writing your last words</string>
     <string name="ime_insert_retry">Tap the field, then try again</string>
+    <string name="ime_retry_insert">Retry insert</string>
+    <string name="ime_kept_retry">Not inserted — kept. Tap retry to insert.</string>
+    <string name="recovery_title">Dictation kept</string>
+    <string name="recovery_hint">Return to the field and tap retry to insert, or discard here.</string>
+    <string name="recovery_discard">Discard</string>
     <string name="download_failed">Download failed. Check your connection and try again.</string>
     <string name="download_storage">Not enough storage. Free some space and try again.</string>
     <string name="download_invalid">The download could not be verified. Please try again.</string>
