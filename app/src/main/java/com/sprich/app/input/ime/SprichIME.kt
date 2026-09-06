@@ -144,6 +144,31 @@ class SprichIME : InputMethodService() {
     private lateinit var engine: CanaryEngine
     // Neutral authoritative PCM collector — single canonical source, independent of ASR engine.
     private val utteranceAudio = UtteranceAudioCollector(maxSamples = 16000 * 120)
+    /**
+     * P05 §5.3 split-continuation state. lastVadSilenceSample is in
+     * utterance-domain samples (utteranceAudio.size() at silence time, -1 =
+     * none this utterance). pendingSplitSeed carries the previous split's
+     * overlap tail into the next utterance seed. lastSplitCommit holds the
+     * last applied split-chain text for commit-time reconciliation; cleared
+     * on fresh (non-split, non-reconciled) commits and session stop/fail.
+     */
+    private var lastVadSilenceSample: Int = -1
+    private var pendingSplitSeed: ShortArray? = null
+    private var lastSplitCommit: Pair<Long, String>? = null
+    /**
+     * P05 §5.3: session hard cap (120 s) fires once per capture session.
+     * stopDictation(SESSION_LIMIT) reuses the USER_STOP drain path, so all
+     * captured text is preserved; the soft-cap wrap-up stays a tested policy
+     * hook (sessionSoftCapReached) without its own mic state.
+     */
+    private val sessionHardStopFired = AtomicBoolean(false)
+
+    /** P05 §5.3: split-continuation state never survives session boundaries. */
+    private fun clearSplitContinuationState() {
+        try { pendingSplitSeed = null } catch (_: Exception) {}
+        try { lastSplitCommit = null } catch (_: Exception) {}
+        lastVadSilenceSample = -1
+    }
     private var localCoordinator: LocalTranscriptionCoordinator? = null
     // Diagnostics for Auto-without-Canary gate
     private val canaryLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
@@ -221,6 +246,12 @@ class SprichIME : InputMethodService() {
          * this capture session. Default false = legacy behavior (UNKNOWN basis).
          */
         val hadSpeech: Boolean = false,
+        /**
+         * P05 §5.3: non-null when this endpoint is a cap split. The overlap
+         * audio is carried into the next utterance seed; at commit, the text
+         * reconciles against the previous split commit (verified dedupe only).
+         */
+        val splitOverlap: com.sprich.app.core.audio.ContinuousSpeechPolicy.AudioSpan? = null,
     )
     // Single authoritative long-lived finalization actor — exactly one consumer, FIFO, no worker start/stop race, genuinely bounded.
     // Bounded capacity 4 ensures PCM retention bounded (max ~4 utterances). Overload is explicit via rejected/suppressed counters, not silent loss.
@@ -375,6 +406,9 @@ class SprichIME : InputMethodService() {
     private var glowBg: android.graphics.drawable.GradientDrawable? = null
     private var auraView: View? = null
     private var pillBgRef: android.graphics.drawable.GradientDrawable? = null
+    // ViewRootImpl rejects accessibility content changes off the UI thread
+    // (error today, fatal on future Android) — audio callbacks must hop here.
+    private val mainThreadHandler = android.os.Handler(android.os.Looper.getMainLooper())
     // Production Automatic: Tiny LID (Whisper Tiny 98M, per-utterance SLID) → FastConformer CTC 126M (implicit EN-DE-ES-FR)
     // Accurate explicit: Canary 180M Flash INT8 (fixed EN/DE/ES/FR)
     private val lidEngine by lazy {
@@ -1313,6 +1347,9 @@ class SprichIME : InputMethodService() {
             val generation = sessionGeneration.incrementAndGet()
             // P03: new capture session reopens lane intake (finish/cancel closed it).
             try { utteranceQueue.reset() } catch (_: Exception) {}
+            // P05 §5.3: fresh session, fresh split state and session cap.
+            try { clearSplitContinuationState() } catch (_: Exception) {}
+            sessionHardStopFired.set(false)
             // The retired reader must finish before we reset shared endpoint/PCM state.
             val previousReaderStopped = withContext(Dispatchers.IO) { audio.requestStop()?.awaitStop(2000) != false }
             if (generation != sessionGeneration.get()) return
@@ -1340,7 +1377,6 @@ class SprichIME : InputMethodService() {
             // Route-aware loading — only load required engines, do NOT load Canary for Automatic. For API_PRIMARY, local not required.
             val routeForSession = determineRoute(snapAtStart.speechLanguage)
             val requiresLocalLoad = snapAtStart.transcriptionMode != TranscriptionMode.API_PRIMARY
-            val mmForLoad = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
             val loadResult: Result<Unit> = if (!requiresLocalLoad && transcriptionMode == TranscriptionMode.API_PRIMARY) {
                 // API primary: no local model required for successful remote path; fallback loaded lazily on failure
                 val remoteCfg = buildRemoteSttConfig(snapAtStart)
@@ -1466,6 +1502,20 @@ class SprichIME : InputMethodService() {
         try {
             pipelineChunkCount++
             pipelineSampleCount += length
+            // P05 §5.3: 120 s session safety ceiling — SESSION_LIMIT reuses
+            // the USER_STOP drain path so all captured text is preserved.
+            // Fires once per capture session; utterance caps bound segments.
+            if (!sessionHardStopFired.get()) {
+                try {
+                    val sessionSamples = pipelineSampleCount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    if (com.sprich.app.core.audio.ContinuousSpeechPolicy.sessionLimitReached(sessionSamples) &&
+                        sessionHardStopFired.compareAndSet(false, true)
+                    ) {
+                        Log.i("SprichIME", "session hard cap reached samples=$pipelineSampleCount — stopping with drain")
+                        scope.launch { stopDictation(StopReason.SESSION_LIMIT) }
+                    }
+                } catch (_: Exception) {}
+            }
             val durationMs = ((length * 1000L) / SAMPLE_RATE).coerceAtLeast(1L)
             val remoteOnly = when (activeUtterance?.plan?.transcription) {
                 is TranscriptionPlan.ApiPrimary -> true
@@ -1493,6 +1543,14 @@ class SprichIME : InputMethodService() {
                     )
                 }
                 lastVadState = result.state
+            }
+            // P05 §5.3: remember the latest silence position (utterance-domain
+            // samples) while an utterance is active — a future soft-cap split
+            // prefers endpointing here over chopping mid-word.
+            if (utteranceActive.get() &&
+                (result.state == Vad.State.SILENCE || result.state == Vad.State.LONG_SILENCE)
+            ) {
+                try { lastVadSilenceSample = utteranceAudio.size() } catch (_: Exception) {}
             } else if (pipelineChunkCount % 16L == 0L) {
                 if (android.util.Log.isLoggable("SprichIME", android.util.Log.DEBUG)) {
                     android.util.Log.d("SprichIME", "vad alive state=${result.state.name} rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} chunks=$pipelineChunkCount pushed=$pipelinePushedSampleCount")
@@ -1536,7 +1594,18 @@ class SprichIME : InputMethodService() {
                     return
                 }
                 // AUTHORITATIVE: UtteranceAudioCollector owns seeding preRoll exactly once — engine-independent.
-                try { utteranceAudio.begin(preRoll) } catch (_: Exception) {}
+                // P05 §5.3: a split continuation prepends the previous split's
+                // overlap tail so no audio is lost at the split boundary.
+                lastVadSilenceSample = -1
+                val seed = try {
+                    val tail = pendingSplitSeed
+                    pendingSplitSeed = null
+                    if (tail != null && tail.isNotEmpty()) {
+                        Log.i("SprichIME", "split continuation seed overlapSamples=${tail.size} preRoll=${preRoll.size}")
+                        tail + preRoll
+                    } else preRoll
+                } catch (_: Exception) { preRoll }
+                try { utteranceAudio.begin(seed) } catch (_: Exception) {}
                 // Freeze full utterance plan at onset from ONE atomic snapshot — Settings changes apply to NEXT utterance only.
                 val snapAtOnset = runtimeConfig ?: run {
                     utteranceActive.set(false)
@@ -1606,8 +1675,19 @@ class SprichIME : InputMethodService() {
 
             val liveEndpoint = activeUtterance?.live?.shouldFinish(result.state == Vad.State.SPEECH, result.state == Vad.State.UTTERANCE_END, durationMs)
                 ?: (result.state == Vad.State.UTTERANCE_END)
+            // P05 §5.3: soft-cap split prefers a safe pause over chopping
+            // mid-word. Only when a VAD silence within the overlap window
+            // exists; the hard ceiling below stays the emergency mechanism.
+            val audioSizeNow = try { utteranceAudio.size() } catch (_: Exception) { 0 }
+            val softPauseSplit = if (!remoteOnly && audioSizeNow >= com.sprich.app.core.audio.ContinuousSpeechPolicy.SEGMENT_SOFT_CAP_SAMPLES) {
+                try {
+                    val silence = lastVadSilenceSample.takeIf { it >= 0 }
+                    com.sprich.app.core.audio.ContinuousSpeechPolicy.planSegmentSplit(audioSizeNow, silence)
+                        ?.takeIf { it.atSafePause }
+                } catch (_: Exception) { null }
+            } else null
             if (
-                (liveEndpoint || utteranceAudio.size() >= 16000 * (if (remoteOnly) 119 else 29)) &&
+                (liveEndpoint || utteranceAudio.size() >= 16000 * (if (remoteOnly) 119 else 29) || softPauseSplit != null) &&
                 utteranceActive.compareAndSet(true, false)
             ) {
                 latency.mark("endpointDetected")
@@ -1617,6 +1697,29 @@ class SprichIME : InputMethodService() {
                 // CRITICAL: captured synchronously before next onset can reuse live buffer.
                 val frozenSnap: ShortArray = try { utteranceAudio.freeze() } catch (_: Exception) { ShortArray(0) }
                 lastUtteranceEndSample = pipelineSampleCount
+                // P05 §5.3: cap splits carry the overlap tail into the next
+                // utterance seed so no audio is lost at the boundary. Exact
+                // plan from the frozen size (soft pause preferred, hard cap
+                // forced) — null for ordinary endpoints.
+                var splitOverlap: com.sprich.app.core.audio.ContinuousSpeechPolicy.AudioSpan? = null
+                try {
+                    if (!remoteOnly && frozenSnap.size >= com.sprich.app.core.audio.ContinuousSpeechPolicy.SEGMENT_SOFT_CAP_SAMPLES) {
+                        val silence = lastVadSilenceSample.takeIf { it in 0..frozenSnap.size }
+                        val plan = com.sprich.app.core.audio.ContinuousSpeechPolicy.planSegmentSplit(frozenSnap.size, silence)
+                        if (plan != null) {
+                            splitOverlap = plan.overlap
+                            val from = plan.overlap.startSampleInclusive.coerceIn(0, frozenSnap.size)
+                            val to = plan.overlap.endSampleExclusive.coerceIn(from, frozenSnap.size)
+                            if (to > from) {
+                                pendingSplitSeed = frozenSnap.copyOfRange(from, to)
+                                Log.i("SprichIME", "split continuation overlapSamples=${to - from} atSafePause=${plan.atSafePause}")
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    splitOverlap = null
+                    try { pendingSplitSeed = null } catch (_: Exception) {}
+                }
                 // P1-25: single isolated copy already from freeze(), no second copyOf needed
                 val token = currentUtteranceToken ?: run {
                     Log.w("SprichIME", "endpoint without token — discarding (fail closed, zero decode/network/mutation)")
@@ -1646,6 +1749,7 @@ class SprichIME : InputMethodService() {
                     endpointTimestampNanos = System.nanoTime(),
                     live = captured.live,
                     hadSpeech = try { vad.hasSpeech() } catch (_: Exception) { false },
+                    splitOverlap = splitOverlap,
                 )
                 captured.live?.sealInput(frozenSnap)
                 // Active utterance completed — clear descriptor so next onset creates fresh one; but retain until next onset for overlapping queue isolation.
@@ -2243,14 +2347,39 @@ class SprichIME : InputMethodService() {
                     ok
                 }
                 is PreparedFinalAction.Text -> {
-                    val finalText = (prepared as PreparedFinalAction.Text).text
-                    if (finalText.isEmpty()) {
+                    // P05 §5.3: split continuations reconcile against the
+                    // previous split commit — verified dedupe only, never
+                    // blind concatenation. Non-split commits clear the chain.
+                    var commitText = (prepared as PreparedFinalAction.Text).text
+                    var wasReconciled = false
+                    try {
+                        val prev = lastSplitCommit
+                        if (pending.splitOverlap != null && prev != null) {
+                            val reconciled = com.sprich.app.core.audio.ContinuousSpeechPolicy.reconcileWithOverlapSearch(
+                                prev.second,
+                                commitText,
+                                overlapSpan = pending.splitOverlap,
+                            )
+                            if (reconciled.overlapDeduped) {
+                                Log.i("SprichIME", "split reconcile deduped token=$token prev=${prev.first} chars=${commitText.length}->${reconciled.text.length}")
+                                commitText = reconciled.text
+                                wasReconciled = true
+                            }
+                        }
+                    } catch (_: Exception) {}
+                    if (commitText.isEmpty()) {
                         Log.w("SprichIME", "final transcript empty token=$token")
+                        try { lastSplitCommit = null } catch (_: Exception) {}
                         false
                     } else {
-                        val ok = commitFinalText(token, finalText, prepared.resolved)
-                        Log.i("SprichIME", "final token=$token chars=${finalText.length} applied=$ok elapsedMs=$elapsed lang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected resolved=$postProcessResolved")
+                        val ok = commitFinalText(token, commitText, prepared.resolved)
+                        Log.i("SprichIME", "final token=$token chars=${commitText.length} applied=$ok elapsedMs=$elapsed lang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected resolved=$postProcessResolved")
                         if (ok) finalCommitCount++
+                        try {
+                            lastSplitCommit =
+                                if (ok && (pending.splitOverlap != null || wasReconciled)) token.utteranceId to commitText
+                                else null
+                        } catch (_: Exception) {}
                         ok
                     }
                 }
@@ -2484,6 +2613,8 @@ class SprichIME : InputMethodService() {
         activeUtterance = null
         // Claimed ids are intentionally retained (bounded to 128 inside
         // FinalizationClaims) to prevent utterance-id reuse after failure.
+        // P05 §5.3: split-continuation state never survives a failure.
+        try { clearSplitContinuationState() } catch (_: Exception) {}
         // Off-main audio teardown — Main does only cheap requestStop, join off-thread
         val retiredCapture = try { audio.requestStop() } catch (_: Exception) { null }
         scope.launch(kotlinx.coroutines.Dispatchers.IO) { try { retiredCapture?.awaitStop() } catch (_: Exception) {} }
@@ -2547,13 +2678,14 @@ class SprichIME : InputMethodService() {
         val hasActiveUtterance = activeUtterance != null && utteranceActive.get() && currentUtteranceToken != null
         val notYetFinalized = currentUtteranceToken?.let { !finalizedUtterances.contains(it.utteranceId) } ?: true
         val shouldCommitAsFinalizing = when (reason) {
-            StopReason.USER_STOP -> wasActive && hasActiveUtterance && currentPcmSize > 0 && notYetFinalized
+            StopReason.USER_STOP, StopReason.SESSION_LIMIT -> wasActive && hasActiveUtterance && currentPcmSize > 0 && notYetFinalized
             StopReason.ENDPOINT -> false // endpoint path uses finalizeOnce directly, not stopDictation
             else -> false
         }
 
-        // USER_STOP must be FIFO-serialized with ENDPOINT via same finalization actor — no direct finalizePending call that bypasses queue
-        if (reason == StopReason.USER_STOP) {
+        // USER_STOP must be FIFO-serialized with ENDPOINT via same finalization actor — no direct finalizePending call that bypasses queue.
+        // P05 §5.3: SESSION_LIMIT shares the drain path so capped sessions preserve all captured text.
+        if (reason == StopReason.USER_STOP || reason == StopReason.SESSION_LIMIT) {
             // Stop accepting new mic input immediately, but do NOT invalidate already queued work
             val shouldEnqueueFinal = shouldCommitAsFinalizing
             if (shouldEnqueueFinal) {
@@ -2603,6 +2735,8 @@ class SprichIME : InputMethodService() {
                 pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
                 vad.reset()
                 lastVadState = Vad.State.SILENCE
+                // P05 §5.3: split-continuation state never survives a stop.
+                try { clearSplitContinuationState() } catch (_: Exception) {}
                 try { composition.discardPartial(currentInputConnection) } catch (_: Exception) {}
                 try { if (session.state.value !is SessionState.Idle) session.end() } catch (_: Exception) { try { session.idle() } catch (_: Exception) {} }
                 // P03: intake closed, accepted work already drained via the actor (queue empty by branch condition).
@@ -2611,14 +2745,17 @@ class SprichIME : InputMethodService() {
                     if (drained.isNotEmpty()) Log.w("SprichIME", "USER_STOP finish drained ${drained.size} unexpected entries")
                 } catch (_: Exception) {}
                 updateImeUi(false)
-                writeDiagnostics("stopped USER_STOP immediate (no queue) prevGen=$generationAtStop newGen=$newGen claims=$finalizationClaims")
+                writeDiagnostics("stopped $reason immediate (no queue) prevGen=$generationAtStop newGen=$newGen claims=$finalizationClaims")
             } else {
-                // Enqueued — mark stop after drain, preserve FIFO order, no generation bump yet
+                // Enqueued — mark stop after drain, preserve FIFO order, no generation bump yet.
+                // P05 §5.3: split chain cleared now — in-flight split items
+                // keep full text (safe fallback, no reconcile base).
+                try { clearSplitContinuationState() } catch (_: Exception) {}
                 stopRequested = true
                 stopRequestedGeneration = generationAtStop
                 showStaticMessage(com.sprich.app.R.string.ime_stopping, com.sprich.app.R.string.ime_finishing)
-                Log.i("SprichIME", "USER_STOP awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
-                writeDiagnostics("USER_STOP awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
+                Log.i("SprichIME", "$reason awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
+                writeDiagnostics("$reason awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
             }
             if (wasActive) vibrateStop()
             return
@@ -3330,6 +3467,10 @@ class SprichIME : InputMethodService() {
 
     /** Applies rms to bar, glow, aura and pill stroke on Main thread. Properties only — no requestLayout. */
     private fun updateLiquidVisual(rms: Float) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            mainThreadHandler.post { updateLiquidVisual(rms) }
+            return
+        }
         try {
             val isApi = isApiPalette()
             val colors = gradientForRms(rms, isApi)

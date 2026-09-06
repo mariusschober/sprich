@@ -177,4 +177,78 @@ class P01P02P05PolicyTest {
         // the default debounce must stay well above it.
         assertEquals(1500L, EndpointConfig().debounceAfterEndpointMs)
     }
+
+    // --- Overlap-search reconciliation (P05 split continuation) ---
+
+    @Test
+    fun overlapSearch_dedupesLongestExactMatch() {
+        val r = ContinuousSpeechPolicy.reconcileWithOverlapSearch(
+            "we are going to the store tomorrow",
+            "to the store tomorrow morning we go",
+        )
+        assertTrue(r.overlapDeduped)
+        assertEquals("we are going to the store tomorrow morning we go", r.text)
+    }
+
+    @Test
+    fun overlapSearch_keepsBothOnMismatch() {
+        // No tail/head N>=2 matches ("the store" vs "to the"): both kept.
+        val r = ContinuousSpeechPolicy.reconcileWithOverlapSearch(
+            "going to the store",
+            "to the shop now open",
+        )
+        assertFalse(r.overlapDeduped)
+        assertEquals("going to the store to the shop now open", r.text)
+    }
+
+    @Test
+    fun overlapSearch_singleWordRepeatNeverEaten() {
+        val r = ContinuousSpeechPolicy.reconcileWithOverlapSearch(
+            "see you later",
+            "later alligator",
+        )
+        assertFalse(r.overlapDeduped) // only 1-word match: kept, never eaten
+        assertEquals("see you later later alligator", r.text)
+    }
+
+    @Test
+    fun overlapSearch_respectsMaxWords() {
+        val earlier = "a b c d e f g h i j"
+        val later = "h i j k l"
+        // Full 3-word match "h i j" is within default max 8.
+        val r = ContinuousSpeechPolicy.reconcileWithOverlapSearch(earlier, later)
+        assertTrue(r.overlapDeduped)
+        assertEquals("a b c d e f g h i j k l", r.text)
+        // Capped at 2, the 3-word overlap is out of reach ("i j" != "h i"):
+        // both sides kept rather than partially eaten.
+        val capped = ContinuousSpeechPolicy.reconcileWithOverlapSearch(earlier, later, maxOverlapWords = 2)
+        assertFalse(capped.overlapDeduped)
+        assertEquals("a b c d e f g h i j h i j k l", capped.text)
+    }
+
+    @Test
+    fun overlapSearch_blankSides() {
+        assertEquals("hello", ContinuousSpeechPolicy.reconcileWithOverlapSearch("", "hello").text)
+        assertEquals("hello", ContinuousSpeechPolicy.reconcileWithOverlapSearch("hello", "").text)
+        assertFalse(ContinuousSpeechPolicy.reconcileWithOverlapSearch("", "hello").overlapDeduped)
+    }
+
+    @Test
+    fun segmentSplit_safePausePreferred_hardCapForced() {
+        val soft = ContinuousSpeechPolicy.SEGMENT_SOFT_CAP_SAMPLES
+        val hard = ContinuousSpeechPolicy.SEGMENT_HARD_CAP_SAMPLES
+        val overlap = ContinuousSpeechPolicy.MAX_OVERLAP_SAMPLES
+        assertNull(ContinuousSpeechPolicy.planSegmentSplit(soft - 1, null))
+        // Safe pause inside the overlap window below the hard cap wins.
+        val atPause = ContinuousSpeechPolicy.planSegmentSplit(soft + 1000, soft - 500)
+        assertNotNull(atPause)
+        assertTrue(atPause!!.atSafePause)
+        assertEquals(soft - 500, atPause.splitSample)
+        // No pause: hard cap forced once reached.
+        val atHard = ContinuousSpeechPolicy.planSegmentSplit(hard + 8000, null)
+        assertNotNull(atHard)
+        assertFalse(atHard!!.atSafePause)
+        assertEquals(hard, atHard.splitSample)
+        assertEquals(hard - overlap, atHard.overlap.startSampleInclusive)
+    }
 }

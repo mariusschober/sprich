@@ -14,4 +14,5 @@ enum class StopReason {
     PASSWORD_FIELD,     // Password field detected — cancel immediately
     ERROR,              // Engine/audio error — cancel
     SERVICE_DESTROYED,  // onDestroy — cancel
+    SESSION_LIMIT,      // P05 §5.3: 120 s session safety ceiling — drain like USER_STOP, keep field
 }

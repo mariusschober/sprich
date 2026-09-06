@@ -89,6 +89,37 @@ object ContinuousSpeechPolicy {
         val overlapSpan: AudioSpan?,
     )
 
+    /**
+     * Greedy verified reconciliation when the overlap word count is unknown
+     * (live split continuation): tries [maxOverlapWords] down to
+     * [minOverlapWords], first exact token match wins. Single-word matches
+     * are never deduped — a repeated word across the boundary is usually
+     * legitimate speech, not overlap. No match (or below minimum) keeps both
+     * sides: overlap is never silently deleted.
+     */
+    fun reconcileWithOverlapSearch(
+        earlierText: String,
+        laterText: String,
+        maxOverlapWords: Int = 8,
+        minOverlapWords: Int = 2,
+        overlapSpan: AudioSpan? = null,
+    ): Reconciled {
+        require(maxOverlapWords >= 0 && minOverlapWords >= 0)
+        val earlierTokens = tokens(earlierText)
+        val laterTokens = tokens(laterText)
+        val ceiling = minOf(maxOverlapWords, earlierTokens.size, laterTokens.size)
+        var n = ceiling
+        while (n >= minOverlapWords) {
+            if (earlierTokens.takeLast(n) == laterTokens.take(n)) {
+                return reconcile(earlierText, laterText, n, overlapSpan)
+            }
+            n--
+        }
+        if (earlierText.isBlank()) return Reconciled(laterText.trim(), false, overlapSpan)
+        if (laterText.isBlank()) return Reconciled(earlierText.trim(), false, overlapSpan)
+        return Reconciled(earlierText.trim() + " " + laterText.trim(), false, overlapSpan)
+    }
+
     private val tokenRegex = Regex("[\\p{L}\\p{N}]+")
 
     private fun tokens(text: String): List<String> =
