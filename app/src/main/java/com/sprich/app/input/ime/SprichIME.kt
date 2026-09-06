@@ -337,6 +337,27 @@ class SprichIME : InputMethodService() {
     private var lastFailedCommit: FailedCommit? = null
     private var retryButton: View? = null
     private var screenOffReceiver: android.content.BroadcastReceiver? = null
+    /**
+     * U02 correction sheet (§9.5). [correctionTarget] is the exact-span target
+     * captured at sheet open; [correctionUndo] the one-step undo proof after
+     * Apply; [correctionDictationTarget] arms dictated-replacement routing
+     * (next post-arm utterance delivers its text to the sheet instead of the
+     * field). The controller is Compose-observed state owned here.
+     */
+    private val correctionController = com.sprich.app.ui.correction.CorrectionSheetController()
+    private var correctionTarget: com.sprich.app.input.correction.CorrectionTarget? = null
+    private var correctionUndo: com.sprich.app.input.correction.UndoEdit? = null
+    private var correctionDictationTarget: com.sprich.app.input.correction.CorrectionTarget? = null
+    private var correctionArmedAtMs: Long = 0L
+    private var correctionDialog: android.app.Dialog? = null
+    private var correctButton: View? = null
+    private var lastAppliedReplacement: String? = null
+    /**
+     * Compose has no Activity here (IME service + Dialog window), so the
+     * sheet's ComposeView gets explicit view-tree owners driven by this
+     * registry (RESUMED while shown, DESTROYED on dismiss).
+     */
+    private var correctionSheetView: com.sprich.app.ui.correction.CorrectionSheetView? = null
     private var dismissalGeneration = 0L
     private var dismissing = false
     private var whisperChangeJob: Job? = null
@@ -698,7 +719,21 @@ class SprichIME : InputMethodService() {
                 setOnClickListener { retryFailedCommit() }
             }
             retryButton = retry
-            pill.tapTargets = listOf(undo, switchButton, retry)
+            // U02: cursor-word correction entry. Visible only when a correctable
+            // word sits under the cursor (never in password fields).
+            val correct = android.widget.ImageButton(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+                setImageResource(com.sprich.app.R.drawable.ic_correct)
+                imageTintList = android.content.res.ColorStateList.valueOf(statusColor)
+                val backgroundAttr = android.util.TypedValue()
+                theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, backgroundAttr, true)
+                setBackgroundResource(backgroundAttr.resourceId)
+                contentDescription = uiString(com.sprich.app.R.string.ime_correct_word)
+                visibility = View.GONE
+                setOnClickListener { openCorrectionSheet() }
+            }
+            correctButton = correct
+            pill.tapTargets = listOf(undo, switchButton, retry, correct)
 
             pillBgRef = pillBg
             // Allow glow/aura to draw beyond bounds
@@ -711,6 +746,7 @@ class SprichIME : InputMethodService() {
             pill.addView(textBlock)
             pill.addView(undo)
             pill.addView(retry)
+            pill.addView(correct)
             pill.addView(switchButton)
             outer.addView(aura)   // behind the pill
             outer.addView(pill)
@@ -819,6 +855,8 @@ class SprichIME : InputMethodService() {
         val state = session.state.value
         if (state is SessionState.Error) return
         updateImeUi(isDictationRunning())
+        // Affordances (undo/retry/correction) follow session + editor state.
+        try { updateEditingControls() } catch (_: Exception) {}
         if (state is SessionState.Preparing) {
             showStaticMessage(com.sprich.app.R.string.ime_preparing, com.sprich.app.R.string.ime_loading_hint)
         } else if (state is SessionState.Finalizing && !utteranceActive.get()) {
@@ -1024,6 +1062,8 @@ class SprichIME : InputMethodService() {
             utteranceActive.set(false)
             endpointPending.set(false)
             try { editorActionController.clearHistory() } catch (_: Exception) {}
+            // New field: refresh affordances (correction entry needs the fresh IC).
+            try { updateEditingControls() } catch (_: Exception) {}
 
         } catch (e: Exception) {
             Log.e("SprichIME", "onStartInput failed", e)
@@ -1082,6 +1122,8 @@ class SprichIME : InputMethodService() {
 
     override fun onFinishInputView(finishingInput: Boolean) {
         cancelBarGesture()
+        // U02: the sheet is window-bound; never leak it past the input view.
+        try { closeCorrectionSheet() } catch (_: Exception) {}
         stopDictation(StopReason.WINDOW_HIDDEN)
         try { stopVisualLane() } catch (_: Exception) {}
         super.onFinishInputView(finishingInput)
@@ -1110,6 +1152,7 @@ class SprichIME : InputMethodService() {
         } catch (_: Exception) {
         }
         screenOffReceiver = null
+        try { closeCorrectionSheet() } catch (_: Exception) {}
         // Signal audio stop synchronously without join (join moved off-main)
         val retiredCapture = try { audio.requestStop() } catch (_: Exception) { null }
         // Cancel network/work without blocking
@@ -1927,6 +1970,21 @@ class SprichIME : InputMethodService() {
                 }
                 markQueueDone(token.utteranceId, failed = false)
             }
+            // U02 dictated replacement: an utterance endpointed after arming
+            // delivers its text to the open sheet instead of the field. The
+            // user reviews before Apply (which revalidates the exact span),
+            // so no field mutation happens here; the lane entry resolves done
+            // with no cleanup attempted.
+            val armedCorrection = correctionDictationTarget
+            if (!recognitionFailed && armedCorrection != null && transcriptionResult.text.isNotBlank() &&
+                pending.endpointTimestampNanos / 1_000_000L >= correctionArmedAtMs
+            ) {
+                deliverCorrectionDictation(transcriptionResult.text)
+                try { utteranceQueue.markCleanupDone(token.utteranceId) } catch (_: Exception) {}
+                drainQueueLane(token.utteranceId)
+                try { maybeClearActiveStateForToken(token) } catch (_: Exception) {}
+                return
+            }
             // P0-12: increment truthful path counters
             when (transcriptionResult.source) {
                 TranscriptionSourceId.LOCAL_FAST, TranscriptionSourceId.LOCAL_CANARY -> { localNativeDecodeStarts++; nativeDecodeStarts++ }
@@ -2677,6 +2735,7 @@ class SprichIME : InputMethodService() {
         undoButton?.visibility = if (!isPasswordField && editorActionController.historySize() > 0) View.VISIBLE else View.GONE
         whisperBadge?.visibility = if (whisperMode && !isPasswordField) View.VISIBLE else View.GONE
         retryButton?.visibility = if (retryVisibleNow()) View.VISIBLE else View.GONE
+        correctButton?.visibility = if (correctionEntryVisible()) View.VISIBLE else View.GONE
     }
 
     private fun retryVisibleNow(): Boolean = try {
@@ -2730,6 +2789,314 @@ class SprichIME : InputMethodService() {
             Log.w("SprichIME", "recovery retry still failing utt=${record.token.utteranceId} — draft kept")
         }
         try { updateEditingControls() } catch (_: Exception) {}
+    }
+
+    /**
+     * U02 editor snapshot for correction targeting. Prefers extracted text
+     * (absolute cursor known); falls back to capped before/after, in which
+     * case absolute offsets are known only when `before` reached field start.
+     */
+    private data class CorrectionEditorSnapshot(
+        val before: String,
+        val after: String,
+        val cursorAbsolute: Int,
+        val collapsed: Boolean,
+    )
+
+    private fun readEditorSnapshot(maxBefore: Int = 1000, maxAfter: Int = 256): CorrectionEditorSnapshot? {
+        val ic = try { currentInputConnection } catch (_: Exception) { null } ?: return null
+        return try {
+            val extracted = try {
+                ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
+            } catch (_: Exception) {
+                null
+            }
+            if (extracted != null && extracted.text != null) {
+                val text = extracted.text.toString()
+                val selStart = extracted.selectionStart.coerceIn(0, text.length)
+                val selEnd = extracted.selectionEnd.coerceIn(0, text.length)
+                CorrectionEditorSnapshot(text.substring(0, selStart), text.substring(selStart), selStart, selStart == selEnd)
+            } else {
+                val before = try { ic.getTextBeforeCursor(maxBefore, 0)?.toString() } catch (_: Exception) { null } ?: return null
+                val after = try { ic.getTextAfterCursor(maxAfter, 0)?.toString() } catch (_: Exception) { null } ?: ""
+                val cursorAbs = if (before.length < maxBefore) before.length else -1
+                CorrectionEditorSnapshot(before, after, cursorAbs, true)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun correctionEntryVisible(): Boolean {
+        if (isPasswordField) return false
+        return try {
+            val ic = try { currentInputConnection } catch (_: Exception) { null } ?: return false
+            val before = try { ic.getTextBeforeCursor(64, 0)?.toString() } catch (_: Exception) { null } ?: return false
+            com.sprich.app.input.correction.CorrectionPlan.wordAtCursor(before, before.length) != null
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * U02: open the correction sheet on the cursor word. Captures the
+     * exact-span target (field + generation + offsets + surrounding snapshot);
+     * every later mutation revalidates against a FRESH snapshot, so a moved
+     * cursor or host edit can only refuse honestly, never mis-splice.
+     */
+    private fun openCorrectionSheet() {
+        try { closeCorrectionSheet() } catch (_: Exception) {}
+        if (isPasswordField) { Log.i("SprichIME", "correction sheet refused: password field"); return }
+        val fieldId = currentFieldId
+        if (fieldId == null) { Log.i("SprichIME", "correction sheet refused: no field"); return }
+        val snap = readEditorSnapshot()
+        if (snap == null) { Log.i("SprichIME", "correction sheet refused: no snapshot field=$fieldId"); return }
+        if (!snap.collapsed || snap.cursorAbsolute < 0) { Log.i("SprichIME", "correction sheet refused: selection collapsed=${snap.collapsed} cursor=${snap.cursorAbsolute}"); return }
+        val (start, len) = com.sprich.app.input.correction.CorrectionPlan.wordAtCursor(snap.before, snap.before.length)
+            ?: run { Log.i("SprichIME", "correction sheet refused: no word before=${snap.before.takeLast(16)}"); return }
+        val word = try { snap.before.substring(start, start + len) } catch (_: Exception) { return }
+        if (word.isBlank()) { Log.i("SprichIME", "correction sheet refused: blank word"); return }
+        Log.i("SprichIME", "correction sheet opening word=$word field=$fieldId")
+        correctionTarget = com.sprich.app.input.correction.CorrectionTarget(
+            fieldId = fieldId,
+            fieldGeneration = fieldGeneration.get(),
+            startOffset = start,
+            text = word,
+            beforeAtOpen = snap.before,
+            afterAtOpen = snap.after,
+        )
+        correctionUndo = null
+        lastAppliedReplacement = null
+        correctionController.targetWord = word
+        correctionController.replacement = word
+        correctionController.listening = false
+        correctionController.undoAvailable = false
+        correctionController.proposal = null
+        correctionController.rememberAvailable = false
+        correctionController.notice = null
+        // Classic Views: the IME service window has no Activity lifecycle,
+        // so Compose content would need hand-wired view-tree owners.
+        val dialog = android.app.Dialog(this, android.R.style.Theme_DeviceDefault_Dialog)
+        val sheet = com.sprich.app.ui.correction.buildCorrectionSheetView(
+            this,
+            correctionController,
+            com.sprich.app.ui.correction.CorrectionSheetActions(
+                onReplacementChange = { correctionController.replacement = it },
+                onProposalTap = {
+                    correctionController.proposal?.let { correctionController.replacement = it.newForm }
+                },
+                onDictate = { armCorrectionDictation() },
+                onApply = { applyCorrection() },
+                onUndo = { undoCorrection() },
+                onRemember = { rememberSpelling() },
+                onDismiss = { closeCorrectionSheet() },
+            ),
+        )
+        correctionSheetView = sheet
+        // Controller mutations can arrive off the UI thread (dictation /
+        // correction callbacks); always refresh via the attached view.
+        correctionController.onChange = {
+            try {
+                val root = sheet.root
+                root.post {
+                    try {
+                        if (correctionDialog === dialog) sheet.refresh(correctionController)
+                    } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+        }
+        dialog.setContentView(
+            sheet.root,
+            android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        try {
+            dialog.window?.let { w ->
+                w.attributes?.token = try { rootView?.windowToken } catch (_: Exception) { null }
+                w.setType(android.view.WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG)
+                // Transparent window decor: the rounded panel draws the sheet in both themes.
+                w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+            }
+        } catch (_: Exception) {}
+        correctionDialog = dialog
+        try {
+            dialog.show()
+            Log.i("SprichIME", "correction sheet shown")
+        } catch (e: Exception) {
+            Log.w("SprichIME", "correction sheet show failed", e)
+            correctionDialog = null
+        }
+    }
+
+    private fun closeCorrectionSheet() {
+        try { correctionController.onChange = null } catch (_: Exception) {}
+        correctionSheetView = null
+        try { correctionDialog?.dismiss() } catch (_: Exception) {}
+        correctionDialog = null
+        correctionTarget = null
+        correctionUndo = null
+        correctionDictationTarget = null
+        lastAppliedReplacement = null
+        try {
+            correctionController.listening = false
+            correctionController.undoAvailable = false
+            correctionController.proposal = null
+            correctionController.rememberAvailable = false
+            correctionController.notice = null
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * U02 dictated replacement: arm routing, then start dictation unless
+     * already running. Only an utterance endpointed AFTER arming delivers
+     * (guarded by [correctionArmedAtMs] at the finalize site), so an
+     * in-flight unrelated utterance can never be hijacked into the sheet.
+     */
+    private fun armCorrectionDictation() {
+        correctionDictationTarget = correctionTarget ?: return
+        correctionArmedAtMs = try { android.os.SystemClock.elapsedRealtime() } catch (_: Exception) { 0L }
+        correctionController.listening = true
+        correctionController.notice = null
+        try {
+            if (!isDictationRunning()) toggleDictation()
+        } catch (_: Exception) {}
+    }
+
+    private fun deliverCorrectionDictation(text: String) {
+        correctionDictationTarget = null
+        correctionController.replacement = text
+        correctionController.listening = false
+        correctionController.notice = null
+        Log.i("SprichIME", "correction dictated replacement chars=${text.length}")
+    }
+
+    /**
+     * U02 Apply: re-read a fresh snapshot and run the full CorrectionPlan
+     * revalidation (field, generation, span). The splice is one batch edit:
+     * select exact span, commit replacement, park cursor after it.
+     */
+    private fun applyCorrection() {
+        val target = correctionTarget ?: return
+        val replacement = correctionController.replacement
+        if (replacement.isBlank()) return
+        val snap = readEditorSnapshot() ?: run {
+            correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            return
+        }
+        if (!snap.collapsed || snap.cursorAbsolute < 0) {
+            correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            return
+        }
+        val current = com.sprich.app.input.correction.EditorText(snap.before, snap.after)
+        val fieldId = currentFieldId
+        when (val res = com.sprich.app.input.correction.CorrectionPlan.planCorrection(
+            target, current, fieldId, fieldGeneration.get(), replacement,
+        )) {
+            is com.sprich.app.input.correction.CorrectionResult.Rejected -> {
+                Log.w("SprichIME", "correction rejected reason=${res.reason}")
+                correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            }
+            is com.sprich.app.input.correction.CorrectionResult.Apply -> {
+                val absStart = snap.cursorAbsolute - snap.before.length + target.startOffset
+                val absEnd = absStart + target.text.length
+                val ic = try { currentInputConnection } catch (_: Exception) { null }
+                val ok = if (ic == null || absStart < 0 || absEnd < 0) {
+                    false
+                } else try {
+                    ic.beginBatchEdit()
+                    val selected = try { ic.setSelection(absStart, absEnd) } catch (_: Exception) { false }
+                    val committed = if (selected) {
+                        try { ic.commitText(replacement, 1) } catch (_: Exception) { false }
+                    } else false
+                    if (committed) {
+                        try { ic.setSelection(absStart + replacement.length, absStart + replacement.length) } catch (_: Exception) {}
+                    }
+                    try { ic.endBatchEdit() } catch (_: Exception) {}
+                    committed
+                } catch (_: Exception) {
+                    try { ic.endBatchEdit() } catch (_: Exception) {}
+                    false
+                }
+                if (ok) {
+                    try { editorActionController.recordSprichInsertion(currentFieldId, fieldGeneration.get(), replacement, ic!!) } catch (_: Exception) {}
+                    correctionUndo = res.undo
+                    lastAppliedReplacement = replacement
+                    correctionController.undoAvailable = true
+                    correctionController.proposal = res.spellingProposal
+                    correctionController.rememberAvailable =
+                        res.spellingProposal != null && replacement.trim() == res.spellingProposal.newForm
+                    correctionController.notice = null
+                    Log.i("SprichIME", "correction applied word='${target.text}' chars=${replacement.length}")
+                } else {
+                    correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+                }
+            }
+        }
+    }
+
+    private fun undoCorrection() {
+        val undo = correctionUndo ?: return
+        val snap = readEditorSnapshot() ?: return
+        if (!snap.collapsed || snap.cursorAbsolute < 0) return
+        if (!com.sprich.app.input.correction.CorrectionPlan.canUndo(snap.before, undo)) {
+            correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            correctionUndo = null
+            correctionController.undoAvailable = false
+            return
+        }
+        val absStart = snap.cursorAbsolute - snap.before.length + undo.startOffset
+        val absEnd = absStart + undo.expectedCurrent.length
+        val ic = try { currentInputConnection } catch (_: Exception) { null } ?: return
+        val ok = try {
+            ic.beginBatchEdit()
+            val selected = try { ic.setSelection(absStart, absEnd) } catch (_: Exception) { false }
+            val committed = if (selected) {
+                try { ic.commitText(undo.restore, 1) } catch (_: Exception) { false }
+            } else false
+            if (committed) {
+                try { ic.setSelection(absStart + undo.restore.length, absStart + undo.restore.length) } catch (_: Exception) {}
+            }
+            try { ic.endBatchEdit() } catch (_: Exception) {}
+            committed
+        } catch (_: Exception) {
+            try { ic.endBatchEdit() } catch (_: Exception) {}
+            false
+        }
+        if (ok) {
+            correctionUndo = null
+            lastAppliedReplacement = null
+            correctionController.undoAvailable = false
+            correctionController.rememberAvailable = false
+            correctionController.notice = null
+            Log.i("SprichIME", "correction undone restore='${undo.restore}'")
+        } else {
+            correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            Log.w("SprichIME", "correction undo failed")
+        }
+    }
+
+    private fun rememberSpelling() {
+        val proposal = correctionController.proposal ?: return
+        if (!correctionController.rememberAvailable) return
+        try {
+            // scope is Main: Compose state sets stay on Main, repo write on IO.
+            scope.launch {
+                val notice = try {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        vocabRepo.add(proposal.oldForm, proposal.newForm)
+                    }
+                    correctionController.rememberAvailable = false
+                    uiString(com.sprich.app.R.string.correction_remembered)
+                } catch (e: com.sprich.app.vocab.VocabularyConflictException) {
+                    uiString(com.sprich.app.R.string.correction_conflict)
+                } catch (_: Exception) {
+                    uiString(com.sprich.app.R.string.ime_insert_failed)
+                }
+                correctionController.notice = notice
+            }
+        } catch (_: Exception) {}
     }
 
     private fun performBarAction(action: BarGestureRecognizer.Action): Boolean = when (action) {

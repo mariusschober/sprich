@@ -9,9 +9,9 @@ import org.junit.Test
 
 /**
  * U02 (§9.5) correction planning: exact-span revalidation, literal
- * replacement splicing, one-step undo proof, word selection, and the
- * spelling-proposal offer. The Compose sheet + IME mutation stay BLOCKED
- * on Gradle/device; this pins the decision logic they must execute.
+ * replacement splicing, one-step undo proof, word selection, cursor-word
+ * targeting, and the spelling-proposal offer. The Compose sheet + IME
+ * mutation execute exactly this logic (CorrectionSheet + SprichIME wiring).
  */
 class CorrectionPlanTest {
 
@@ -108,5 +108,23 @@ class CorrectionPlanTest {
         assertNull(CorrectionPlan.selectWord("Call Alice tomorrow", -1))
         assertNull(CorrectionPlan.selectWord("   ", 0))
         assertEquals(0 to 3, CorrectionPlan.selectWord("Jon's", 0))
+    }
+
+    @Test
+    fun wordAtCursorTargetsCursorWord() {
+        // Inside and at both edges of a run.
+        assertEquals(5 to 5, CorrectionPlan.wordAtCursor("Call Alice", 7))
+        assertEquals(5 to 5, CorrectionPlan.wordAtCursor("Call Alice", 5))
+        assertEquals(5 to 5, CorrectionPlan.wordAtCursor("Call Alice", 10))
+        assertEquals(0 to 4, CorrectionPlan.wordAtCursor("Call Alice", 0))
+        // Between runs: trailing edge wins left, leading edge wins right.
+        assertEquals(0 to 4, CorrectionPlan.wordAtCursor("Call Alice", 4))
+        assertEquals(0 to 2, CorrectionPlan.wordAtCursor("hi you", 2))
+        assertEquals(3 to 3, CorrectionPlan.wordAtCursor("hi you", 3))
+        // No run under cursor.
+        assertNull(CorrectionPlan.wordAtCursor("", 0))
+        assertNull(CorrectionPlan.wordAtCursor("   ", 2))
+        assertNull(CorrectionPlan.wordAtCursor("hi  ", 4))
+        assertNull(CorrectionPlan.wordAtCursor("😀", 1))
     }
 }

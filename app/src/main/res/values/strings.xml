@@ -156,6 +156,17 @@
     <string name="ime_undo_action">Undo deletion</string>
     <string name="ime_finishing">Writing your last words</string>
     <string name="ime_insert_retry">Tap the field, then try again</string>
+    <string name="correction_conflict">Already learned with a different spelling</string>
+    <string name="ime_correct_word">Correct word</string>
+    <string name="correction_title">Correct “%1$s”</string>
+    <string name="correction_replace_label">Replacement</string>
+    <string name="correction_apply">Apply</string>
+    <string name="correction_undo">Undo</string>
+    <string name="correction_dictate">Dictate replacement</string>
+    <string name="correction_listening">Listening… speak the replacement</string>
+    <string name="correction_remember">Remember spelling</string>
+    <string name="correction_remembered">Spelling remembered</string>
+    <string name="correction_close">Close</string>
     <string name="ime_retry_insert">Retry insert</string>
     <string name="ime_kept_retry">Not inserted — kept. Tap retry to insert.</string>
     <string name="recovery_title">Dictation kept</string>

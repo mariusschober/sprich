@@ -27,7 +27,7 @@ credentials/fixtures/signing only (see bottom).
 | P06 language/engine decoupling (§7) | IMPLEMENTED + TESTED (host 5/5 + device) | `LocalAsrRoute.kt` + fail-closed per-utterance LID; device: LID 8/8 alternation, Auto-without-Canary 2/2, ContinuousWinner 10+10, WerCer LID 4/4 correct |
 | P07 typed outcomes + telemetry (§6.4) | POLICY TESTED (host 17/17); HOOKS WIRED + COMPILED | `UtteranceTelemetry.kt` + SprichIME hooks compile in release AND debug (lintRelease + both APKs built). `UtteranceQueue`/`transcribeWithOutcome` still unwired |
 | U01 first-run incl. select step (§9.2) | IMPLEMENTED, SCREENSHOT-PROVEN (DE dark+light step 1/5) | Onboarding renders correctly both themes; `evidence-s23/` screenshots + UI dump |
-| U02 correction sheet (§9.5) | DECISION LOGIC TESTED (host 9/9); sheet UI + wiring BLOCKED | `CorrectionPlan.kt`; Compose sheet + IME wiring not started |
+| U02 correction sheet (§9.5) | IMPLEMENTED, TESTED (unit 548/548 + device E2E) | `CorrectionPlan.kt` (exact-span revalidation, wordAtCursor, canUndo) + classic-View sheet `ui/correction/CorrectionSheet.kt` (Compose dropped: IME service window has no Activity lifecycle — ComposeView crashed with ViewTreeLifecycleOwner-not-found; plain Views need no owners) + IME wiring (open/apply/undo/remember/dictate/close). Device E2E on S23 via QA editor: open on cursor word, edit replacement, apply H→Hallo, proposal+remember ("Schreibweise gemerkt"), undo Hallo→H, zero FATALs. Evidence: `evidence-s23/u02-sheet-*.png` |
 | U03 recovery surface (§9.6) | IMPLEMENTED + TESTED (host) BUT UNWIRED | `RecoveryDraftStore.kt`; no callers, no UI |
 | U04/U05 voice bar + visual tokens (§§9.1,9.3–9.4) | IMPLEMENTED (tokens + bar); copy table + a11y walkthrough PARTIAL | `UiTokens.kt`, `VoiceGestureBar.kt`; screenshot evidence 2 states; TalkBack/200%/RTL/landscape need hand-check |
 | E01 benchmark + comparison (§10) | MEASURED (local engines, fixture corpus) — 1,000-utt acoustic + Wispr BLOCKED | S23: Canary JFK RTF ≈0.13, Fast JFK RTF ≈0.038 (~3.6×); WER jfk C 0.09/B 0.05, en C 0.33/B 0.0, de C 0.6/B 0.5 (es/fr refs are stubs — actual outputs correct sentences); 60-utt burst 3.9 s; 15-min thermal PASS (avg 284 ms @ utt 1000, no degradation). Full table: `docs/DEVICE_EVIDENCE_S23_2026-09-06.md` |
@@ -35,7 +35,9 @@ credentials/fixtures/signing only (see bottom).
 | E03/E04 docs + release (§12) | DOCS CURRENT; release unsigned-internal | This file, `SPRICH_RELEASE_REPORT.md`, `DEVICE_RUNBOOK.md` (needs §0–3 refresh for direct-instrument method), `DEVICE_EVIDENCE_S23_2026-09-06.md` (new), `evidence-s23/` (new) |
 
 ## Tests run (this session, sandbox-free)
-- `:app:testDebugUnitTest` 539/539 green (incl. 2 new sign-preservation tests)
+- `:app:testDebugUnitTest` 548/548 green (539 baseline + 9 U02 wordAtCursor/plan/undo: `CorrectionPlanTest`)
+- U02 device E2E (S23, debug IME, QA editor): sheet open/edit/apply/proposal/remember/undo, 0 FATALs — `evidence-s23/u02-sheet-*.png`
+- `:app:testDebugUnitTest` 539/539 green (incl. 2 new sign-preservation tests) [earlier same-session baseline]
 - `:app:lintRelease`, `:app:assembleRelease`, `:app:bundleRelease`, `:app:writeReleaseDependencyInventory`, `check-apk.sh`, `verify-models.sh`, `verify-locales.py` — all PASS
 - Device (direct `am instrument`, S23): see evidence doc — 60+ tests green, 0 failures in final order-safe runs
 

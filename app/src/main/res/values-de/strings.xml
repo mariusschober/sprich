@@ -156,6 +156,17 @@
     <string name="ime_undo_action">Löschen rückgängig machen</string>
     <string name="ime_finishing">Letzte Wörter werden geschrieben</string>
     <string name="ime_insert_retry">Tippe auf das Feld und versuch es erneut</string>
+    <string name="correction_conflict">Bereits anders gelernt</string>
+    <string name="ime_correct_word">Wort korrigieren</string>
+    <string name="correction_title">„%1$s“ korrigieren</string>
+    <string name="correction_replace_label">Ersatz</string>
+    <string name="correction_apply">Übernehmen</string>
+    <string name="correction_undo">Rückgängig</string>
+    <string name="correction_dictate">Ersatz diktieren</string>
+    <string name="correction_listening">Höre zu … sprich den Ersatz</string>
+    <string name="correction_remember">Schreibweise merken</string>
+    <string name="correction_remembered">Schreibweise gemerkt</string>
+    <string name="correction_close">Schließen</string>
     <string name="ime_retry_insert">Einfügen wiederholen</string>
     <string name="ime_kept_retry">Nicht eingefügt – behalten. Tippe auf Wiederholen zum Einfügen.</string>
     <string name="recovery_title">Diktat aufbewahrt</string>

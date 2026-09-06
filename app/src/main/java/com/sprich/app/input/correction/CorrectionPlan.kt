@@ -137,4 +137,28 @@ object CorrectionPlan {
         }
         return null
     }
+
+    /**
+     * U02: word under the cursor for the correction entry point. [before] is
+     * the text before the cursor, [cursorInBefore] the cursor offset in it
+     * (usually `before.length`). Returns (startOffset, length) in [before]
+     * coordinates, or null when the cursor sits on no letter/digit run
+     * (whitespace, emoji, empty). Same run definition as [selectWord].
+     */
+    fun wordAtCursor(before: String, cursorInBefore: Int): Pair<Int, Int>? {
+        if (before.isEmpty()) return null
+        val cursor = cursorInBefore.coerceIn(0, before.length)
+        // Cursor between runs belongs to neither; a cursor at a run edge
+        // belongs to that run (so tapping after a word still selects it).
+        val candidates = listOf(cursor - 1, cursor).distinct().filter { it in before.indices }
+        for (pos in candidates) {
+            if (!before[pos].isLetterOrDigit()) continue
+            var start = pos
+            while (start > 0 && before[start - 1].isLetterOrDigit()) start--
+            var end = pos
+            while (end < before.length && before[end].isLetterOrDigit()) end++
+            return start to (end - start)
+        }
+        return null
+    }
 }

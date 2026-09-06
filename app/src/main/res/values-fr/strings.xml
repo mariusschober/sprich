@@ -156,6 +156,17 @@
     <string name="ime_undo_action">Annuler la suppression</string>
     <string name="ime_finishing">Écriture de vos derniers mots</string>
     <string name="ime_insert_retry">Touchez le champ, puis réessayez</string>
+    <string name="correction_conflict">Déjà retenu avec une autre orthographe</string>
+    <string name="ime_correct_word">Corriger le mot</string>
+    <string name="correction_title">Corriger « %1$s »</string>
+    <string name="correction_replace_label">Remplacement</string>
+    <string name="correction_apply">Appliquer</string>
+    <string name="correction_undo">Annuler</string>
+    <string name="correction_dictate">Dicter le remplacement</string>
+    <string name="correction_listening">Écoute … dictez le remplacement</string>
+    <string name="correction_remember">Retenir l’orthographe</string>
+    <string name="correction_remembered">Orthographe retenue</string>
+    <string name="correction_close">Fermer</string>
     <string name="ime_retry_insert">Réessayer l’insertion</string>
     <string name="ime_kept_retry">Non inséré — conservé. Touchez réessayer pour insérer.</string>
     <string name="recovery_title">Dictée conservée</string>

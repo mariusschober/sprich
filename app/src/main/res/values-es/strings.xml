@@ -156,6 +156,17 @@
     <string name="ime_undo_action">Deshacer borrado</string>
     <string name="ime_finishing">Escribiendo tus últimas palabras</string>
     <string name="ime_insert_retry">Toca el campo e inténtalo de nuevo</string>
+    <string name="correction_conflict">Ya aprendido con otra ortografía</string>
+    <string name="ime_correct_word">Corregir palabra</string>
+    <string name="correction_title">Corregir «%1$s»</string>
+    <string name="correction_replace_label">Reemplazo</string>
+    <string name="correction_apply">Aplicar</string>
+    <string name="correction_undo">Deshacer</string>
+    <string name="correction_dictate">Dictar reemplazo</string>
+    <string name="correction_listening">Escuchando … dicta el reemplazo</string>
+    <string name="correction_remember">Recordar ortografía</string>
+    <string name="correction_remembered">Ortografía recordada</string>
+    <string name="correction_close">Cerrar</string>
     <string name="ime_retry_insert">Reintentar inserción</string>
     <string name="ime_kept_retry">No insertado — guardado. Toca reintentar para insertar.</string>
     <string name="recovery_title">Dictado guardado</string>
