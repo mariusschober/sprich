@@ -77,6 +77,11 @@ class AutomaticWithoutCanaryDeviceTest {
             mm.setReady("fastconformer")
         }
 
+        // Mirror production startup (SprichApp process-wide verification): a fresh
+        // manager must verify from disk (sha256 + receipt) before asserting
+        // readiness — isXxxReady() alone only reflects in-memory state.
+        mm.verifyInstalled("lid")
+        mm.verifyInstalled("fastconformer")
         val lidReady = mm.isWhisperTinyReady()
         val fastReady = mm.isFastConformerReady()
         android.util.Log.i("AutoWithoutCanary", "after lidReady=$lidReady fastReady=$fastReady")
