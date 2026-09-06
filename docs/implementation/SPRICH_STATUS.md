@@ -1,7 +1,7 @@
 # Sprich — Implementation status (plan §§2,12 working record)
 
 **Branch:** `agent/sprich-integrity-sprint`
-**HEAD:** `77b35a0` (U03 decode-preservation + policy test + E2E evidence; prior: P05 `9a1a4a7`, P07 `8834f41`, P03 `13ef290`, U02 `ea7a9e9`)
+**HEAD:** `d0653d5` (U03 decode-preservation + policy test + E2E evidence; prior: P05 `9a1a4a7`, P07 `8834f41`, P03 `13ef290`, U02 `ea7a9e9`)
 **Tree:** clean
 **Updated:** 2026-09-06 UTC (sandbox-free session; S23 Ultra SM-S918B attached)
 **Env truth (now):** Gradle 9.3.1 + JDK 17 work, loopback fine, `adb` sees
