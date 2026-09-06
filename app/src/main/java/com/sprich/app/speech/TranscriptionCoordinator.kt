@@ -7,10 +7,36 @@ import com.sprich.app.speech.remote.RemoteSttRequest
 import com.sprich.app.speech.remote.RemoteSttException
 import com.sprich.app.speech.remote.ApiFailure
 import com.sprich.app.speech.remote.DeadlinePolicy
+import com.sprich.app.diagnostics.UtteranceOutcome
 import com.sprich.app.storage.ApiSecretStore
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.ensureActive
 import java.util.concurrent.TimeUnit
+
+/**
+ * P07: truthful per-utterance mapping of a failed remote attempt to telemetry.
+ * Transport problems (offline, timeouts, HTTP, auth, rate limits, unavailable
+ * models/providers) are TRANSPORT_FAILURE; unusable provider output is
+ * MALFORMED_RESPONSE; explicit cancellation is CANCELLED. Callers decide what
+ * a blank result means (NO_SPEECH vs failure-explained) from
+ * [CoordinatorOutcome.remoteFailure] presence.
+ */
+fun remoteFailureOutcome(failure: ApiFailure): UtteranceOutcome = when (failure) {
+    is ApiFailure.Offline,
+    is ApiFailure.Network,
+    is ApiFailure.Timeout,
+    is ApiFailure.ProviderUnavailable,
+    is ApiFailure.ModelUnavailable,
+    is ApiFailure.RateLimited,
+    is ApiFailure.Authentication,
+    is ApiFailure.Http,
+    -> UtteranceOutcome.TRANSPORT_FAILURE
+    is ApiFailure.InvalidResponse,
+    is ApiFailure.OutputRejected,
+    is ApiFailure.OutputLimit,
+    -> UtteranceOutcome.MALFORMED_RESPONSE
+    is ApiFailure.Cancelled -> UtteranceOutcome.CANCELLED
+}
 
 /**
  * General transcription coordinator — replaces ad-hoc SprichIME branching.
