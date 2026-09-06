@@ -1,59 +1,55 @@
 # Sprich — Implementation status (plan §§2,12 working record)
 
 **Branch:** `agent/sprich-integrity-sprint`
-**HEAD:** `507a461` (ahead of audit baseline `20be03c`; S01–S06 committed in `78768f4`, docs in `71c3e6c`, P02 wiring in `507a461`)
-**Uncommitted diff at time of writing:** 11 modified + 8 new (see Artifact paths)
-**Updated:** 2026-09-06 UTC
-**Env truth (this machine):** no Gradle (daemon cannot start, loopback blocked), no adb (daemon will not ACK, S23 Ultra unreachable), offline (no network, no provider credentials). No `./gradlew`, `adb`, or network command was run by this documenter pass.
+**HEAD:** `287f6c3` (audit baseline `20be03c`; full log: S01–S06, wave P/U/E slices, validator sign fix `8d1f9b0`, locale-const `0304fcd`, device-gate repairs `46aa5da`/`70848f1`/`287f6c3`)
+**Tree:** clean
+**Updated:** 2026-09-06 UTC (sandbox-free session; S23 Ultra SM-S918B attached)
+**Env truth (now):** Gradle 9.3.1 + JDK 17 work, loopback fine, `adb` sees
+R3CW404GVBL (S23, Android 16/SDK 36) + a T807D tablet (commands pinned `-s`).
+The old "no Gradle/adb/network" block is GONE; remaining BLOCKED items are
+credentials/fixtures/signing only (see bottom).
 
 ## Finding status (per-ID, plan §13)
 
 | Audit IDs | Outcome | Evidence |
 |---|---|---|
-| S01 typed command authority | IMPLEMENTED, TESTED (host, prior pass) | `app/src/main/java/com/sprich/app/.../ParsedDictation.kt` (new); finalizer `when (parsed)`; `ParsedDictationAuthorityTest` 14/14 per `SPRICH_BENCHMARK_PROTOCOL.md:13` and `benchmark-results.json` |
-| S02 critical-number protection | IMPLEMENTED, TESTED (host, prior pass) | `CriticalTokens.kt` (ordered amount+unit sequences); `CriticalMeaningTest` 18/18 per `SPRICH_BENCHMARK_PROTOCOL.md:20` |
-| S03 bounded cleanup (Faithful/Polished) | IMPLEMENTED, TESTED (host, prior pass) | `RefinementMode` FAITHFUL/POLISHED; `RefinementValidator` + `ValidationStats`; `RefinementValidatorTest` 11/11, `RefinementCorpusTest` 1/1 |
-| S04 term protection incl. Unicode | IMPLEMENTED, TESTED (host, prior pass) | `TermCanonical.kt` (NFKC + case fold, no accent stripping); `TermCanonicalTest` 8/8 |
-| S05 grounded symbol handling | IMPLEMENTED, TESTED (host, prior pass) | `AcousticBasis`; symbol-only suppressed unless speech present; `SymbolFormattingGrammarTest` 11/11 |
-| S06 formatting grammar | IMPLEMENTED, TESTED (host) + device expectations updated, UNRUN | Longest-match, multiword-inline only, utterance-final singles, quoted/code literal; `DeleteSentence` removed from grammar; `PipelineCorrectnessDeviceTest` expectations updated but never executed (no adb) |
-| P01 capture-ready split + 8 s startup buffer (§5.1) | WIRED + TESTED (host, incl. live-loop integration) | `core/audio/StartupAudioBuffer.kt` (cap, oldest-drop, drainOnce, generation invalidation, readiness split) fed by the real `AudioCapture` read loop (fresh generation per start, invalidate on stop); `P01P02P05PolicyTest` + `P01StartupWiringTest` (real loop + fake Recorder: ordered feed, exactly-once drain, stop-invalidates, restart re-arms) executed green 2026-09-06. `CaptureReadiness` engine-ready hookup + mic-permission path need device proof |
-| P02 neural VAD in every route (§5.2) | IMPLEMENTED + TESTED (host, policy suite) | `core/vad/VadRoutePolicy.kt` (separate signals, neural onset ownership, degraded energy-only onset, provider completion never cuts neural speech, endpoint debounce, attempt-count independence); covered by `P01P02P05PolicyTest` (executed 2026-09-06, green). Per-utterance flag threading committed in `507a461` (`PendingUtterance.hadSpeech` + `fromHadSpeech`, mapping covered by `AdversarialPipelineTest`). Silero-into-cloud-route wiring still BLOCKED (Gradle+device) |
-| P03 bounded queue + ordered commit lane (§6.2) | IMPLEMENTED + TESTED (host, 17/17) BUT UNWIRED | `input/lifecycle/UtteranceQueue.kt` (4-outstanding bound + 24 MiB ceiling, shed-cleanup-newest-first, head-of-line pollCommittable, finish()=drain-in-order vs cancel()=invalidate+discard); `P03P07QueueDeadlineTelemetryTest` 17/17 executed 2026-09-06. No production callers yet — IME still uses its own bounded channel (integration BLOCKED on Gradle verification) |
-| P04 streaming admission + absolute handshake fit (§8.1) | IMPLEMENTED + TESTED (host, 5/5 incl. okhttp paths) | `app/src/main/java/com/sprich/app/speech/remote/MetaRealtimeSession.kt:25` (handshakeTimeoutMs defaults to `DeadlinePolicy.streamingConnectionMs`); `app/src/main/java/com/sprich/app/speech/remote/MetaMuseSttProvider.kt:22,28` threads it; `app/src/main/java/com/sprich/app/speech/remote/RemoteProviderFactory.kt:9,18` passes live policy value; `app/src/main/java/com/sprich/app/speech/remote/LiveRemoteUtterance.kt:22` (64-chunk channel ~4.1 s @16 kHz) with typed overflow `ApiFailure.OutputLimit` at `:109`; `app/src/test/java/com/sprich/app/speech/RemoteAdmissionContractTest.kt` (5 tests) |
-| P05 bounded continuous speech (§5.3) | IMPLEMENTED + TESTED (host, policy suite) BUT UNWIRED | `core/audio/SegmentReconciler.kt` (29/30 s segment, 119/120 s session, 1 s overlap, 960,000-byte cap; safe-pause-first split; exact-token-match overlap reconcile with `AudioSpan` identity); covered by `P01P02P05PolicyTest` (executed 2026-09-06, green). No production callers yet (endpoint-driven wiring BLOCKED) |
-| P06 language/engine decoupling + model experiments (§7) | ROUTING BASELINE-VERIFIED + TESTED (host, 5/5); measurements BLOCKED | `speech/LocalAsrRoute.kt` (AUTO→FastConformer, explicit→AccurateCanary, route frozen per utterance) + per-utterance fail-closed LID in `LocalTranscriptionCoordinator` + no previous-language reuse (grep-verified); `RoutingContractTest` 5/5 executed 2026-09-06. FastConformer-vs-Canary corpus benchmark, early-LID timing, local punctuation evaluation, Nemotron streaming experiment BLOCKED (devices+corpus) |
-| P07 typed outcomes + telemetry (§6.4) | POLICY TESTED (host, 17/17); TELEMETRY HOOKS WIRED (uncompiled here) | `diagnostics/UtteranceTelemetry.kt` + `SprichIME` hooks (QUEUE_ADMISSION/ENDPOINT at enqueue, RECOGNITION_START/END around transcribe with INFERENCE_FAILURE on exception else blank→NO_SPEECH/text→SUCCESS, COMMIT_ATTEMPT/RESULT at final action, CANCELLATION in failUtteranceScoped; all additive, try/catch-guarded, zero behavior change); `DeadlinePolicy.kt` absolute/hard budgets; `RecognitionBudget.kt` helpers — all covered by `P03P07QueueDeadlineTelemetryTest` 17/17. `UtteranceQueue` + `transcribeWithOutcome` still unwired; hooks need Gradle compile + device proof |
-| U01 first-run incl. select step (§9.2) | IMPLEMENTED, device acceptance BLOCKED | `app/src/main/java/com/sprich/app/ui/onboarding/OnboardingScreen.kt:41`, `:79-86` (new step 3 select via system picker gated on re-read `keyboard.selected`, counter 4→5); `app/src/main/java/com/sprich/app/ui/home/HomeScreen.kt:52-53` (ready requires `keyboard.selected`), `:79-101` (deferred-setup next-step chain); practice text stays ephemeral `remember` |
-| U02 correction sheet (§9.5) | DECISION LOGIC IMPLEMENTED + TESTED (host, 9/9); sheet UI + IME mutation BLOCKED | `input/correction/CorrectionPlan.kt` (exact-span revalidation, literal replacement splice, one-step undo proof, word selection, single-token spelling proposal; mirrors `EditorActionController` anchor discipline); `CorrectionPlanTest` 9/9 executed 2026-09-06. Baseline undo-of-delete + `deleteLastSprichInsertion` + `WordLearningScreen` exist; Compose sheet, dictated-replacement wiring, and device proof BLOCKED (Gradle+device) |
-| U03 recovery surface (§9.6) | IMPLEMENTED + TESTED (host) BUT UNWIRED | `storage/RecoveryDraftStore.kt` (one draft / 16,384 chars / 120,000 ms TTL / in-memory, `onLock()` clears, `consume()` single-take); covered by `P03P07QueueDeadlineTelemetryTest` (executed 2026-09-06, green). No production callers; recovery UI surface + device acceptance BLOCKED |
-| U04/U05 voice bar + visual tokens (§§9.1,9.3–9.4) | IMPLEMENTED (tokens + bar height) + full 17-row copy table NOT verified | `app/src/main/java/com/sprich/app/ui/theme/UiTokens.kt:10-33` (72dp min content, 120–184dp preview, 48dp target, 24dp radius, 8dp spacing, 12–16dp margins, 400–600 ms completion); `app/src/main/java/com/sprich/app/input/ime/VoiceGestureBar.kt:10-11`, `:27-31` (minimumHeight from token); existing `Theme.kt:10-61` palette already matches plan; gesture freeze verified by read (`BarGestureRecognizer.kt:47,99,114-117`, retract/off-axis → cancel/deactivate until next down, no Finish→Cancel mid-gesture change); 17-row state/copy strings, coalesced visual lane, TalkBack/reduced-motion passes NOT verified |
-| E01 benchmark + Wispr comparison (§10) | NOT MEASURED | No 1,000-utterance corpus, no speakers/recordings, no devices, no latency/WER numbers; see `SPRICH_BENCHMARK_PROTOCOL.md:26-28` |
-| E02 production/native/device tests (§11) | PARTIAL: host red-team 28/28 + scoring 7/7 executed; device/perf BLOCKED | `RedTeamPrivacySecurityTest` 28/28 (sentinels, injection-shaped speech/terms, oversized/commentary, identifier opacity) + `BenchmarkScoringContractTest` 7/7 executed 2026-09-06. `PipelineCorrectnessDeviceTest`, model-download attacks, Perfetto traces unrun (Gradle+adb BLOCKED) |
-| E03/E04 docs + release (§12) | IN PROGRESS (this pass) | This file + `SPRICH_RELEASE_REPORT.md` + `DEVICE_RUNBOOK.md` refreshed; architecture/UX/benchmark docs carry prior-pass results; release NOT releasable (see Release report) |
+| S01 typed command authority | IMPLEMENTED, TESTED (unit 539/539 + device) | `ParsedDictation.kt`; finalizer `when (parsed)`; `ParsedDictationAuthorityTest`; device: EditorMatrixReal 6/6, ImeDeviceValidation 2/2 |
+| S02 critical-number protection | IMPLEMENTED, TESTED (unit + device) | `CriticalTokens.kt` — 2026-09-06 sign-stickiness fix (`-5` is one token; `-€500` preserved) after the full suite caught a sign-stripping accept; `CriticalMeaningTest` + injection suite green |
+| S03 bounded cleanup (Faithful/Polished) | IMPLEMENTED, TESTED | `RefinementValidator` + `ValidationStats`; validator/corpus suites green in 539/539 |
+| S04 term protection incl. Unicode | IMPLEMENTED, TESTED | `TermCanonical.kt`; device LID gates use the same canonical comparison |
+| S05 grounded symbol handling | IMPLEMENTED, TESTED (host + device) | `AcousticBasis`; adversarial suites green incl. `RedTeamPrivacySecurityTest` (now under Robolectric) |
+| S06 formatting grammar | IMPLEMENTED, TESTED (host + device) | `PipelineCorrectnessDeviceTest` 12/12 ON DEVICE with real Canary engine |
+| P01 capture-ready split + 8 s startup buffer (§5.1) | WIRED + TESTED (unit + device) | `StartupAudioBuffer.kt` fed by real `AudioCapture` loop (`P01StartupWiringTest`, Robolectric); device: `AudioDeviceValidationTest` 2/2, QueueActorStress 3/3 |
+| P02 neural VAD in every route (§5.2) | IMPLEMENTED + TESTED (policy + device) | `VadRoutePolicy.kt`; per-utterance `hadSpeech` threading; device LID/speech-flag paths exercised via winner tests |
+| P03 bounded queue + ordered commit lane (§6.2) | IMPLEMENTED + TESTED (host 17/17) BUT UNWIRED | `UtteranceQueue.kt`; IME still uses its own bounded channel |
+| P04 streaming admission + handshake (§8.1) | IMPLEMENTED + TESTED (host 5/5) | `MetaRealtimeSession.kt`, `MetaMuseSttProvider.kt`, `RemoteProviderFactory.kt`, `LiveRemoteUtterance.kt`; `RemoteAdmissionContractTest` (Robolectric). Live-provider acceptance BLOCKED (credentials) |
+| P05 bounded continuous speech (§5.3) | IMPLEMENTED + TESTED (host) BUT UNWIRED | `SegmentReconciler.kt`; no production callers yet |
+| P06 language/engine decoupling (§7) | IMPLEMENTED + TESTED (host 5/5 + device) | `LocalAsrRoute.kt` + fail-closed per-utterance LID; device: LID 8/8 alternation, Auto-without-Canary 2/2, ContinuousWinner 10+10, WerCer LID 4/4 correct |
+| P07 typed outcomes + telemetry (§6.4) | POLICY TESTED (host 17/17); HOOKS WIRED + COMPILED | `UtteranceTelemetry.kt` + SprichIME hooks compile in release AND debug (lintRelease + both APKs built). `UtteranceQueue`/`transcribeWithOutcome` still unwired |
+| U01 first-run incl. select step (§9.2) | IMPLEMENTED, SCREENSHOT-PROVEN (DE dark+light step 1/5) | Onboarding renders correctly both themes; `evidence-s23/` screenshots + UI dump |
+| U02 correction sheet (§9.5) | DECISION LOGIC TESTED (host 9/9); sheet UI + wiring BLOCKED | `CorrectionPlan.kt`; Compose sheet + IME wiring not started |
+| U03 recovery surface (§9.6) | IMPLEMENTED + TESTED (host) BUT UNWIRED | `RecoveryDraftStore.kt`; no callers, no UI |
+| U04/U05 voice bar + visual tokens (§§9.1,9.3–9.4) | IMPLEMENTED (tokens + bar); copy table + a11y walkthrough PARTIAL | `UiTokens.kt`, `VoiceGestureBar.kt`; screenshot evidence 2 states; TalkBack/200%/RTL/landscape need hand-check |
+| E01 benchmark + comparison (§10) | MEASURED (local engines, fixture corpus) — 1,000-utt acoustic + Wispr BLOCKED | S23: Canary JFK RTF ≈0.13, Fast JFK RTF ≈0.038 (~3.6×); WER jfk C 0.09/B 0.05, en C 0.33/B 0.0, de C 0.6/B 0.5 (es/fr refs are stubs — actual outputs correct sentences); 60-utt burst 3.9 s; 15-min thermal PASS (avg 284 ms @ utt 1000, no degradation). Full table: `docs/DEVICE_EVIDENCE_S23_2026-09-06.md` |
+| E02 production/native/device tests (§11) | HOST 539/539 + DEVICE 60+ green | 47/47 combined battery + FreshInstall + RealNetwork + AutomaticWithoutCanary + benchmarks + thermal, all on S23 via direct instrument |
+| E03/E04 docs + release (§12) | DOCS CURRENT; release unsigned-internal | This file, `SPRICH_RELEASE_REPORT.md`, `DEVICE_RUNBOOK.md` (needs §0–3 refresh for direct-instrument method), `DEVICE_EVIDENCE_S23_2026-09-06.md` (new), `evidence-s23/` (new) |
 
-## Tests run (this documenter pass)
+## Tests run (this session, sandbox-free)
+- `:app:testDebugUnitTest` 539/539 green (incl. 2 new sign-preservation tests)
+- `:app:lintRelease`, `:app:assembleRelease`, `:app:bundleRelease`, `:app:writeReleaseDependencyInventory`, `check-apk.sh`, `verify-models.sh`, `verify-locales.py` — all PASS
+- Device (direct `am instrument`, S23): see evidence doc — 60+ tests green, 0 failures in final order-safe runs
 
-- None. Documenter wrote only the three §12 files; per ENV TRUTH no `./gradlew`, `adb`, or network command was attempted. Prior-pass results cited above are carried as data, not re-executed here.
+## Blocked gates (exact unblock)
+- Nemotron (2× 475 MB, public URLs, 59 GB free): provision via scratch `downloadNemotron560/160`, then
+  `adb -s R3CW404GVBL shell am instrument -w -e class com.sprich.app.NemotronBenchmarkDeviceTest …`
+- 1,000-utterance acoustic corpus: collection only; text-corpus v1 (`ThousandUtteranceCorpusTest`) is decision-logic, not acoustic
+- E2E voice dictation + TalkBack/200%/RTL/landscape: hands on the S23
+- Signed release install/update path: signing identity (staying unsigned per decision)
+- Live providers (Meta/Gemini/OpenAI-live): credentials; Meta API profile unchanged (`meta-muse-voice-transcribe` default)
+- Wispr comparison: no harness/credentials in repo
 
-## Blocked gates (observed, this environment)
-
-- `./gradlew` (any task): BLOCKED — daemon cannot start, loopback blocked. `:app:testDebugUnitTest`, `:app:lintRelease`, `:app:assembleRelease`, `:app:bundleRelease`, `writeReleaseDependencyInventory`, `verify-locales.py`, `verify-models.sh`, `check-apk.sh` all unexecutable here. Exact unblock commands are in `DEVICE_RUNBOOK.md`.
-- `adb` / device (S23 Ultra): BLOCKED — daemon will not ACK, device unreachable from here. No install, device test, screenshot, TalkBack, timing trace, or benchmark.
-- Providers/corpus/hardware: BLOCKED/NOT MEASURED — no credentials, no recordings, no lab devices. Gates D/F and all of §10 open.
-
-## Decisions
-
-- Prior implementer summaries (P01–P05, P07, U01/U04-U05, P03/P04 admission) accepted as data per workflow contract; file:line pointers above are theirs, not re-audited content matches by this pass.
-- `handsFreeDestructive` defaults false (S01 prior decision, unchanged).
-- `AcousticBasis.UNKNOWN` conservative default retained at production call site; P02 policy file is new logic, device acoustic proof still open.
-- No version bump, no dependency change, no model/native pin change in this diff.
-- APKs under `app/build/outputs/` predate this work and MUST NOT be presented as containing it; release APK is unsigned — no installable deliverable from this work yet.
-- Owner decisions 2026-09-06: stay unsigned for internal testing; internal-testing scope includes the 1,000-utterance corpus (text-level dev corpus v1 committed; natural-speech collection still BLOCKED); cloud keeps current recommended profiles with Meta AI API (`meta-muse-voice-transcribe`, already the default) — Gemini/OpenAI-live integrations DEFERRED BY SPECIFICATION, live-model guards stay.
-- E01 text corpus v1: `ThousandUtteranceCorpusTest` (1,001 cases + 35 validator pairs + 40 correction cases, EN/DE/ES/FR, executed green 2026-09-06). Text-in/decision-out ONLY — not acoustic, latency, WER, or Wispr evidence.
-
-## Artifact paths
-
-- Source diff: `git -C /Users/schober/Projects/Sprich diff --stat` (11 modified files) + 8 untracked (`StartupAudioBuffer.kt`, `VadRoutePolicy.kt`, `SegmentReconciler.kt`, `RecognitionBudget.kt`, `UtteranceTelemetry.kt`, `UtteranceQueue.kt`, `RecoveryDraftStore.kt`, `UiTokens.kt`) + 2 untracked test files (`P03P07QueueDeadlineTelemetryTest.kt`, `speech/RemoteAdmissionContractTest.kt`).
-- Modified (tracked): `VoiceGestureBar.kt`, `TranscriptionCoordinator.kt`, `DeadlinePolicy.kt`, `GeminiSttProvider.kt`, `LiveRemoteUtterance.kt`, `MetaMuseSttProvider.kt`, `MetaRealtimeSession.kt`, `OpenAiCompatibleSttProvider.kt`, `RemoteProviderFactory.kt`, `HomeScreen.kt`, `OnboardingScreen.kt`.
-- Docs (this pass only): `docs/implementation/SPRICH_STATUS.md`, `docs/implementation/SPRICH_RELEASE_REPORT.md`, `docs/implementation/DEVICE_RUNBOOK.md` (new).
-- Prior evidence (carried, not re-run): `/tmp/sprich-harness/resume-verify.log` (`OK (100 tests)`), `docs/implementation/benchmark-results.json`.
+## Decisions (standing)
+- Stay unsigned for internal testing; Meta AI API recommended profiles kept; Gemini/OpenAI-live deferred by specification
+- Fixtures: natural archive speech (sherpa test_wavs); a same-day macOS-TTS detour was staged then fully replaced — no result rests on it
+- `:app:connectedDebugAndroidTest` wipes app data (marker-proven) — device evidence uses direct `am instrument`; runbook update pending
+- Copy+setReady model "restore" in tests is banned (cannot manufacture readiness; destroyed a valid install once) — FreshInstall owns real provisioning

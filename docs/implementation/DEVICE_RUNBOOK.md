@@ -1,6 +1,8 @@
 # Sprich — Device runbook (S23 target, plan §12 blocked gates)
 
-Scope: exact commands to run on a machine with working Gradle + Android SDK + adb and a Samsung S23 (ARM64 flagship) on the final source+APK. This file was written in an environment where Gradle/adb/network are unavailable, so every command below is UNRUN here — it is the unblock path, not evidence.
+Scope: exact commands to run on a machine with working Gradle + Android SDK + adb and a Samsung S23 (ARM64 flagship) on the final source+APK.
+2026-09-06: fully executed on SM-S918B (Android 16) — see `docs/DEVICE_EVIDENCE_S23_2026-09-06.md`.
+When a second device is attached, pin every command with `-s R3CW404GVBL` (`adb -d` fails).
 
 ## Prerequisites (capable machine only)
 
@@ -46,11 +48,20 @@ Update path: reinstalling with the same signature must preserve data; a signatur
 
 ## 3. Device tests (Gates C/E/F)
 
+WARNING: `:app:connectedDebugAndroidTest` UNINSTALLS the app (marker-proven:
+`/data/data` wiped, provisioned models + receipts gone). Use it only to
+compile the test APK. Run tests via direct `am instrument` — no Gradle
+lifecycle between provisioning and test:
+
 ```bash
-./gradlew :app:connectedDebugAndroidTest --stacktrace
-./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.sprich.app.PipelineCorrectnessDeviceTest --stacktrace
-./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.sprich.app.FreshInstallDeviceTest --stacktrace
-adb -d pull /sdcard/Android/data/<package>/files/test-results ./device-test-results/
+./gradlew :app:assembleDebugAndroidTest
+adb -s <serial> install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s <serial> install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+# provision (production DownloadManager flow; FreshInstall covers canary+lid+fast)
+adb -s <serial> shell am instrument -w -e class com.sprich.app.FreshInstallDeviceTest com.sprich.app.debug.test/androidx.test.runner.AndroidJUnitRunner
+# battery (non-deleting classes; comma-separated preserves one process)
+adb -s <serial> shell am instrument -w -e class 'com.sprich.app.PipelineCorrectnessDeviceTest,...' com.sprich.app.debug.test/androidx.test.runner.AndroidJUnitRunner
+# canary-deleting gates LAST (AutomaticWithoutCanary restores canary in teardown)
 ```
 
 Require: zero unauthorized/cross-field/duplicate mutations in the adversarial suite; ordered at-most-once commits; S06 updated expectations pass on device.
