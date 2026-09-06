@@ -149,6 +149,16 @@ class AutomaticWithoutCanaryDeviceTest {
 
         lidEngine.unload()
         fastEngine.unload()
+
+        // Teardown restores shared device state: this gate deletes Canary by
+        // design, so re-download it through the production flow. Otherwise the
+        // sibling method (and every canary-dependent gate after this class in
+        // the same process) fails on missing files — an order dependence, not
+        // a product signal.
+        com.sprich.app.models.download.DownloadManager(app, mm).downloadCanary { p ->
+            android.util.Log.i("AutoWithoutCanary", "canary restore $p")
+        }
+        assertTrue("canary restored after gate", mm.verifyInstalled("accurate"))
     }
 
     @Test
