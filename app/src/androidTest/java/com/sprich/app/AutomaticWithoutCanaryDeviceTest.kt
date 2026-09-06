@@ -39,43 +39,14 @@ class AutomaticWithoutCanaryDeviceTest {
         assertFalse("Canary should be absent for this gate", mm.isCanaryReady())
         assertTrue(mm.canaryStatus.value is ModelStatus.NotDownloaded)
 
-        // 2. Ensure Tiny LID and FastConformer are Ready (download or simulate via backup files)
-        // Prefer real files if already downloaded; otherwise simulate atomic install from /data/local/tmp backup (like FreshInstall)
-        val lidBackupEnc = File("/data/local/tmp/tiny-encoder.int8.onnx")
-        val fastBackup = File("/data/local/tmp/fastconformer/model.int8.onnx")
-        // Also check filesDir fastconformer
-        val lidReadyBefore = mm.isWhisperTinyReady()
-        val fastReadyBefore = mm.isFastConformerReady()
-        android.util.Log.i("AutoWithoutCanary", "before lidReady=$lidReadyBefore fastReady=$fastReadyBefore canaryReady=${mm.isCanaryReady()}")
+        // 2. Require Tiny LID and FastConformer Ready (provisioned by
+        // FreshInstall through DownloadManager; verified from disk below).
 
-        if (!lidReadyBefore && lidBackupEnc.exists()) {
-            val tmp = File(app.filesDir, "whisper-tiny.tmp")
-            tmp.deleteRecursively(); tmp.mkdirs()
-            File("/data/local/tmp/tiny-encoder.int8.onnx").copyTo(File(tmp, "tiny-encoder.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/tiny-decoder.int8.onnx").copyTo(File(tmp, "tiny-decoder.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/tiny-tokens.txt").copyTo(File(tmp, "tiny-tokens.txt"), overwrite = true)
-            File(app.filesDir, "whisper-tiny").deleteRecursively()
-            tmp.renameTo(File(app.filesDir, "whisper-tiny"))
-            mm.setReady("lid")
-        }
-        if (!fastReadyBefore && fastBackup.exists()) {
-            val tmp = File(app.filesDir, "fastconformer.tmp")
-            tmp.deleteRecursively(); tmp.mkdirs()
-            File("/data/local/tmp/fastconformer/model.int8.onnx").copyTo(File(tmp, "model.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/fastconformer/tokens.txt").copyTo(File(tmp, "tokens.txt"), overwrite = true)
-            File(app.filesDir, "fastconformer").deleteRecursively()
-            tmp.renameTo(File(app.filesDir, "fastconformer"))
-            mm.setReady("fastconformer")
-        }
-        // Also check alternative backup path for fast
-        val fastAlt = File("/data/local/tmp/model.int8.onnx")
-        if (!mm.isFastConformerReady() && fastAlt.exists()) {
-            val dir = File(app.filesDir, "fastconformer")
-            dir.mkdirs()
-            fastAlt.copyTo(File(dir, "model.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/tokens.txt").copyTo(File(dir, "tokens.txt"), overwrite = true)
-            mm.setReady("fastconformer")
-        }
+        // No copy-restore from /data/local/tmp here, ever: raw copies carry no
+        // install receipt, so they can neither pass verification nor — worse —
+        // replace a valid install with an unverifiable one (the lid branch once
+        // did exactly that). Missing packs fail BLOCKED honestly; FreshInstall
+        // owns real provisioning through DownloadManager.
 
         // Mirror production startup (SprichApp process-wide verification): a fresh
         // manager must verify from disk (sha256 + receipt) before asserting
@@ -184,28 +155,10 @@ class AutomaticWithoutCanaryDeviceTest {
     fun accurateExplicitStillWorksWhenFastAbsentAllowed() = runBlocking {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
         val mm = ModelManager(app)
-        // Ensure Canary installed from /data/local/tmp if missing (like FreshInstall)
-        if (!mm.isCanaryReady()) {
-            try {
-                val destDir = File(app.filesDir, "canary")
-                destDir.mkdirs()
-                val srcEnc = File("/data/local/tmp/canary-encoder.int8.onnx")
-                val srcDec = File("/data/local/tmp/canary-decoder.int8.onnx")
-                val srcTok = File("/data/local/tmp/canary-tokens.txt")
-                // Also try generic encoder/decoder names
-                val enc = if (srcEnc.exists()) srcEnc else File("/data/local/tmp/encoder.int8.onnx")
-                val dec = if (srcDec.exists()) srcDec else File("/data/local/tmp/decoder.int8.onnx")
-                val tok = if (srcTok.exists()) srcTok else File("/data/local/tmp/tokens.txt")
-                if (enc.exists() && dec.exists() && tok.exists()) {
-                    enc.copyTo(File(destDir, "encoder.int8.onnx"), overwrite = true)
-                    dec.copyTo(File(destDir, "decoder.int8.onnx"), overwrite = true)
-                    tok.copyTo(File(destDir, "tokens.txt"), overwrite = true)
-                    mm.setReady("accurate")
-                }
-            } catch (_: Exception) {}
-        }
-        // Mirror production startup (SprichApp: process-wide install verification):
-        // readiness is disk verification (sha256 + receipt), never assumed.
+        // No copy-restore from /data/local/tmp: raw copies carry no install
+        // receipt and can never verify (see the sibling method's comment).
+        // Mirror production startup (SprichApp process-wide install
+        // verification): readiness is disk verification, never assumed.
         mm.verifyInstalled("accurate")
         val canaryReady = mm.isCanaryReady()
         if (!canaryReady) fail("BLOCKED: canary model not ready — need encoder/decoder >50M")
