@@ -26,3 +26,19 @@ Coverage notes: multilingual critical-meaning cases (mg→g, moved negation, may
 ## NOT MEASURED (explicit)
 
 No 1,000-utterance held-out corpus, no speakers/recordings, no devices (low-tier/flagship), no latency/WER/correction-effort numbers, no Wispr comparison. The E01 quality/latency gates and the §10 corpus/device/editor matrix are entirely open. `ValidationStats` counters exist in code so a future field evaluation can measure conservative-rejection cost; no such data exists yet.
+
+## E01 scoring-contract pins (host, 2026-09-06)
+
+New self-contained test `app/src/test/java/com/sprich/app/BenchmarkScoringContractTest.kt`
+(7 tests, `OK (7 tests)`, ~0.02 s) pins the §10.1/§10.4 scoring semantics from plan
+§10 so a future corpus/device run cannot game the metric: documented WER
+normalization (lowercase, trim, per-token edge-punctuation strip, intra-token
+apostrophe/hyphen kept; no Unicode NFKC — gap), failures stay in the
+denominator, deadline-success counts only correct-and-within-deadline over ALL
+outcomes, p50/p95 are reported alongside failure rate, and the §10.4 "2×
+faster" claim requires Sprich p50 AND p95 each ≤ half the paired competitor
+wait plus a pre-registered quality tolerance. Compile+run: cached
+kotlin-compiler-embeddable 2.2.20 + stdlib 2.2.21 + JUnit 4.13.2, unique out
+dir `/tmp/sprich-bench-e01-0609` (build log `/tmp/sprich-bench-e01-0609/build.log`).
+No device, corpus, provider, or timing-distribution measurements were made —
+all BLOCKED (see GAPS in benchmark-results.json).

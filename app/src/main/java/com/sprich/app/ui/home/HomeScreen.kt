@@ -49,7 +49,8 @@ import com.sprich.app.ui.theme.VoiceMark
     val cleanup = config?.refinementMode?.let { it != RefinementMode.OFF } == true
     val modelsReady = if (automatic) lid is ModelStatus.Ready && fast is ModelStatus.Ready else accurate is ModelStatus.Ready
     val keyboard = rememberKeyboardState()
-    val ready = config != null && keyboard.enabled && keyboard.microphone && (if (api) keyAvailable == true else modelsReady)
+    // Plan §9.2: never expose the practice field as ready while another keyboard remains selected.
+    val ready = config != null && keyboard.enabled && keyboard.selected && keyboard.microphone && (if (api) keyAvailable == true else modelsReady)
     // Dictation is deliberately ephemeral, including across process recreation.
     var trial by remember { mutableStateOf("") }
     val colors = MaterialTheme.colorScheme

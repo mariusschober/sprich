@@ -19,12 +19,13 @@ class MetaMuseSttProvider(
     private val baseUrl: String = "https://api.meta.ai",
     private val model: String = "muse-voice-transcribe-1.0",
     private val httpClient: OkHttpClient = ApiHttp.client,
+    internal val handshakeTimeoutMs: Long = DeadlinePolicy.DEFAULT.streamingConnectionMs,
 ) : StreamingRemoteSttProvider {
     override val id = "meta-muse-voice-transcribe"
     override val capabilities = RemoteSttCapabilities(streaming = true, keywordBiasing = true, endpointing = true, partialResults = true)
     override suspend fun createStreamingSession(request: RemoteSttRequest): StreamingSttSession {
         require(EndpointValidator.isValidHttpsUrl(baseUrl) && request.credential.isNotBlank())
-        return MetaRealtimeSession(baseUrl, model, request, httpClient)
+        return MetaRealtimeSession(baseUrl, model, request, httpClient, handshakeTimeoutMs)
     }
     override suspend fun transcribe(request: RemoteSttRequest): RemoteSttResult = withContext(Dispatchers.IO) {
         require(EndpointValidator.isValidHttpsUrl(baseUrl) && request.credential.isNotBlank()) { "API is not configured" }

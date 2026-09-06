@@ -19,6 +19,9 @@ internal class MetaRealtimeSession(
     private val model: String,
     private val request: RemoteSttRequest,
     private val client: OkHttpClient,
+    // P04: admission deadline must fit the 64-chunk capture buffer (64 x ~1024-sample
+    // blocks ~= 4.1 s at 16 kHz). Production passes DeadlinePolicy.streamingConnectionMs.
+    internal val handshakeTimeoutMs: Long = DeadlinePolicy.DEFAULT.streamingConnectionMs,
 ) : StreamingSttSession {
     private val epoch = ApiHttp.currentEpoch
     private val acknowledged = CompletableDeferred<Unit>()
@@ -90,7 +93,9 @@ internal class MetaRealtimeSession(
         })
         ApiHttp.track(checkNotNull(socket), epoch)
         if (cancelled.get()) { cancel(); throw CancellationException("Stream cancelled") }
-        try { withTimeout(6000) { acknowledged.await() }; nextFrameNanos = System.nanoTime() }
+        // A slow handshake fails here with Timeout so the permitted local fallback runs,
+        // instead of overflowing capture mid-handshake and failing as transport backpressure.
+        try { withTimeout(handshakeTimeoutMs) { acknowledged.await() }; nextFrameNanos = System.nanoTime() }
         catch (e: Exception) { cancel(); throw e }
     }
 

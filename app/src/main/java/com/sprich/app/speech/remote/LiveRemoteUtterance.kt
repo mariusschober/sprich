@@ -104,7 +104,9 @@ class LiveRemoteUtterance(
     fun offerAudio(pcm: ShortArray, offset: Int = 0, length: Int = pcm.size - offset): Boolean = synchronized(lock) {
         if (ended || result.isCompleted || permissionEpoch != ApiHttp.currentEpoch || !isCurrent()) return@synchronized false
         if (samples + length > MetaVoiceProtocol.MAX_AUDIO_SAMPLES) {
-            result.completeExceptionally(ApiException(ApiFailure.InvalidResponse)); reportFailure(); cancelWorker(); return@synchronized false
+            // P04: bounded-capacity overflow is a typed OutputLimit so the caller takes the explicitly
+            // permitted local fallback/recovery path — never partial success, never a server-blame code.
+            result.completeExceptionally(ApiException(ApiFailure.OutputLimit)); reportFailure(); cancelWorker(); return@synchronized false
         }
         val copy = pcm.copyOfRange(offset, offset + length)
         if (!chunks.trySend(copy).isSuccess) {

@@ -39,6 +39,8 @@ class OpenAiCompatibleSttProvider(
 
     companion object {
         const val MAX_RESPONSE_BYTES = 65_536
+        /** [C-OPENAI-LIVE] Live-session contract id. Revalidate vs official docs; live acceptance BLOCKED. */
+        const val LIVE_TRANSCRIBE_MODEL = "gpt-live-transcribe"
         fun wavBytes(pcm: ShortArray, sampleRate: Int): ByteArray {
             val dataSize = pcm.size * 2
             val out = ByteArray(44 + dataSize)
@@ -91,6 +93,10 @@ class OpenAiCompatibleSttProvider(
     override suspend fun transcribe(request: RemoteSttRequest): RemoteSttResult = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank() || !isValidHttpsUrl(baseUrl)) throw IllegalStateException("Invalid baseUrl — must be https://")
         if (request.credential.isBlank()) throw IllegalStateException("Missing credential")
+        // [C-OPENAI-LIVE] gpt-live-transcribe needs the live-session contract (documented audio format,
+        // final-event correlation, field-scoped context) — never POST /audio/transcriptions. Guarded for
+        // official OpenAI only; custom endpoints keep their own model namespace. Thrown before any I/O.
+        if (officialOpenAi && model.trim() == LIVE_TRANSCRIBE_MODEL) throw ApiException(ApiFailure.ModelUnavailable, "Live-session model requires the live contract")
         require(request.pcm.isNotEmpty() && request.pcm.size <= 1_920_000 && request.sampleRate == 16_000) { "Invalid audio" }
 
         val wav = wavBytes(request.pcm, request.sampleRate)

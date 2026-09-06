@@ -1,38 +1,57 @@
-# Sprich — Implementation status (integrity sprint)
+# Sprich — Implementation status (plan §§2,12 working record)
 
 **Branch:** `agent/sprich-integrity-sprint`
-**HEAD:** `20be03c74a3fac6c108c74c171a3216f49a17601` (== audit baseline; S01–S06 work uncommitted on top)
-**Audit baseline:** `20be03c` on `main` (`Downloads/03_AUTONOMOUS_IMPLEMENTATION_PLAN.md`)
-**Updated:** 2026-09-06 UTC · **Harness:** `OK (100 tests)` — `/tmp/sprich-harness/resume-verify.log`
+**HEAD:** `507a461` (ahead of audit baseline `20be03c`; S01–S06 committed in `78768f4`, docs in `71c3e6c`, P02 wiring in `507a461`)
+**Uncommitted diff at time of writing:** 11 modified + 8 new (see Artifact paths)
+**Updated:** 2026-09-06 UTC
+**Env truth (this machine):** no Gradle (daemon cannot start, loopback blocked), no adb (daemon will not ACK, S23 Ultra unreachable), offline (no network, no provider credentials). No `./gradlew`, `adb`, or network command was run by this documenter pass.
 
-## Finding status
+## Finding status (per-ID, plan §13)
 
 | Audit IDs | Outcome | Evidence |
 |---|---|---|
-| S01 typed command authority | IMPLEMENTED, TESTED (host) | `ParsedDictation.kt` (new); `SpokenEditingParser.parseTyped`; `SprichIME` finalizer `when (parsed)`; `ParsedDictationAuthorityTest` 14/14 |
-| S02 critical-number protection | IMPLEMENTED, TESTED (host) | `CriticalTokens.kt` (new, ordered amount+unit sequences); `CriticalMeaningTest` 18/18 |
-| S03 bounded cleanup (Faithful/Polished) | IMPLEMENTED, TESTED (host) | `RefinementMode` FAITHFUL/POLISHED + legacy aliases; `RefinementValidator` + `ValidationStats`; `DictationPrompt` split instruction/data; `RefinementValidatorTest` 11/11, `RefinementCorpusTest` 1/1 |
-| S04 term protection incl. Unicode | IMPLEMENTED, TESTED (host) | `TermCanonical.kt` (NFKC + case fold, no accent stripping, token-boundary); discovery and enforcement share `containsTerm`; `TermCanonicalTest` 8/8 |
-| S05 grounded symbol handling | IMPLEMENTED, TESTED (host) | `AcousticBasis`; symbol-only transcripts rejected unless `SPEECH_PRESENT`; `SymbolFormattingGrammarTest` 11/11 |
-| S06 formatting grammar | IMPLEMENTED, TESTED (host) | Longest-match, multiword-inline only, utterance-final singles, quoted/code spans literal; `DeleteSentence` removed from grammar; device-test expectations updated |
-| P01–P07, U01–U05, E01–E04 | NOT STARTED | See Blocked gates |
+| S01 typed command authority | IMPLEMENTED, TESTED (host, prior pass) | `app/src/main/java/com/sprich/app/.../ParsedDictation.kt` (new); finalizer `when (parsed)`; `ParsedDictationAuthorityTest` 14/14 per `SPRICH_BENCHMARK_PROTOCOL.md:13` and `benchmark-results.json` |
+| S02 critical-number protection | IMPLEMENTED, TESTED (host, prior pass) | `CriticalTokens.kt` (ordered amount+unit sequences); `CriticalMeaningTest` 18/18 per `SPRICH_BENCHMARK_PROTOCOL.md:20` |
+| S03 bounded cleanup (Faithful/Polished) | IMPLEMENTED, TESTED (host, prior pass) | `RefinementMode` FAITHFUL/POLISHED; `RefinementValidator` + `ValidationStats`; `RefinementValidatorTest` 11/11, `RefinementCorpusTest` 1/1 |
+| S04 term protection incl. Unicode | IMPLEMENTED, TESTED (host, prior pass) | `TermCanonical.kt` (NFKC + case fold, no accent stripping); `TermCanonicalTest` 8/8 |
+| S05 grounded symbol handling | IMPLEMENTED, TESTED (host, prior pass) | `AcousticBasis`; symbol-only suppressed unless speech present; `SymbolFormattingGrammarTest` 11/11 |
+| S06 formatting grammar | IMPLEMENTED, TESTED (host) + device expectations updated, UNRUN | Longest-match, multiword-inline only, utterance-final singles, quoted/code literal; `DeleteSentence` removed from grammar; `PipelineCorrectnessDeviceTest` expectations updated but never executed (no adb) |
+| P01 capture-ready split + 8 s startup buffer (§5.1) | IMPLEMENTED + TESTED (host, policy suite) BUT UNWIRED | `core/audio/StartupAudioBuffer.kt` (128,000 samples / 256,000 bytes cap, push-only oldest-drop, drainOnce exactly-once, stale-generation invalidation, captureReady vs recognizerReady split); covered by `P01P02P05PolicyTest` (executed 2026-09-06, green). NOT fed by `AudioCapture` yet — no production callers (Gradle+device wiring BLOCKED) |
+| P02 neural VAD in every route (§5.2) | IMPLEMENTED + TESTED (host, policy suite) | `core/vad/VadRoutePolicy.kt` (separate signals, neural onset ownership, degraded energy-only onset, provider completion never cuts neural speech, endpoint debounce, attempt-count independence); covered by `P01P02P05PolicyTest` (executed 2026-09-06, green). Per-utterance flag threading committed in `507a461` (`PendingUtterance.hadSpeech` + `fromHadSpeech`, mapping covered by `AdversarialPipelineTest`). Silero-into-cloud-route wiring still BLOCKED (Gradle+device) |
+| P03 bounded queue + ordered commit lane (§6.2) | IMPLEMENTED + TESTED (host, 17/17) BUT UNWIRED | `input/lifecycle/UtteranceQueue.kt` (4-outstanding bound + 24 MiB ceiling, shed-cleanup-newest-first, head-of-line pollCommittable, finish()=drain-in-order vs cancel()=invalidate+discard); `P03P07QueueDeadlineTelemetryTest` 17/17 executed 2026-09-06. No production callers yet — IME still uses its own bounded channel (integration BLOCKED on Gradle verification) |
+| P04 streaming admission + absolute handshake fit (§8.1) | IMPLEMENTED + TESTED (host, 5/5 incl. okhttp paths) | `app/src/main/java/com/sprich/app/speech/remote/MetaRealtimeSession.kt:25` (handshakeTimeoutMs defaults to `DeadlinePolicy.streamingConnectionMs`); `app/src/main/java/com/sprich/app/speech/remote/MetaMuseSttProvider.kt:22,28` threads it; `app/src/main/java/com/sprich/app/speech/remote/RemoteProviderFactory.kt:9,18` passes live policy value; `app/src/main/java/com/sprich/app/speech/remote/LiveRemoteUtterance.kt:22` (64-chunk channel ~4.1 s @16 kHz) with typed overflow `ApiFailure.OutputLimit` at `:109`; `app/src/test/java/com/sprich/app/speech/RemoteAdmissionContractTest.kt` (5 tests) |
+| P05 bounded continuous speech (§5.3) | IMPLEMENTED + TESTED (host, policy suite) BUT UNWIRED | `core/audio/SegmentReconciler.kt` (29/30 s segment, 119/120 s session, 1 s overlap, 960,000-byte cap; safe-pause-first split; exact-token-match overlap reconcile with `AudioSpan` identity); covered by `P01P02P05PolicyTest` (executed 2026-09-06, green). No production callers yet (endpoint-driven wiring BLOCKED) |
+| P06 language/engine decoupling + model experiments (§7) | NOT STARTED | No routing/LID/streaming-experiment change in this diff; model/download/hash claims explicitly out of scope |
+| P07 typed outcomes + telemetry (§6.4) | IMPLEMENTED + TESTED (host, 17/17) BUT UNWIRED | `speech/remote/DeadlinePolicy.kt` (+absoluteFinalizationMs 8000, hard timeout 8000, local 700 ms / cloud 1000 ms soft targets, pure remainingMs helpers); `speech/TranscriptionCoordinator.kt` (+CoordinatorOutcome + transcribeWithOutcome; refactor audited consistent, full compile needs Gradle — engine closure); `diagnostics/UtteranceTelemetry.kt` (boundary events, 8-way outcome, monotonic clock, 256-event ring, no transcript/secret fields); `core/perf/RecognitionBudget.kt` (soft/hard helpers); `P03P07QueueDeadlineTelemetryTest` 17/17 executed 2026-09-06. `transcribeWithOutcome` has no callers yet; legacy `lastRemoteFailure` kept for Settings reads |
+| U01 first-run incl. select step (§9.2) | IMPLEMENTED, device acceptance BLOCKED | `app/src/main/java/com/sprich/app/ui/onboarding/OnboardingScreen.kt:41`, `:79-86` (new step 3 select via system picker gated on re-read `keyboard.selected`, counter 4→5); `app/src/main/java/com/sprich/app/ui/home/HomeScreen.kt:52-53` (ready requires `keyboard.selected`), `:79-101` (deferred-setup next-step chain); practice text stays ephemeral `remember` |
+| U02 correction sheet (§9.5) | BASELINE-EXISTS, content unverified (auditor) | `SpokenCorrectionSafetyTest`, `SpokenEditingParserTest`, `ParsedDictationAuthorityTest` exist; owned-span Apply/Cancel, alternatives-only-if-real, Remember-spelling scoping not content-matched; no `CorrectionSheet.kt` in inventory |
+| U03 recovery surface (§9.6) | IMPLEMENTED + TESTED (host) BUT UNWIRED | `storage/RecoveryDraftStore.kt` (one draft / 16,384 chars / 120,000 ms TTL / in-memory, `onLock()` clears, `consume()` single-take); covered by `P03P07QueueDeadlineTelemetryTest` (executed 2026-09-06, green). No production callers; recovery UI surface + device acceptance BLOCKED |
+| U04/U05 voice bar + visual tokens (§§9.1,9.3–9.4) | IMPLEMENTED (tokens + bar height) + full 17-row copy table NOT verified | `app/src/main/java/com/sprich/app/ui/theme/UiTokens.kt:10-33` (72dp min content, 120–184dp preview, 48dp target, 24dp radius, 8dp spacing, 12–16dp margins, 400–600 ms completion); `app/src/main/java/com/sprich/app/input/ime/VoiceGestureBar.kt:10-11`, `:27-31` (minimumHeight from token); existing `Theme.kt:10-61` palette already matches plan; gesture freeze verified by read (`BarGestureRecognizer.kt:47,99,114-117`, retract/off-axis → cancel/deactivate until next down, no Finish→Cancel mid-gesture change); 17-row state/copy strings, coalesced visual lane, TalkBack/reduced-motion passes NOT verified |
+| E01 benchmark + Wispr comparison (§10) | NOT MEASURED | No 1,000-utterance corpus, no speakers/recordings, no devices, no latency/WER numbers; see `SPRICH_BENCHMARK_PROTOCOL.md:26-28` |
+| E02 production/native/device tests (§11) | PARTIAL: host red-team 28/28 + scoring 7/7 executed; device/perf BLOCKED | `RedTeamPrivacySecurityTest` 28/28 (sentinels, injection-shaped speech/terms, oversized/commentary, identifier opacity) + `BenchmarkScoringContractTest` 7/7 executed 2026-09-06. `PipelineCorrectnessDeviceTest`, model-download attacks, Perfetto traces unrun (Gradle+adb BLOCKED) |
+| E03/E04 docs + release (§12) | IN PROGRESS (this pass) | This file + `SPRICH_RELEASE_REPORT.md` + `DEVICE_RUNBOOK.md` refreshed; architecture/UX/benchmark docs carry prior-pass results; release NOT releasable (see Release report) |
 
-## Tests run
+## Tests run (this documenter pass)
 
-- Host harness (kotlinc-direct, offline): **100/100 pass** — 14 authority + 11 symbol/grammar + 8 parser + 5 correction-safety + 9 unknown-language + 15 typography + 8 term-canonical + 18 critical-meaning + 11 validator + 1 corpus. Per-class `@Test` counts sum to 100; see `SPRICH_BENCHMARK_PROTOCOL.md` and `benchmark-results.json`.
-- `./gradlew :app:testDebugUnitTest` (project gate): BLOCKED — offline dependency resolution failure (recorded this session; see Release report).
-- Device tests (`PipelineCorrectnessDeviceTest`, updated S06 expectations): BLOCKED — no adb device (`adb` daemon fails to ACK; see Release report). Expectations updated but never executed.
-- Provider/corpus/benchmark gates: NOT MEASURED (no credentials, no 1,000-utterance corpus, no hardware).
+- None. Documenter wrote only the three §12 files; per ENV TRUTH no `./gradlew`, `adb`, or network command was attempted. Prior-pass results cited above are carried as data, not re-executed here.
+
+## Blocked gates (observed, this environment)
+
+- `./gradlew` (any task): BLOCKED — daemon cannot start, loopback blocked. `:app:testDebugUnitTest`, `:app:lintRelease`, `:app:assembleRelease`, `:app:bundleRelease`, `writeReleaseDependencyInventory`, `verify-locales.py`, `verify-models.sh`, `check-apk.sh` all unexecutable here. Exact unblock commands are in `DEVICE_RUNBOOK.md`.
+- `adb` / device (S23 Ultra): BLOCKED — daemon will not ACK, device unreachable from here. No install, device test, screenshot, TalkBack, timing trace, or benchmark.
+- Providers/corpus/hardware: BLOCKED/NOT MEASURED — no credentials, no recordings, no lab devices. Gates D/F and all of §10 open.
 
 ## Decisions
 
-- `docs/implementation/` created: the plan names these paths and the repo had no `implementation/` dir (flat `docs/*.md` convention kept for existing docs).
-- `handsFreeDestructive` defaults false — no UI enables it, so local destructive commands are confirmation-only until a hands-free policy with owned-span Undo ships (S01).
-- `AcousticBasis.UNKNOWN` in production call path is conservative legacy behavior (symbol-only suppressed), explicitly marked as the P02 wiring point, not a claim of VAD integration.
-- APKs under `app/build/outputs/` are stale (2026-09-03, pre-S01) and the release APK is unsigned: **no installable deliverable from this work yet**.
+- Prior implementer summaries (P01–P05, P07, U01/U04-U05, P03/P04 admission) accepted as data per workflow contract; file:line pointers above are theirs, not re-audited content matches by this pass.
+- `handsFreeDestructive` defaults false (S01 prior decision, unchanged).
+- `AcousticBasis.UNKNOWN` conservative default retained at production call site; P02 policy file is new logic, device acoustic proof still open.
+- No version bump, no dependency change, no model/native pin change in this diff.
+- APKs under `app/build/outputs/` predate this work and MUST NOT be presented as containing it; release APK is unsigned — no installable deliverable from this work yet.
 
 ## Artifact paths
 
-- Source diff: `git -C ~/Projects/Sprich diff --stat` (10 modified files) + 7 untracked (`ParsedDictation.kt`, `CriticalTokens.kt`, `TermCanonical.kt`, 4 test files).
-- Docs: `docs/implementation/SPRICH_{STATUS,ARCHITECTURE,UX_SPEC,BENCHMARK_PROTOCOL,RELEASE_REPORT}.md`, `benchmark-results.json`.
-- Logs: `/tmp/sprich-harness/resume-verify.log`, `/tmp/sprich-harness/last-run.log`.
+- Source diff: `git -C /Users/schober/Projects/Sprich diff --stat` (11 modified files) + 8 untracked (`StartupAudioBuffer.kt`, `VadRoutePolicy.kt`, `SegmentReconciler.kt`, `RecognitionBudget.kt`, `UtteranceTelemetry.kt`, `UtteranceQueue.kt`, `RecoveryDraftStore.kt`, `UiTokens.kt`) + 2 untracked test files (`P03P07QueueDeadlineTelemetryTest.kt`, `speech/RemoteAdmissionContractTest.kt`).
+- Modified (tracked): `VoiceGestureBar.kt`, `TranscriptionCoordinator.kt`, `DeadlinePolicy.kt`, `GeminiSttProvider.kt`, `LiveRemoteUtterance.kt`, `MetaMuseSttProvider.kt`, `MetaRealtimeSession.kt`, `OpenAiCompatibleSttProvider.kt`, `RemoteProviderFactory.kt`, `HomeScreen.kt`, `OnboardingScreen.kt`.
+- Docs (this pass only): `docs/implementation/SPRICH_STATUS.md`, `docs/implementation/SPRICH_RELEASE_REPORT.md`, `docs/implementation/DEVICE_RUNBOOK.md` (new).
+- Prior evidence (carried, not re-run): `/tmp/sprich-harness/resume-verify.log` (`OK (100 tests)`), `docs/implementation/benchmark-results.json`.

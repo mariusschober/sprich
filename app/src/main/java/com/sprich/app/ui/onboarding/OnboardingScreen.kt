@@ -38,7 +38,7 @@ import kotlinx.coroutines.launch
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
-        Text(stringResource(R.string.setup_step, step + 1, 4), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(stringResource(R.string.setup_step, step + 1, 5), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when (step) {
             0 -> {
                 VoiceMark(Modifier.size(112.dp))
@@ -75,6 +75,14 @@ import kotlinx.coroutines.launch
                     Text(stringResource(R.string.keyboard_enabled))
                     Button(onClick = { step = 3 }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_action)) }
                 } else Button(onClick = onOpenImeSettings, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.open_keyboard_settings)) }
+            }
+            3 -> {
+                Text(stringResource(R.string.choose_keyboard), style = MaterialTheme.typography.headlineMedium)
+                Text(stringResource(R.string.keyboard_description), style = MaterialTheme.typography.bodyLarge)
+                if (keyboard.selected) {
+                    Text(stringResource(R.string.home_ready))
+                    Button(onClick = { step = 4 }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_action)) }
+                } else Button(onClick = { showKeyboardPicker(context) }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.switch_keyboard)) }
             }
             else -> {
                 Text(stringResource(R.string.setup_offline), style = MaterialTheme.typography.headlineMedium)

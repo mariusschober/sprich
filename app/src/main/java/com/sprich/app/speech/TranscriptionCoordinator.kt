@@ -23,7 +23,22 @@ import java.util.concurrent.TimeUnit
  * - P0-18: shared HTTP client pooling (sharedHttpClient.newBuilder() shares ConnectionPool/Dispatcher)
  * - P1-37: uses real utteranceId from token, not fabricated nanoTime
  * - P1-38: retains typed failure metadata for observability
+ * - Plan §6.1: per-utterance [CoordinatorOutcome] keeps typed failure metadata
+ *   with the utterance, so overlapping utterances never depend on the shared
+ *   [TranscriptionCoordinator.lastRemoteFailure] legacy field.
  */
+/**
+ * Per-utterance transcription outcome. A blank [result] with a null
+ * [remoteFailure] means local recognition itself produced no text; a non-null
+ * [remoteFailure] names the failed remote attempt for this utterance only.
+ */
+data class CoordinatorOutcome(
+    val result: TranscriptionResult,
+    val remoteFailure: ApiFailure?,
+    val remoteAttempted: Boolean,
+    val fellBackToLocal: Boolean,
+)
+
 class TranscriptionCoordinator(
     private val local: LocalTranscriptionCoordinator,
     private val remoteProviders: Map<String, RemoteSttProvider>, // providerId -> provider (test-injected mocks)
@@ -31,10 +46,19 @@ class TranscriptionCoordinator(
     private val deadlinePolicy: DeadlinePolicy = DeadlinePolicy.DEFAULT,
     private val sharedHttpClient: okhttp3.OkHttpClient? = null,
 ) {
-    // P1-38: retain last remote failure for Settings/diagnostics observability
+    // P1-38: retain last remote failure for Settings/diagnostics observability.
+    // Legacy global only — overlapping per-utterance logic must use
+    // CoordinatorOutcome.remoteFailure instead (plan §6.1).
     @Volatile var lastRemoteFailure: ApiFailure? = null
         private set
     @Volatile var lastRemoteFailureAtMs: Long = 0
+
+    /** Per-utterance attempt record threaded through one [transcribeInner] call. */
+    private class AttemptBox {
+        var remoteAttempted: Boolean = false
+        var remoteFailure: ApiFailure? = null
+        var fellBackToLocal: Boolean = false
+    }
 
     /**
      * Transcribe one immutable pending utterance according to its plan.
@@ -47,6 +71,37 @@ class TranscriptionCoordinator(
         utteranceId: Long = System.nanoTime(),
         live: com.sprich.app.speech.remote.LiveRemoteUtterance? = null,
         onProgress: ((com.sprich.app.speech.remote.RemoteTranscriptUpdate) -> Unit)? = null,
+    ): TranscriptionResult =
+        transcribeInner(pcm, plan, utteranceId, live, onProgress, null)
+
+    /**
+     * Same as [transcribe] but also returns the per-utterance remote attempt
+     * record. Prefer this when utterances can overlap.
+     */
+    suspend fun transcribeWithOutcome(
+        pcm: ShortArray,
+        plan: UtterancePlan,
+        utteranceId: Long = System.nanoTime(),
+        live: com.sprich.app.speech.remote.LiveRemoteUtterance? = null,
+        onProgress: ((com.sprich.app.speech.remote.RemoteTranscriptUpdate) -> Unit)? = null,
+    ): CoordinatorOutcome {
+        val box = AttemptBox()
+        val result = transcribeInner(pcm, plan, utteranceId, live, onProgress, box)
+        return CoordinatorOutcome(
+            result = result,
+            remoteFailure = box.remoteFailure,
+            remoteAttempted = box.remoteAttempted,
+            fellBackToLocal = box.fellBackToLocal,
+        )
+    }
+
+    private suspend fun transcribeInner(
+        pcm: ShortArray,
+        plan: UtterancePlan,
+        utteranceId: Long,
+        live: com.sprich.app.speech.remote.LiveRemoteUtterance?,
+        onProgress: ((com.sprich.app.speech.remote.RemoteTranscriptUpdate) -> Unit)?,
+        box: AttemptBox?,
     ): TranscriptionResult {
         fun checkAuthority() {
             if (plan.apiPermissionEpoch != com.sprich.app.api.ApiHttp.currentEpoch) throw kotlinx.coroutines.CancellationException("API permission revoked")
@@ -68,7 +123,7 @@ class TranscriptionCoordinator(
                 )
             }
             is TranscriptionPlan.ApiPrimary -> {
-                val remoteResult = tryRemote(pcm, tp.remote, plan.speechConfig, utteranceId, plan.remoteVocabularyHints, plan.apiPermissionEpoch, live, onProgress)
+                val remoteResult = tryRemote(pcm, tp.remote, plan.speechConfig, utteranceId, plan.remoteVocabularyHints, plan.apiPermissionEpoch, live, onProgress, box)
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 checkAuthority()
                 if (remoteResult != null) {
@@ -77,6 +132,7 @@ class TranscriptionCoordinator(
                     // Remote failed — try fallback if exists, else return blank unknown (caller will trigger safe fallback handling)
                     val fallbackRoute = tp.localFallback
                     if (fallbackRoute != null) {
+                        box?.fellBackToLocal = true
                         Log.w("TranscriptionCoordinator", "API primary failed (lastFailure=$lastRemoteFailure), falling back to local $fallbackRoute")
                         val r = local.transcribe(pcm, fallbackRoute, plan.speechConfig)
                         TranscriptionResult(
@@ -119,7 +175,7 @@ class TranscriptionCoordinator(
                     )
                 } else {
                     checkAuthority()
-                    val remoteResult = tryRemote(pcm, tp.remote, plan.speechConfig, utteranceId, plan.remoteVocabularyHints, plan.apiPermissionEpoch, null, onProgress)
+                    val remoteResult = tryRemote(pcm, tp.remote, plan.speechConfig, utteranceId, plan.remoteVocabularyHints, plan.apiPermissionEpoch, null, onProgress, box)
                     if (remoteResult != null) remoteResult.copy(timingMs = android.os.SystemClock.elapsedRealtime() - t0)
                     else {
                         // Both failed — return original local blank
@@ -137,16 +193,21 @@ class TranscriptionCoordinator(
     }
 
     private suspend fun tryRemote(pcm: ShortArray, config: com.sprich.app.speech.remote.RemoteSttConfig, speechConfig: SpeechSessionConfig, utteranceId: Long, vocabulary: List<String>, permissionEpoch: Long,
-        live: com.sprich.app.speech.remote.LiveRemoteUtterance?, onProgress: ((com.sprich.app.speech.remote.RemoteTranscriptUpdate) -> Unit)?): TranscriptionResult? {
+        live: com.sprich.app.speech.remote.LiveRemoteUtterance?, onProgress: ((com.sprich.app.speech.remote.RemoteTranscriptUpdate) -> Unit)?, box: AttemptBox?): TranscriptionResult? {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         if (live != null && live.config != config) throw kotlinx.coroutines.CancellationException("Streaming plan mismatch")
         if (config.supportsStreaming && config.preferStreaming && live == null) {
             throw kotlinx.coroutines.CancellationException("Missing streaming authority")
         }
+        box?.remoteAttempted = true
+        fun recordFailure(failure: ApiFailure) {
+            lastRemoteFailure = failure
+            box?.remoteFailure = failure
+        }
         val provider = if (live != null) null else try {
             com.sprich.app.speech.remote.RemoteProviderFactory.create(config, sharedHttpClient, deadlinePolicy, remoteProviders)
         } catch (_: IllegalArgumentException) {
-            lastRemoteFailure = ApiFailure.ProviderUnavailable
+            recordFailure(ApiFailure.ProviderUnavailable)
             return null
         }
         // Resolve credential — secret store is authoritative, fail closed (no legacy plaintext fallback)
@@ -155,7 +216,7 @@ class TranscriptionCoordinator(
         if (permissionEpoch != com.sprich.app.api.ApiHttp.currentEpoch) throw kotlinx.coroutines.CancellationException("API permission revoked")
         if (live == null && credential.isBlank()) {
             Log.w("TranscriptionCoordinator", "no credential for ${config.credentialRef}")
-            lastRemoteFailure = ApiFailure.Authentication
+            recordFailure(ApiFailure.Authentication)
             lastRemoteFailureAtMs = android.os.SystemClock.elapsedRealtime()
             return null
         }
@@ -177,7 +238,7 @@ class TranscriptionCoordinator(
             }
             if (result == null) {
                 Log.w("TranscriptionCoordinator", "remote timeout after ${config.deadlineMs}ms")
-                lastRemoteFailure = ApiFailure.Timeout
+                recordFailure(ApiFailure.Timeout)
                 lastRemoteFailureAtMs = android.os.SystemClock.elapsedRealtime()
                 null
             } else {
@@ -190,6 +251,7 @@ class TranscriptionCoordinator(
                     else -> speechConfig
                 }
                 lastRemoteFailure = null
+                box?.remoteFailure = null
                 TranscriptionResult(
                     text = result.text,
                     resolvedLanguage = result.resolvedLanguage,
@@ -202,13 +264,13 @@ class TranscriptionCoordinator(
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (e.failure == ApiFailure.Cancelled) throw kotlinx.coroutines.CancellationException("Remote operation cancelled")
             Log.w("TranscriptionCoordinator", "remote failed ${e.failure}")
-            lastRemoteFailure = e.failure
+            recordFailure(e.failure)
             lastRemoteFailureAtMs = android.os.SystemClock.elapsedRealtime()
             null
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            lastRemoteFailure = (e as? com.sprich.app.api.ApiException)?.failure ?: ApiFailure.fromException(e)
+            recordFailure((e as? com.sprich.app.api.ApiException)?.failure ?: ApiFailure.fromException(e))
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (lastRemoteFailure == ApiFailure.Cancelled) throw kotlinx.coroutines.CancellationException("Remote operation cancelled")
             Log.w("TranscriptionCoordinator", "remote failed $lastRemoteFailure")
