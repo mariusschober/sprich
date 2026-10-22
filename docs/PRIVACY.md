@@ -47,7 +47,7 @@ Android backup and device-transfer backup are disabled. Uninstalling Sprich or c
 
 ## Permissions
 
-`RECORD_AUDIO` permits dictation after you grant it. `INTERNET` permits requested downloads and optional API calls; `ACCESS_NETWORK_STATE` checks connectivity. `VIBRATE` supports optional feedback. Sprich is an Android input method protected by the system's `BIND_INPUT_METHOD` permission. It has no accessibility service, contacts/storage/location permission, all-packages permission, notification permission, foreground recording service or advertising ID permission. Android's one-item contact picker grants temporary access only to the contact you select.
+`RECORD_AUDIO` permits dictation after you grant it. `INTERNET` permits requested downloads and optional API calls. `VIBRATE` supports optional feedback. Sprich declares no network-state permission and performs no background or metered download. It is an Android input method protected by the system's `BIND_INPUT_METHOD` permission. It has no accessibility service, contacts/storage/location permission, all-packages permission, notification permission, foreground recording service or advertising ID permission. Android's one-item contact picker grants temporary access only to the contact you select.
 
 ## Contact
 
