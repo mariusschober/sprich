@@ -81,4 +81,19 @@ class AutomaticReadinessTest {
         assertFalse(mm.isAutomaticReadyStatus(ModelStatus.Verifying, ModelStatus.Ready))
         assertFalse(mm.isAutomaticReadyStatus(ModelStatus.Ready, ModelStatus.NotDownloaded))
     }
+
+    @Test fun storageSizesArePerModeAndDeleteOneKeepsTheOther() = runBlocking {
+        val mm = manager(); mm.deleteAll()
+        receiptFixture(mm, "lid"); receiptFixture(mm, "fastconformer")
+        val lidBytes = mm.installedBytes("lid")
+        val fastBytes = mm.installedBytes("fastconformer")
+        assertTrue(lidBytes > 0)
+        assertTrue(fastBytes > 0)
+        assertEquals(mm.lidStatus.value, mm.statusFlow("lid").value)
+        mm.deleteLid()
+        assertEquals(0L, mm.installedBytes("lid"))
+        assertTrue(mm.installedBytes("fastconformer") > 0)
+        assertTrue(mm.isFastConformerReady())
+        assertFalse(mm.isWhisperTinyReady())
+    }
 }

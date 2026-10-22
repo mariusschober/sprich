@@ -35,6 +35,7 @@ import com.sprich.app.speech.api.SpeechLanguage
 import com.sprich.app.speech.refinement.RefinementMode
 import com.sprich.app.storage.Preferences
 import com.sprich.app.ui.setup.ModelSetup
+import com.sprich.app.ui.setup.ModelStorage
 import com.sprich.app.ui.readableWidth
 import com.sprich.app.ui.persistPreference
 import kotlinx.coroutines.launch
@@ -88,6 +89,8 @@ import kotlinx.coroutines.launch
                     }
                 }
                 if (!apiVoice) ModelSetup(automatic)
+                HorizontalDivider()
+                ModelStorage()
             }
             SettingsGroup(stringResource(R.string.writing)) {
                 SettingsLink(stringResource(R.string.cleanup_title), if (cleanup) apiProviderName(config!!.refinementProviderId) else stringResource(R.string.cleanup_off)) { onApi(ApiUse.WRITING) }

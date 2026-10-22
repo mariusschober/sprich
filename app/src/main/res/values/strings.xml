@@ -102,6 +102,13 @@
     <string name="advanced">Advanced</string>
     <string name="hide_advanced">Hide advanced</string>
     <string name="model_details">Automatic: Whisper Tiny language detection and FastConformer CTC. Accurate: Canary 180M Flash. All run on your phone.</string>
+    <string name="model_storage_title">Speech files on this phone</string>
+    <string name="model_storage_total">Using %1$s. Delete a mode you no longer need; vocabulary and settings stay.</string>
+    <string name="model_storage_not_downloaded">Not downloaded</string>
+    <string name="model_storage_delete">Delete</string>
+    <string name="model_storage_delete_confirm">Delete %1$s speech files?</string>
+    <string name="model_storage_delete_body">You can download them again later. Your vocabulary, settings and API keys are not removed.</string>
+    <string name="model_storage_failed">Could not delete speech files. Try again.</string>
     <string name="licenses">Licenses and notices</string>
     <string name="clear_data">Clear Sprich data</string>
     <string name="clear_data_question">Clear Sprich data?</string>

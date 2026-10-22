@@ -58,6 +58,14 @@ class ModelManager(context: Context, private val manifest: ModelManifest = Built
 
     fun getManifest() = manifest
     internal fun directory(id: String) = File(context.filesDir, when (id) { "accurate" -> "canary"; "lid" -> "whisper-tiny"; else -> id })
+    /** Observable status for any manifest model, used by storage management. */
+    fun statusFlow(id: String): StateFlow<ModelStatus> = status(id)
+    /** Current on-disk footprint, including receipts and any leftover recovery directory. */
+    fun installedBytes(id: String): Long = runCatching {
+        val dir = directory(id)
+        listOf(dir, File(dir.path + ".old")).filter { it.exists() }
+            .sumOf { root -> root.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+    }.getOrDefault(0L)
     private fun entry(id: String) = manifest.models.single { it.id == id }
     private fun fingerprint(dir: File, entry: ModelEntry): List<Long> =
         (entry.files + RECEIPT).flatMap { name -> File(dir, name).let { listOf(it.length(), it.lastModified()) } }

@@ -102,6 +102,13 @@
     <string name="advanced">Erweitert</string>
     <string name="hide_advanced">Erweitertes ausblenden</string>
     <string name="model_details">Automatisch: Spracherkennung mit Whisper Tiny und FastConformer CTC. Präzise: Canary 180M Flash. Alles läuft auf deinem Smartphone.</string>
+    <string name="model_storage_title">Sprachdateien auf diesem Smartphone</string>
+    <string name="model_storage_total">Belegt %1$s. Lösche einen Modus, den du nicht mehr brauchst; Vokabular und Einstellungen bleiben.</string>
+    <string name="model_storage_not_downloaded">Nicht heruntergeladen</string>
+    <string name="model_storage_delete">Löschen</string>
+    <string name="model_storage_delete_confirm">Sprachdateien für %1$s löschen?</string>
+    <string name="model_storage_delete_body">Du kannst sie später erneut herunterladen. Vokabular, Einstellungen und API-Schlüssel bleiben erhalten.</string>
+    <string name="model_storage_failed">Sprachdateien konnten nicht gelöscht werden. Versuch es erneut.</string>
     <string name="licenses">Lizenzen und Hinweise</string>
     <string name="clear_data">Sprich-Daten löschen</string>
     <string name="clear_data_question">Sprich-Daten löschen?</string>

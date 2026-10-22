@@ -102,6 +102,13 @@
     <string name="advanced">Avancé</string>
     <string name="hide_advanced">Masquer les options avancées</string>
     <string name="model_details">Automatique : détection de langue Whisper Tiny et FastConformer CTC. Précis : Canary 180M Flash. Tout fonctionne sur votre téléphone.</string>
+    <string name="model_storage_title">Fichiers vocaux sur ce téléphone</string>
+    <string name="model_storage_total">Utilisent %1$s. Supprimez un mode dont vous n’avez plus besoin ; le vocabulaire et les réglages restent.</string>
+    <string name="model_storage_not_downloaded">Non téléchargé</string>
+    <string name="model_storage_delete">Supprimer</string>
+    <string name="model_storage_delete_confirm">Supprimer les fichiers vocaux de %1$s ?</string>
+    <string name="model_storage_delete_body">Vous pourrez les télécharger à nouveau plus tard. Le vocabulaire, les réglages et les clés API ne sont pas supprimés.</string>
+    <string name="model_storage_failed">Impossible de supprimer les fichiers vocaux. Réessayez.</string>
     <string name="licenses">Licences et mentions</string>
     <string name="clear_data">Effacer les données de Sprich</string>
     <string name="clear_data_question">Effacer les données de Sprich ?</string>
