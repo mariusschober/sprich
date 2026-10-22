@@ -113,7 +113,9 @@
     <string name="clear_data">Clear Sprich data</string>
     <string name="clear_data_question">Clear Sprich data?</string>
     <string name="clear_data_description">This removes speech files, vocabulary, settings and any saved API keys. Sprich will close. This cannot be undone.</string>
-    <string name="clear_data_failed">Could not clear data. Try Android app settings.</string>
+    <string name="clear_data_failed">Could not clear data</string>
+    <string name="clear_data_failed_body">Android did not clear Sprich’s storage. Open app settings and use Storage → Clear storage.</string>
+    <string name="clear_data_progress">Clearing…</string>
     <string name="vocab_description">Choose how names and special terms are written. Rules apply to your next dictation.</string>
     <string name="you_say">You say</string>
     <string name="sprich_writes">Sprich writes</string>

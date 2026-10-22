@@ -113,7 +113,9 @@
     <string name="clear_data">Effacer les données de Sprich</string>
     <string name="clear_data_question">Effacer les données de Sprich ?</string>
     <string name="clear_data_description">Cette action supprime les fichiers vocaux, le vocabulaire, les réglages et les clés API enregistrées. Sprich se fermera. Cette action est irréversible.</string>
-    <string name="clear_data_failed">Impossible d’effacer les données. Essayez depuis les réglages Android de l’application.</string>
+    <string name="clear_data_failed">Impossible d’effacer les données</string>
+    <string name="clear_data_failed_body">Android n’a pas effacé le stockage de Sprich. Ouvrez les réglages de l’application et utilisez Stockage → Effacer le stockage.</string>
+    <string name="clear_data_progress">Effacement…</string>
     <string name="vocab_description">Choisissez comment écrire les noms et les termes particuliers. Les nouvelles règles s’appliquent dès la prochaine dictée.</string>
     <string name="you_say">Vous dites</string>
     <string name="sprich_writes">Sprich écrit</string>

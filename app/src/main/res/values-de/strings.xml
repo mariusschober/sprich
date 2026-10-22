@@ -113,7 +113,9 @@
     <string name="clear_data">Sprich-Daten löschen</string>
     <string name="clear_data_question">Sprich-Daten löschen?</string>
     <string name="clear_data_description">Dadurch werden Sprachdateien, Wortschatz, Einstellungen und gespeicherte API-Schlüssel gelöscht. Sprich wird geschlossen. Das lässt sich nicht rückgängig machen.</string>
-    <string name="clear_data_failed">Daten konnten nicht gelöscht werden. Versuch es über die Android-App-Einstellungen.</string>
+    <string name="clear_data_failed">Daten konnten nicht gelöscht werden</string>
+    <string name="clear_data_failed_body">Android hat den Speicher von Sprich nicht geleert. Öffne die App-Einstellungen und nutze Speicher → Speicher leeren.</string>
+    <string name="clear_data_progress">Wird gelöscht…</string>
     <string name="vocab_description">Lege fest, wie Namen und Fachbegriffe geschrieben werden. Neue Regeln gelten ab dem nächsten Diktat.</string>
     <string name="you_say">Du sagst</string>
     <string name="sprich_writes">Sprich schreibt</string>

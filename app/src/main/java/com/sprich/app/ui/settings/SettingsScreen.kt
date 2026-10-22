@@ -6,7 +6,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -36,6 +35,7 @@ import com.sprich.app.speech.refinement.RefinementMode
 import com.sprich.app.storage.Preferences
 import com.sprich.app.ui.setup.ModelSetup
 import com.sprich.app.ui.setup.ModelStorage
+import com.sprich.app.ui.setup.openAppSettings
 import com.sprich.app.ui.readableWidth
 import com.sprich.app.ui.persistPreference
 import kotlinx.coroutines.launch
@@ -51,6 +51,8 @@ import kotlinx.coroutines.launch
     var about by rememberSaveable { mutableStateOf(false) }
     var gestures by rememberSaveable { mutableStateOf(false) }
     var clearConfirm by remember { mutableStateOf(false) }
+    var clearing by remember { mutableStateOf(false) }
+    var clearFailed by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf(false) }
     fun write(block: suspend () -> Unit) {
         scope.launch {
@@ -132,13 +134,39 @@ import kotlinx.coroutines.launch
         }
     }
     if (clearConfirm) AlertDialog(
-        onDismissRequest = { clearConfirm = false }, title = { Text(stringResource(R.string.clear_data_question)) },
-        text = { Text(stringResource(R.string.clear_data_description)) },
-        confirmButton = { TextButton(onClick = {
-            clearConfirm = false
-            if (!context.getSystemService(ActivityManager::class.java).clearApplicationUserData()) Toast.makeText(context, R.string.clear_data_failed, Toast.LENGTH_LONG).show()
-        }) { Text(stringResource(R.string.clear_data)) } },
-        dismissButton = { TextButton(onClick = { clearConfirm = false }) { Text(stringResource(R.string.cancel)) } },
+        onDismissRequest = { if (!clearing) clearConfirm = false }, title = { Text(stringResource(R.string.clear_data_question)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(stringResource(R.string.clear_data_description))
+                if (clearing) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text(stringResource(R.string.clear_data_progress))
+                }
+            }
+        },
+        confirmButton = { TextButton(enabled = !clearing, onClick = {
+            clearing = true
+            scope.launch {
+                val ok = runClearData {
+                    context.getSystemService(ActivityManager::class.java).clearApplicationUserData()
+                }
+                clearing = false
+                clearConfirm = false
+                if (!ok) clearFailed = true
+            }
+        }) { Text(stringResource(if (clearing) R.string.clear_data_progress else R.string.clear_data)) } },
+        dismissButton = { TextButton(enabled = !clearing, onClick = { clearConfirm = false }) { Text(stringResource(R.string.cancel)) } },
+    )
+    if (clearFailed) AlertDialog(
+        onDismissRequest = { clearFailed = false },
+        title = { Text(stringResource(R.string.clear_data_failed)) },
+        text = { Text(stringResource(R.string.clear_data_failed_body)) },
+        confirmButton = {
+            TextButton(onClick = { clearFailed = false; openAppSettings(context) }) {
+                Text(stringResource(R.string.open_app_settings))
+            }
+        },
+        dismissButton = { TextButton(onClick = { clearFailed = false }) { Text(stringResource(R.string.cancel)) } },
     )
 }
 
