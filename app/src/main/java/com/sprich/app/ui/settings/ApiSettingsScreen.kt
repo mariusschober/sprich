@@ -104,7 +104,14 @@ import kotlinx.coroutines.flow.first
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer); job?.cancel(); key = "" }
     }
-    val protectWindow = keyFocused || key.isNotEmpty()
+    val protectWindow = shouldProtectApiWindow(
+        keyFocused = keyFocused,
+        keyEntered = key.isNotEmpty(),
+        busy = busy,
+        recording = recording,
+        hasLivePreview = liveProgress?.preview?.isNotBlank() == true,
+        hasResult = result != null,
+    )
     DisposableEffect(protectWindow) {
         val window = (context as? Activity)?.window
         val alreadySecure = window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_SECURE) != 0
@@ -319,3 +326,13 @@ internal fun savedKeyVerified(
     persistedVerified: Boolean,
     health: ApiSecretStore.SecretHealth?,
 ): Boolean = matchesSaved && persistedVerified && health == ApiSecretStore.SecretHealth.AVAILABLE
+
+/** Keep screenshots blocked while a key, live check audio preview, or its transcript is visible. */
+internal fun shouldProtectApiWindow(
+    keyFocused: Boolean,
+    keyEntered: Boolean,
+    busy: Boolean,
+    recording: Boolean,
+    hasLivePreview: Boolean,
+    hasResult: Boolean,
+): Boolean = keyFocused || keyEntered || busy || recording || hasLivePreview || hasResult
