@@ -19,5 +19,6 @@ class LanguageChipTest {
 
     @Test fun regionalTagsKeepTheBaseLanguageLabel() {
         assertEquals("DE", languageChipLabel(SpeechLanguage.Fixed("de-DE")))
+        assertEquals(SpeechLanguage.Fixed("es"), nextSpeechLanguage(SpeechLanguage.Fixed("de-DE")))
     }
 }
