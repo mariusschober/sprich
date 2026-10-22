@@ -107,6 +107,12 @@ class WordLearningViewModel(
         viewModelScope.launch { recorder?.release() }
     }
     fun pause() = cancelAttempt(interrupted = true)
+    /** An app/contact picker returned; only its own lookup error is stale. Never hide a recording error. */
+    fun pickerReturned() {
+        mutable.update {
+            it.copy(resolvingName = false, error = if (it.error == R.string.learn_name_picker_error) null else it.error)
+        }
+    }
     fun removeSample(index: Int) {
         if (!state.value.busy) mutable.update { it.copy(samples = it.samples.filterIndexed { i, _ -> i != index }) }
     }

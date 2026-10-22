@@ -112,6 +112,22 @@ class WordLearningFlowTest {
         withTimeout(5000) { vm.state.first { !it.resolvingName && it.error != null } }
         assertEquals("WhatsApp", vm.state.value.written)
         assertTrue(repo.learnedWords().isEmpty())
+        vm.pickerReturned()
+        assertNull(vm.state.value.error)
+        assertEquals(LearningStep.SPELL, vm.state.value.step)
+    }
+
+    @Test fun leavingAnIdleLessonDoesNotReportAnInterruptedRecording() = runBlocking {
+        val recorder = object : LessonRecorder {
+            override val profile = this@WordLearningFlowTest.profile
+            override val usesApi = false
+            override suspend fun record(finish: Deferred<Unit>, onProgress: (LearningProgress) -> Unit) = "unused"
+            override suspend fun release() {}
+        }
+        val vm = model(recorder)
+        vm.pause()
+        assertNull(vm.state.value.error)
+        assertEquals(LearningStep.RECORD, vm.state.value.step)
     }
 
     @Test fun simultaneousConflictingSavesDoNotOverwriteTheWinner() = runBlocking {

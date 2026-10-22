@@ -88,24 +88,36 @@ const val TYPED_SPELLING_IME_OPTION = "com.sprich.app.TYPED_SPELLING"
     val listState = rememberLazyListState()
     var permissionDenied by remember { mutableStateOf(false) }
     var discard by remember { mutableStateOf(false) }
+    // External app/contact pickers stop this activity. That is not the user leaving dictation.
+    var pickerInProgress by remember { mutableStateOf(false) }
+    val currentState by rememberUpdatedState(state)
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
         permissionDenied = !allowed
         if (allowed && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) vm.record()
     }
     val appPicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        pickerInProgress = false
+        vm.pickerReturned()
         if (result.resultCode == Activity.RESULT_OK) {
             vm.resolvePickedName { LocalNamePicker.appDisplayName(app, result.data) }
         }
     }
     val contactPicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        pickerInProgress = false
+        vm.pickerReturned()
         if (result.resultCode == Activity.RESULT_OK) {
             vm.resolvePickedName { LocalNamePicker.contactDisplayName(app, result.data?.data) }
         }
     }
     DisposableEffect(lifecycle, vm) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) vm.pause() }
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP && !pickerInProgress &&
+                currentState.step == LearningStep.RECORD && currentState.progress.phase != LearningPhase.IDLE) {
+                vm.pause()
+            }
+        }
         lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer); vm.pause() }
+        onDispose { lifecycle.removeObserver(observer); vm.cancelAttempt() }
     }
     LaunchedEffect(state.step) {
         focus.clearFocus(); keyboard?.hide()
@@ -220,20 +232,22 @@ const val TYPED_SPELLING_IME_OPTION = "com.sprich.app.TYPED_SPELLING"
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 OutlinedButton(enabled = !state.busy, modifier = Modifier.fillMaxWidth(), onClick = {
                                     focus.clearFocus(); keyboard?.hide()
+                                    pickerInProgress = true
                                     try {
                                         appPicker.launch(LocalNamePicker.appIntent().putExtra(Intent.EXTRA_TITLE,
                                             context.getString(R.string.learn_choose_app_title)))
-                                    } catch (_: ActivityNotFoundException) { vm.namePickerUnavailable() }
-                                    catch (_: SecurityException) { vm.namePickerUnavailable() }
+                                    } catch (_: ActivityNotFoundException) { pickerInProgress = false; vm.namePickerUnavailable() }
+                                    catch (_: SecurityException) { pickerInProgress = false; vm.namePickerUnavailable() }
                                 }) {
                                     Icon(Icons.Rounded.Apps, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
                                     Text(stringResource(R.string.learn_choose_app))
                                 }
                                 OutlinedButton(enabled = !state.busy, modifier = Modifier.fillMaxWidth(), onClick = {
                                     focus.clearFocus(); keyboard?.hide()
+                                    pickerInProgress = true
                                     try { contactPicker.launch(LocalNamePicker.contactIntent()) }
-                                    catch (_: ActivityNotFoundException) { vm.namePickerUnavailable() }
-                                    catch (_: SecurityException) { vm.namePickerUnavailable() }
+                                    catch (_: ActivityNotFoundException) { pickerInProgress = false; vm.namePickerUnavailable() }
+                                    catch (_: SecurityException) { pickerInProgress = false; vm.namePickerUnavailable() }
                                 }) {
                                     Icon(Icons.Rounded.Person, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
                                     Text(stringResource(R.string.learn_choose_contact))
