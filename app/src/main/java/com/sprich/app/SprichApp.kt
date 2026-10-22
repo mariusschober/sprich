@@ -23,6 +23,16 @@ class SprichApp : Application() {
             StrictMode.setVmPolicy(StrictMode.VmPolicy.Builder().detectLeakedClosableObjects().penaltyLog().build())
         }
         ModelManager(this) // One process-wide asynchronous install verification.
+        applicationScope.launch {
+            try {
+                com.sprich.app.storage.LegacyApiCredentialMigrator.migrateIfNeeded(
+                    com.sprich.app.storage.Preferences(this@SprichApp),
+                    com.sprich.app.storage.ApiSecretStore(this@SprichApp),
+                )
+            } catch (e: Exception) {
+                android.util.Log.w("SprichApp", "legacy credential cleanup failed", e)
+            }
+        }
         applicationScope.launch { Diagnostics.capturePreviousExit(this@SprichApp) }
         // Global crash breadcrumb — local only, no network
         val prev = Thread.getDefaultUncaughtExceptionHandler()
