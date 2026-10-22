@@ -50,9 +50,13 @@ class WordLearningViewModel(
         viewModelScope.launch {
             try {
                 repository.load()
+                val corrupted = repository.corruption() != null
                 val initialized = createRecorder()
                 recorder = initialized
-                mutable.update { it.copy(profile = initialized.profile, usesApi = initialized.usesApi, existing = repository.document()) }
+                mutable.update {
+                    it.copy(profile = initialized.profile, usesApi = initialized.usesApi, existing = repository.document(),
+                        error = if (corrupted) R.string.vocab_corrupt_title else it.error)
+                }
                 repository.changes().collect {
                     val latest = repository.document()
                     mutable.update { draft ->

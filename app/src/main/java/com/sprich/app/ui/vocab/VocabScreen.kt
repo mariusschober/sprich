@@ -36,10 +36,11 @@ import kotlinx.coroutines.launch
     var details by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<Int?>(null) }
     var saving by remember { mutableStateOf(false) }
+    var corruption by remember { mutableStateOf(repo.corruption()) }
     val limit = document.entries.size + document.learned.size >= WordLesson.MAX_WORDS
     LaunchedEffect(Unit) {
-        repo.load(); document = repo.document()
-        repo.changes().collect { document = repo.document() }
+        repo.load(); document = repo.document(); corruption = repo.corruption()
+        repo.changes().collect { document = repo.document(); corruption = repo.corruption() }
     }
     val selectedWord = document.learned.firstOrNull { it.id == details }
     if (selectedWord != null) AlertDialog(onDismissRequest = { details = null }, title = { Text(selectedWord.written) }, text = {
@@ -73,6 +74,25 @@ import kotlinx.coroutines.launch
                     Text(stringResource(R.string.vocab_learning_title), style = MaterialTheme.typography.headlineSmall)
                     Text(stringResource(R.string.vocab_learning_body), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Button(onClick = onLearn, enabled = !limit && !saving, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.learn_title)) }
+                }
+            }
+            corruption?.let { notice ->
+                item {
+                    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.errorContainer) {
+                        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(stringResource(R.string.vocab_corrupt_title), style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                stringResource(
+                                    if (notice.preservedFileName != null) R.string.vocab_corrupt_body
+                                    else R.string.vocab_corrupt_body_unpreserved,
+                                ),
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                            TextButton(onClick = { repo.acknowledgeCorruption(); corruption = null }) {
+                                Text(stringResource(R.string.vocab_corrupt_dismiss))
+                            }
+                        }
+                    }
                 }
             }
             if (limit) item { Text(stringResource(R.string.vocab_limit)) }

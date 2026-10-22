@@ -114,6 +114,10 @@
     <string name="vocab_save_failed">No se pudo guardar. Comprueba el espacio libre e inténtalo de nuevo.</string>
     <string name="vocab_limit">Has llegado a 200 entradas. Elimina una antes de añadir otra.</string>
     <string name="vocab_empty">Todavía no hay entradas. Añade un nombre o una frase que uses a menudo.</string>
+    <string name="vocab_corrupt_title">No se pudo leer el vocabulario</string>
+    <string name="vocab_corrupt_body">Se guardó una copia del archivo anterior en este teléfono. Se muestra una lista nueva vacía; guardar sustituye la lista activa.</string>
+    <string name="vocab_corrupt_body_unpreserved">No se pudo copiar el archivo anterior, así que se dejó intacto. Guardar está bloqueado hasta que pueda conservarse.</string>
+    <string name="vocab_corrupt_dismiss">Aceptar</string>
     <string name="ime_start">Toca para hablar</string>
     <string name="ime_idle_hint">Tus palabras se quedan en este teléfono</string>
     <string name="ime_preparing">Preparando…</string>

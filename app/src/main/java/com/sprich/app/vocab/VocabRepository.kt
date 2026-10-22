@@ -21,17 +21,23 @@ object SharedVocabStore {
     internal fun notifyChanged() { changesMutable.tryEmit(Unit) }
 }
 
+/** A readable copy of an unreadable vocabulary file, kept before a new list is published. */
+data class VocabularyCorruption(val preservedFileName: String?, val detectedAtMillis: Long)
+
 /** Disk commits and memory publication are ordered under one process-wide mutex, off Main. */
 class VocabRepository(context: Context, @Suppress("UNUSED_PARAMETER") prefs: Preferences) {
     private val context = context.applicationContext
     private fun file() = AtomicFile(File(context.noBackupFilesDir, "vocabulary.json"))
     private val store get() = SharedVocabStore.store
+    @Volatile private var corruption: VocabularyCorruption? = null
     fun entries() = store.all()
     fun learnedWords() = store.learnedWords()
     fun document() = store.document()
     fun apply(text: String) = store.apply(text)
     fun store() = store
     fun changes() = SharedVocabStore.changes
+    fun corruption(): VocabularyCorruption? = corruption
+    fun acknowledgeCorruption() { corruption = null }
     suspend fun add(spoken: String, written: String) = change { it.addManual(spoken, written) }
     suspend fun addLearned(word: LearnedWord) = change { it.addWord(word) }
     suspend fun removeLearned(id: String) = change { it.copy(learned = it.learned.filterNot { word -> word.id == id }) }
@@ -41,11 +47,16 @@ class VocabRepository(context: Context, @Suppress("UNUSED_PARAMETER") prefs: Pre
     private suspend fun change(transform: (VocabJson) -> VocabJson) = withContext(Dispatchers.IO) {
         lock.withLock {
             val next = transform(loadLocked())
+            // An unreadable file that could not be copied must not be silently overwritten.
+            if (corruption?.preservedFileName == null && corruption != null) {
+                throw IllegalStateException("Corrupt vocabulary could not be preserved")
+            }
             val json = Json.encodeToString(next)
             val destination = file()
             val output = destination.startWrite()
             try { output.write(json.toByteArray(Charsets.UTF_8)); output.fd.sync(); destination.finishWrite(output) }
             catch (error: Exception) { destination.failWrite(output); throw error }
+            corruption = null
             publish(next)
             // The new file is authoritative, including an explicitly empty dictionary.
             context.getSharedPreferences("sprich_vocab", Context.MODE_PRIVATE).edit().remove("json").commit()
@@ -56,7 +67,8 @@ class VocabRepository(context: Context, @Suppress("UNUSED_PARAMETER") prefs: Pre
     private fun loadLocked(): VocabJson {
         val source = file()
         val hasFile = source.baseFile.exists() || File(source.baseFile.path + ".bak").exists()
-        val json = if (!hasFile) context.getSharedPreferences("sprich_vocab", Context.MODE_PRIVATE).getString("json", null)
+        val json = try {
+            if (!hasFile) context.getSharedPreferences("sprich_vocab", Context.MODE_PRIVATE).getString("json", null)
             else source.openRead().use { input ->
                 val buffer = ByteArray(1_000_001)
                 var size = 0
@@ -68,9 +80,16 @@ class VocabRepository(context: Context, @Suppress("UNUSED_PARAMETER") prefs: Pre
                 check(size <= 1_000_000) { "Vocabulary file is too large" }
                 String(buffer, 0, size, Charsets.UTF_8)
             }
+        } catch (_: Exception) {
+            return quarantineLocked(source)
+        }
         val document = try {
-            if (json == null || json.length > 1_000_000) VocabJson()
-            else {
+            if (json == null) {
+                // Preserve an earlier corruption notice until the user saves a new list.
+                if (corruption == null) VocabJson() else store.document()
+            } else if (json.length > 1_000_000) {
+                throw IllegalArgumentException("Vocabulary file is too large")
+            } else {
                 val decoded = Json.decodeFromString<VocabJson>(json)
                 val manual = decoded.entries.take(WordLesson.MAX_WORDS).filter {
                     VocabularyText.validManual(it.spoken, 128) && VocabularyText.validManual(it.written, 256)
@@ -80,10 +99,42 @@ class VocabRepository(context: Context, @Suppress("UNUSED_PARAMETER") prefs: Pre
                     runCatching { valid.addWord(lesson) }.getOrDefault(valid)
                 }
             }
-        } catch (_: Exception) { VocabJson() }
+        } catch (_: Exception) {
+            return quarantineLocked(source)
+        }
+        if (json != null) corruption = null
         publish(document)
         return document
     }
+
+    /** Keep the exact unreadable bytes for offline recovery, then publish a safe empty document. */
+    private fun quarantineLocked(source: AtomicFile): VocabJson {
+        val base = source.baseFile
+        val backup = File(base.path + ".bak")
+        val payload = when {
+            base.isFile -> base
+            backup.isFile -> backup
+            else -> null
+        }
+        val preserved = try {
+            payload?.let {
+                val parent = base.parentFile ?: return@let null
+                var target = File(parent, "vocabulary.corrupt.${System.currentTimeMillis()}.json")
+                var suffix = 1
+                while (target.exists()) {
+                    target = File(parent, "vocabulary.corrupt.${System.currentTimeMillis()}-${suffix++}.json")
+                }
+                it.copyTo(target, overwrite = false)
+                source.delete()
+                target.name
+            }
+        } catch (_: Exception) { null }
+        corruption = VocabularyCorruption(preserved, System.currentTimeMillis())
+        val empty = VocabJson()
+        publish(empty)
+        return empty
+    }
+
     private fun publish(document: VocabJson) = store.replace(document.entries.map { VocabEntry(it.spoken, it.written) }, document.learned)
     fun vocabFlow(): Flow<List<VocabEntry>> = kotlinx.coroutines.flow.flow { load(); emit(entries()) }
     companion object { private val lock = Mutex() }

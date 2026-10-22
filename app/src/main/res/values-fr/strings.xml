@@ -114,6 +114,10 @@
     <string name="vocab_save_failed">Impossible d’enregistrer. Vérifiez l’espace libre et réessayez.</string>
     <string name="vocab_limit">Vous avez atteint 200 entrées. Supprimez-en une avant d’en ajouter une autre.</string>
     <string name="vocab_empty">Aucune entrée pour le moment. Ajoutez un nom ou une phrase que vous utilisez souvent.</string>
+    <string name="vocab_corrupt_title">Impossible de lire le vocabulaire</string>
+    <string name="vocab_corrupt_body">Une copie de l’ancien fichier a été conservée sur ce téléphone. Une nouvelle liste vide est affichée ; l’enregistrement remplace la liste active.</string>
+    <string name="vocab_corrupt_body_unpreserved">L’ancien fichier n’a pas pu être copié et reste intact. L’enregistrement est bloqué tant qu’il ne peut pas être conservé.</string>
+    <string name="vocab_corrupt_dismiss">OK</string>
     <string name="ime_start">Touchez pour parler</string>
     <string name="ime_idle_hint">Vos mots restent sur ce téléphone</string>
     <string name="ime_preparing">Préparation…</string>
