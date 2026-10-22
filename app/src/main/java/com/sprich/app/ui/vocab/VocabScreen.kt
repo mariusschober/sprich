@@ -112,7 +112,7 @@ import kotlinx.coroutines.withContext
         })
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).imePadding(), contentAlignment = Alignment.TopCenter) {
-        LazyColumn(Modifier.readableWidth().fillMaxWidth(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        LazyColumn(Modifier.readableWidth().fillMaxWidth().fillMaxHeight(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item {
                 LearningCard {
                     VoiceMark(Modifier.size(64.dp).align(Alignment.CenterHorizontally))
