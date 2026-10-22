@@ -17,9 +17,18 @@ class ModelManagerTest {
     private fun ctx(): Context = ApplicationProvider.getApplicationContext()
 
     @Test
-    fun initialStatusNotDownloadedWhenFilesMissing() {
+    fun initialStatusIsVerifyingForAnExistingDirectoryAndMissingOtherwise() {
+        assertTrue(ModelManager.initialStatusFor(true) is ModelStatus.Verifying)
+        assertTrue(ModelManager.initialStatusFor(false) is ModelStatus.NotDownloaded)
+    }
+
+    @Test
+    fun coldStartVerificationCompletesBeforeReadinessIsJudged() = kotlinx.coroutines.runBlocking {
         val mm = ModelManager(ctx())
-        assertTrue(mm.canaryStatus.value is ModelStatus.NotDownloaded || mm.canaryStatus.value is ModelStatus.Ready)
+        assertTrue(mm.awaitInitialVerification(10_000))
+        assertFalse(mm.canaryStatus.value is ModelStatus.Downloading)
+        mm.deleteCanary()
+        assertTrue(mm.canaryStatus.value is ModelStatus.NotDownloaded)
         assertFalse(mm.isCanaryReady())
     }
 

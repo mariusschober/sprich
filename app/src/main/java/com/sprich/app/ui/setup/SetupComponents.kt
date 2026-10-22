@@ -111,7 +111,7 @@ internal fun openAppSettings(context: Context) { context.startActivity(Intent(Se
                             android.text.format.Formatter.formatShortFileSize(context, downloading.total)), style = MaterialTheme.typography.bodySmall)
                     } else {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Text(stringResource(R.string.checking_download))
+                        Text(stringResource(R.string.checking_speech_files))
                     }
                     TextButton(onClick = { downloader.cancel() }) { Text(stringResource(R.string.cancel_download)) }
                 }

@@ -1096,11 +1096,20 @@ class SprichIME : InputMethodService() {
             // Automatic requires BOTH Tiny LID and FastConformer (isAutomaticReady) when ON_DEVICE or LOCAL_API_FALLBACK.
             // API_PRIMARY must NOT require local models when provider supports Automatic (phase 4).
             val requiresLocalForAuto = transcriptionMode == TranscriptionMode.ON_DEVICE || transcriptionMode == TranscriptionMode.LOCAL_API_FALLBACK
+            val mmForReadiness = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
+            // A fresh process verifies install receipts off-main. Do not turn that short window into
+            // "Finish setup" or a download prompt while valid files are still being hashed.
+            if (transcriptionMode != TranscriptionMode.API_PRIMARY && mmForReadiness != null) {
+                val relevant = if (speechLanguage is SpeechLanguage.Auto) listOf("lid", "fastconformer") else listOf("accurate")
+                if (relevant.any { mmForReadiness.isVerifying(it) }) {
+                    showStaticMessage(com.sprich.app.R.string.ime_preparing, com.sprich.app.R.string.ime_loading_hint)
+                    mmForReadiness.awaitInitialVerification(5_000)
+                }
+            }
             if (speechLanguage is SpeechLanguage.Auto && requiresLocalForAuto) {
                 // Winner 2026-09-02: Automatic = Tiny LID (98M) + FastConformer 126M (Architecture B). Both required.
-                val mmForCheck = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
-                val lidReady = try { mmForCheck?.isWhisperTinyReady() == true } catch (_: Exception) { false }
-                val fastReady = try { mmForCheck?.isFastConformerReady() == true } catch (_: Exception) { false }
+                val lidReady = try { mmForReadiness?.isWhisperTinyReady() == true } catch (_: Exception) { false }
+                val fastReady = try { mmForReadiness?.isFastConformerReady() == true } catch (_: Exception) { false }
                 if (!lidReady) {
                     Log.w("SprichIME", "Auto language requested but Tiny LID not downloaded — explicit selection required.")
                     try { session.error("language auto not supported without LID") } catch (_: Exception) {}

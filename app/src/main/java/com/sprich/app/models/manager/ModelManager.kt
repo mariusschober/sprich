@@ -33,7 +33,9 @@ class ModelManager(context: Context, private val manifest: ModelManifest = Built
     private val state = states.computeIfAbsent(this.context.filesDir.absolutePath) { State() }
     internal val scope get() = state.scope
     internal fun lock(id: String) = state.locks.computeIfAbsent(id) { Mutex() }
-    private fun status(id: String) = state.statuses.computeIfAbsent(id) { MutableStateFlow<ModelStatus>(ModelStatus.NotDownloaded) }
+    private fun status(id: String) = state.statuses.computeIfAbsent(id) {
+        MutableStateFlow(initialStatusFor(directory(id).exists()))
+    }
     val canaryStatus: StateFlow<ModelStatus> get() = status("accurate")
     val lidStatus: StateFlow<ModelStatus> get() = status("lid")
     val fastConformerStatus: StateFlow<ModelStatus> get() = status("fastconformer")
@@ -41,7 +43,18 @@ class ModelManager(context: Context, private val manifest: ModelManifest = Built
     val nemotron160Status: StateFlow<ModelStatus> get() = status("nemotron-160")
     val nemotronStatus: StateFlow<ModelStatus> get() = status("nemotron-560")
 
-    init { if (state.started.compareAndSet(false, true)) scope.launch { refresh() } }
+    init {
+        if (state.started.compareAndSet(false, true)) scope.launch {
+            try { refresh() } finally { state.refreshComplete.complete(Unit) }
+        }
+    }
+
+    /** True while a previously installed directory is still being hash-verified after process start. */
+    fun isVerifying(id: String): Boolean = status(id).value is ModelStatus.Verifying
+
+    /** Wait, bounded by the caller, before treating an unverified directory as missing. */
+    suspend fun awaitInitialVerification(timeoutMs: Long = 5_000): Boolean =
+        withTimeoutOrNull(timeoutMs) { state.refreshComplete.await(); true } ?: false
 
     fun getManifest() = manifest
     internal fun directory(id: String) = File(context.filesDir, when (id) { "accurate" -> "canary"; "lid" -> "whisper-tiny"; else -> id })
@@ -179,6 +192,8 @@ class ModelManager(context: Context, private val manifest: ModelManifest = Built
 
     companion object {
         internal const val RECEIPT = ".install-receipt.json"
+        internal fun initialStatusFor(directoryExists: Boolean): ModelStatus =
+            if (directoryExists) ModelStatus.Verifying else ModelStatus.NotDownloaded
         private data class VerifiedInstall(val archiveSha256: String, val metadata: List<Long>)
         private class State {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -186,6 +201,7 @@ class ModelManager(context: Context, private val manifest: ModelManifest = Built
             val locks = ConcurrentHashMap<String, Mutex>()
             val statuses = ConcurrentHashMap<String, MutableStateFlow<ModelStatus>>()
             val verified = ConcurrentHashMap<String, VerifiedInstall>()
+            val refreshComplete = CompletableDeferred<Unit>()
         }
         private val states = ConcurrentHashMap<String, State>()
         internal suspend fun sha256(file: File): String {
