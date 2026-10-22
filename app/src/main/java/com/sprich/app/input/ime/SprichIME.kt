@@ -281,6 +281,7 @@ class SprichIME : InputMethodService() {
     private var pillViewRef: VoiceGestureBar? = null
     private var whisperBadge: TextView? = null
     private var undoButton: View? = null
+    private var languageButton: TextView? = null
     private var dismissalGeneration = 0L
     private var dismissing = false
     private var whisperChangeJob: Job? = null
@@ -611,8 +612,23 @@ class SprichIME : InputMethodService() {
                 visibility = View.GONE
                 setOnClickListener { undoLastDelete() }
             }
+            val language = TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+                gravity = Gravity.CENTER
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(statusColor)
+                isSingleLine = true
+                isClickable = true
+                isFocusable = true
+                val backgroundAttr = android.util.TypedValue()
+                theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, backgroundAttr, true)
+                setBackgroundResource(backgroundAttr.resourceId)
+                setOnClickListener { cycleDictationLanguage() }
+            }
+            languageButton = language
             undoButton = undo
-            pill.tapTargets = listOf(undo, switchButton)
+            pill.tapTargets = listOf(language, undo, switchButton)
 
             pillBgRef = pillBg
             // Allow glow/aura to draw beyond bounds
@@ -623,6 +639,7 @@ class SprichIME : InputMethodService() {
             textBlock.clipChildren = false
             textBlock.clipToPadding = false
             pill.addView(textBlock)
+            pill.addView(language)
             pill.addView(undo)
             pill.addView(switchButton)
             outer.addView(aura)   // behind the pill
@@ -744,6 +761,7 @@ class SprichIME : InputMethodService() {
     private fun updateImeUi(isListening: Boolean) {
         if (dismissing) return
         updateEditingControls()
+        renderLanguageChip(speechLanguage)
         if (gesturePreview != BarGestureRecognizer.Preview.NONE) return
         try {
             val strings = uiResources()
@@ -2459,6 +2477,43 @@ class SprichIME : InputMethodService() {
     private fun updateEditingControls() {
         undoButton?.visibility = if (!isPasswordField && editorActionController.historySize() > 0) View.VISIBLE else View.GONE
         whisperBadge?.visibility = if (whisperMode && !isPasswordField) View.VISIBLE else View.GONE
+    }
+
+    private fun languageName(language: SpeechLanguage): Int = when ((language as? SpeechLanguage.Fixed)?.tag?.substringBefore('-')) {
+        "de" -> com.sprich.app.R.string.ime_subtype_de
+        "es" -> com.sprich.app.R.string.ime_subtype_es
+        "fr" -> com.sprich.app.R.string.ime_subtype_fr
+        "en" -> com.sprich.app.R.string.ime_subtype_en
+        else -> com.sprich.app.R.string.automatic
+    }
+
+    private fun renderLanguageChip(language: SpeechLanguage) {
+        val button = languageButton ?: return
+        button.text = languageChipLabel(language)
+        button.contentDescription = uiString(com.sprich.app.R.string.ime_language_action, uiString(languageName(language)))
+        button.visibility = if (isPasswordField) View.GONE else View.VISIBLE
+    }
+
+    private fun cycleDictationLanguage() {
+        if (isPasswordField) return
+        val current = speechLanguage
+        val next = nextSpeechLanguage(current)
+        // Auto and Accurate use different local engines. Finish the frozen phrase, then let
+        // the next start load the right route; fixed-language changes apply to the next phrase.
+        if (isDictationRunning() && (current is SpeechLanguage.Auto) != (next is SpeechLanguage.Auto)) {
+            stopDictation(StopReason.CURSOR_MOVED)
+        }
+        scope.launch {
+            try {
+                prefs.setSpeechLanguage(next)
+                renderLanguageChip(next)
+                val label = uiString(languageName(next))
+                languageButton?.announceForAccessibility(uiString(com.sprich.app.R.string.ime_language_action, label))
+            } catch (_: Exception) {
+                renderLanguageChip(current)
+                showStaticMessage(com.sprich.app.R.string.pref_save_failed, com.sprich.app.R.string.ime_retry)
+            }
+        }
     }
 
     private fun performBarAction(action: BarGestureRecognizer.Action): Boolean = when (action) {

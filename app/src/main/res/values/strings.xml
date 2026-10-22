@@ -179,6 +179,7 @@
     <string name="ime_stopping">Finishing…</string>
     <string name="ime_start_action">Start dictation</string>
     <string name="ime_open_setup_action">Open Sprich setup</string>
+    <string name="ime_language_action">%1$s. Change dictation language</string>
     <string name="ime_delete_action">Delete previous word</string>
     <string name="ime_undo_action">Undo deletion</string>
     <string name="ime_finishing">Writing your last words</string>

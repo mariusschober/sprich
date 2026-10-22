@@ -179,6 +179,7 @@
     <string name="ime_stopping">Wird abgeschlossen…</string>
     <string name="ime_start_action">Diktat starten</string>
     <string name="ime_open_setup_action">Sprich-Einrichtung öffnen</string>
+    <string name="ime_language_action">%1$s. Diktatsprache ändern</string>
     <string name="ime_delete_action">Vorheriges Wort löschen</string>
     <string name="ime_undo_action">Löschen rückgängig machen</string>
     <string name="ime_finishing">Letzte Wörter werden geschrieben</string>

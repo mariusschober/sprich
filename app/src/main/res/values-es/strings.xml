@@ -179,6 +179,7 @@
     <string name="ime_stopping">Terminando…</string>
     <string name="ime_start_action">Iniciar dictado</string>
     <string name="ime_open_setup_action">Abrir la configuración de Sprich</string>
+    <string name="ime_language_action">%1$s. Cambiar el idioma del dictado</string>
     <string name="ime_delete_action">Borrar palabra anterior</string>
     <string name="ime_undo_action">Deshacer borrado</string>
     <string name="ime_finishing">Escribiendo tus últimas palabras</string>
