@@ -71,10 +71,18 @@ import kotlinx.coroutines.launch
                 Text(stringResource(R.string.enable_keyboard), style = MaterialTheme.typography.headlineMedium)
                 Text(stringResource(R.string.keyboard_description), style = MaterialTheme.typography.bodyLarge)
                 Text(stringResource(R.string.keyboard_warning), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (keyboard.enabled) {
-                    Text(stringResource(R.string.keyboard_enabled))
-                    Button(onClick = { step = 3 }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_action)) }
-                } else Button(onClick = onOpenImeSettings, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.open_keyboard_settings)) }
+                when {
+                    keyboardStepReady(keyboard.enabled, keyboard.selected) -> {
+                        Text(stringResource(R.string.keyboard_enabled))
+                        Button(onClick = { step = 3 }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_action)) }
+                    }
+                    keyboard.enabled -> {
+                        Text(stringResource(R.string.keyboard_enabled))
+                        Text(stringResource(R.string.choose_keyboard), style = MaterialTheme.typography.bodyLarge)
+                        Button(onClick = { showKeyboardPicker(context) }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.choose_keyboard)) }
+                    }
+                    else -> Button(onClick = onOpenImeSettings, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.open_keyboard_settings)) }
+                }
             }
             else -> {
                 Text(stringResource(R.string.setup_offline), style = MaterialTheme.typography.headlineMedium)
