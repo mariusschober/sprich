@@ -21,6 +21,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -106,12 +108,16 @@ internal fun openAppSettings(context: Context) { context.startActivity(Intent(Se
                     if (downloading != null) {
                         val index = states.indexOf(downloading)
                         Text(stringResource(R.string.download_part, index + 1, states.size))
-                        LinearProgressIndicator(progress = { downloading.progress }, modifier = Modifier.fillMaxWidth())
+                        LinearProgressIndicator(progress = { downloading.progress }, modifier = Modifier.fillMaxWidth().semantics {
+                            contentDescription = context.getString(R.string.download_progress_description, (downloading.progress * 100).toInt())
+                        })
                         Text(stringResource(R.string.download_bytes,
                             android.text.format.Formatter.formatShortFileSize(context, downloading.bytes),
                             android.text.format.Formatter.formatShortFileSize(context, downloading.total)), style = MaterialTheme.typography.bodySmall)
                     } else {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth().semantics {
+                            contentDescription = context.getString(R.string.checking_speech_files)
+                        })
                         Text(stringResource(R.string.checking_speech_files))
                     }
                     TextButton(onClick = { downloader.cancel() }) { Text(stringResource(R.string.cancel_download)) }

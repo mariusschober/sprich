@@ -23,6 +23,7 @@
     <string name="ready_offline">Ready to use offline</string>
     <string name="download_part">Downloading part %1$d of %2$d</string>
     <string name="download_bytes">%1$s of %2$s</string>
+    <string name="download_progress_description">%1$d percent downloaded</string>
     <string name="checking_speech_files">Checking speech files…</string>
     <string name="cancel_download">Cancel download</string>
     <string name="download_size">%1$s download. Wi-Fi recommended.</string>

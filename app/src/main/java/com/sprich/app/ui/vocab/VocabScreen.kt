@@ -15,6 +15,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PlatformImeOptions
 import androidx.compose.ui.unit.dp
 import com.sprich.app.R
@@ -127,7 +130,8 @@ import kotlinx.coroutines.launch
             }
             if (learned.isNotEmpty()) item { Text(stringResource(R.string.learned_words), style = MaterialTheme.typography.titleSmall) }
             items(learned, key = { it.id }) { word ->
-                Surface(onClick = { details = word.id }, shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainer) {
+                Surface(onClick = { details = word.id }, shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier.semantics { role = Role.Button }) {
                     Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(word.written, style = MaterialTheme.typography.titleMedium)
                         Text(recognitionLabel(word.profile), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)

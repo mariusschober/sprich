@@ -24,6 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.sprich.app.BuildConfig
 import com.sprich.app.R
@@ -194,8 +196,9 @@ private fun openAppLanguageSettings(context: Context) {
         }
     }
 }
-@Composable private fun SettingsLink(title: String, description: String, onClick: () -> Unit) {
-    Surface(onClick = onClick, shape = RoundedCornerShape(12.dp), color = androidx.compose.ui.graphics.Color.Transparent) {
+@Composable internal fun SettingsLink(title: String, description: String, onClick: () -> Unit) {
+    Surface(onClick = onClick, shape = RoundedCornerShape(12.dp), color = androidx.compose.ui.graphics.Color.Transparent,
+        modifier = Modifier.semantics { role = Role.Button }) {
         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(end = 8.dp)) {
                 Text(title, style = MaterialTheme.typography.titleMedium)

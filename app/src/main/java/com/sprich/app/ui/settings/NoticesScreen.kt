@@ -14,6 +14,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.annotation.StringRes
 import com.sprich.app.R
@@ -116,7 +119,7 @@ private fun readableParagraph(raw: String): String {
             if (entries.isEmpty() && !failed) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             if (entries.isNotEmpty() && matchingEntries.isEmpty()) item { Text(stringResource(R.string.licenses_no_results), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             items(matchingEntries, key = { it.id }) { notice ->
-                Card(onClick = { selected = notice.id }, modifier = Modifier.fillMaxWidth()) {
+                Card(onClick = { selected = notice.id }, modifier = Modifier.fillMaxWidth().semantics { role = Role.Button }) {
                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(notice.name, style = MaterialTheme.typography.titleMedium)
                         Text(notice.license, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

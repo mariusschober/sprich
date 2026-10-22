@@ -23,6 +23,7 @@
     <string name="ready_offline">Offline einsatzbereit</string>
     <string name="download_part">Teil %1$d von %2$d wird geladen</string>
     <string name="download_bytes">%1$s von %2$s</string>
+    <string name="download_progress_description">%1$d Prozent heruntergeladen</string>
     <string name="checking_speech_files">Sprachdateien werden geprüft…</string>
     <string name="cancel_download">Download abbrechen</string>
     <string name="download_size">%1$s Download. WLAN empfohlen.</string>

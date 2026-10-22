@@ -631,6 +631,8 @@ class SprichIME : InputMethodService() {
             // Keep view references for state and microphone feedback.
             statusText = status
             statusText?.tag = hint
+            androidx.core.view.ViewCompat.setAccessibilityLiveRegion(status, androidx.core.view.ViewCompat.ACCESSIBILITY_LIVE_REGION_POLITE)
+            androidx.core.view.ViewCompat.setAccessibilityLiveRegion(hint, androidx.core.view.ViewCompat.ACCESSIBILITY_LIVE_REGION_POLITE)
             dotView = liquidBar
             micContainer = pill
             rootView = outer
