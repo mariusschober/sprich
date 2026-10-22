@@ -37,7 +37,12 @@ import kotlinx.coroutines.launch
     var error by remember { mutableStateOf<Int?>(null) }
     var saving by remember { mutableStateOf(false) }
     var corruption by remember { mutableStateOf(repo.corruption()) }
-    val limit = document.entries.size + document.learned.size >= WordLesson.MAX_WORDS
+    var query by rememberSaveable { mutableStateOf("") }
+    val total = document.entries.size + document.learned.size
+    val limit = total >= WordLesson.MAX_WORDS
+    val showSearch = total > 6
+    val learned = document.learned.filter { learnedMatches(it, query) }
+    val entries = document.entries.filter { entryMatches(it.written, it.spoken, query) }
     LaunchedEffect(Unit) {
         repo.load(); document = repo.document(); corruption = repo.corruption()
         repo.changes().collect { document = repo.document(); corruption = repo.corruption() }
@@ -76,6 +81,16 @@ import kotlinx.coroutines.launch
                     Button(onClick = onLearn, enabled = !limit && !saving, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.learn_title)) }
                 }
             }
+            item {
+                Text(
+                    stringResource(R.string.vocab_count, total, WordLesson.MAX_WORDS),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (total == 0) item {
+                Text(stringResource(R.string.vocab_empty), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             corruption?.let { notice ->
                 item {
                     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.errorContainer) {
@@ -95,9 +110,21 @@ import kotlinx.coroutines.launch
                     }
                 }
             }
+            if (showSearch) item {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { if (it.length <= 128) query = it },
+                    label = { Text(stringResource(R.string.vocab_search)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             if (limit) item { Text(stringResource(R.string.vocab_limit)) }
-            if (document.learned.isNotEmpty()) item { Text(stringResource(R.string.learned_words), style = MaterialTheme.typography.titleSmall) }
-            items(document.learned, key = { it.id }) { word ->
+            if (query.isNotBlank() && learned.isEmpty() && entries.isEmpty()) item {
+                Text(stringResource(R.string.vocab_no_matches), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (learned.isNotEmpty()) item { Text(stringResource(R.string.learned_words), style = MaterialTheme.typography.titleSmall) }
+            items(learned, key = { it.id }) { word ->
                 Surface(onClick = { details = word.id }, shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainer) {
                     Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(word.written, style = MaterialTheme.typography.titleMedium)
@@ -130,8 +157,8 @@ import kotlinx.coroutines.launch
                     }) { Text(stringResource(R.string.add_vocabulary)) }
                 }
             }
-            if (document.entries.isNotEmpty()) item { Text(stringResource(R.string.vocab_manual_rules), style = MaterialTheme.typography.titleSmall) }
-            items(document.entries, key = { it.spoken }) { entry ->
+            if (entries.isNotEmpty()) item { Text(stringResource(R.string.vocab_manual_rules), style = MaterialTheme.typography.titleSmall) }
+            items(entries, key = { it.spoken }) { entry ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) { Text(entry.written, style = MaterialTheme.typography.titleSmall); Text(entry.spoken, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     TextButton(enabled = !saving, onClick = {

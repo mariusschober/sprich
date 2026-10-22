@@ -114,6 +114,9 @@
     <string name="vocab_save_failed">Speichern fehlgeschlagen. Prüfe den freien Speicher und versuch es erneut.</string>
     <string name="vocab_limit">Du hast 200 Einträge erreicht. Entferne einen Eintrag, bevor du einen neuen hinzufügst.</string>
     <string name="vocab_empty">Noch keine Einträge. Füge einen Namen oder eine häufige Phrase hinzu.</string>
+    <string name="vocab_count">%1$d von %2$d Einträgen</string>
+    <string name="vocab_search">Vokabular durchsuchen</string>
+    <string name="vocab_no_matches">Keine Einträge passen zur Suche.</string>
     <string name="vocab_corrupt_title">Vokabular konnte nicht gelesen werden</string>
     <string name="vocab_corrupt_body">Eine Kopie der alten Datei bleibt auf diesem Smartphone. Es wird eine neue leere Liste angezeigt; Speichern ersetzt die aktive Liste.</string>
     <string name="vocab_corrupt_body_unpreserved">Die alte Datei konnte nicht kopiert werden und bleibt unverändert. Speichern ist blockiert, bis die Datei gesichert werden kann.</string>

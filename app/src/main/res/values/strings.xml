@@ -114,6 +114,9 @@
     <string name="vocab_save_failed">Could not save. Check free storage and try again.</string>
     <string name="vocab_limit">You have reached 200 entries. Remove an entry to add another.</string>
     <string name="vocab_empty">No entries yet. Add a name or phrase you use often.</string>
+    <string name="vocab_count">%1$d of %2$d entries</string>
+    <string name="vocab_search">Search vocabulary</string>
+    <string name="vocab_no_matches">No entries match your search.</string>
     <string name="vocab_corrupt_title">Vocabulary couldn’t be read</string>
     <string name="vocab_corrupt_body">A copy of the old file was kept on this phone. A new empty list is shown; saving replaces the active list.</string>
     <string name="vocab_corrupt_body_unpreserved">The old file could not be copied, so it was left untouched. Saving is blocked until the file can be preserved.</string>
