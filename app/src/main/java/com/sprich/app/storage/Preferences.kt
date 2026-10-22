@@ -62,6 +62,8 @@ class Preferences(context: Context) {
         val KEY_REFINEMENT_VERIFICATION = stringPreferencesKey("writing_connection_verification")
         val KEY_REFINEMENT_CONTEXT = booleanPreferencesKey("writing_field_context")
         val KEY_API_LOCAL_FALLBACK = booleanPreferencesKey("api_local_fallback")
+        // One-time cleanup of legacy plaintext provider keys; safe to read on every start.
+        val KEY_LEGACY_CREDENTIALS_CLEANED = booleanPreferencesKey("legacy_credentials_cleaned")
         // Debug harness (opt-in only, default false, never logs transcript by default)
         val KEY_DEBUG_WAV_CAPTURE = booleanPreferencesKey("debug_wav_capture")
         val KEY_DEBUG_TRANSCRIPT_TRACE = booleanPreferencesKey("debug_transcript_trace")
@@ -331,6 +333,10 @@ class Preferences(context: Context) {
     suspend fun setDebugTranscriptTrace(v: Boolean){ context.ds.edit{it[KEY_DEBUG_TRANSCRIPT_TRACE]=v} }
 
     suspend fun clearLegacyApiKeys(){ context.ds.edit{ it.remove(KEY_STT_API_KEY); it.remove(KEY_AI_API_KEY) } }
+    suspend fun legacyCredentialCleanupDone(): Boolean =
+        context.ds.data.catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+            .map { it[KEY_LEGACY_CREDENTIALS_CLEANED] ?: false }.first()
+    suspend fun markLegacyCredentialCleanupDone() { context.ds.edit { it[KEY_LEGACY_CREDENTIALS_CLEANED] = true } }
     /**
      * Persist the first-run default before onboarding is drawn. Re-entering the app never
      * overwrites an opt-out, and legacy completed installations remain on their old default.
