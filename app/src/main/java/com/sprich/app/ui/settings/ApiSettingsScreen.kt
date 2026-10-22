@@ -13,6 +13,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
@@ -50,20 +52,21 @@ import kotlinx.coroutines.flow.first
     val scope = rememberCoroutineScope()
     val config by prefs.runtimeConfigSnapshot.collectAsState(initial = null)
     val saved = config?.apiChoice(use)
-    var providerId by remember { mutableStateOf("meta-muse-voice-transcribe") }
-    var endpoint by remember { mutableStateOf("") }
-    var model by remember { mutableStateOf("") }
+    var providerId by rememberSaveable { mutableStateOf("meta-muse-voice-transcribe") }
+    var endpoint by rememberSaveable { mutableStateOf("") }
+    var model by rememberSaveable { mutableStateOf("") }
     var key by remember { mutableStateOf("") } // Never saveable, logged, placed in an Intent, or restored from disk.
     var keyFocused by remember { mutableStateOf(false) }
-    var voiceOptions by remember { mutableStateOf(VoiceApiOptions(streaming = true)) }
+    var voiceOptions by rememberSaveable(stateSaver = VoiceApiOptionsSaver) { mutableStateOf(VoiceApiOptions(streaming = true)) }
     var liveProgress by remember { mutableStateOf<RemoteTranscriptUpdate?>(null) }
-    var advanced by remember { mutableStateOf(false) }
+    var advanced by rememberSaveable { mutableStateOf(false) }
     var result by remember { mutableStateOf<ApiCheckResult?>(null) }
     var message by remember { mutableStateOf<Int?>(null) }
     var providerDetail by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var recording by remember { mutableStateOf(false) }
     var job by remember { mutableStateOf<Job?>(null) }
+    var initialLoadDone by rememberSaveable { mutableStateOf(false) }
     var micAllowed by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) }
     val preset = ApiCatalog.preset(providerId)
     val custom = providerId == "custom" || providerId == "openai-compatible"
@@ -86,6 +89,8 @@ import kotlinx.coroutines.flow.first
     val enabled = matchesSaved && (if (use == ApiUse.VOICE) config?.transcriptionMode == TranscriptionMode.API_PRIMARY else config?.refinementMode != null && config?.refinementMode != RefinementMode.OFF)
 
     LaunchedEffect(initialProviderId) {
+        // On rotation/process recreation the saved draft wins; do not overwrite it from prefs.
+        if (initialLoadDone) return@LaunchedEffect
         val choice = prefs.runtimeConfigSnapshot.first().apiChoice(use)
         if (choice.credentialRef.startsWith("bound_") && (initialProviderId == null || initialProviderId == choice.providerId)) {
             providerId = choice.providerId; endpoint = choice.endpoint; model = choice.model
@@ -94,6 +99,7 @@ import kotlinx.coroutines.flow.first
         } else if (initialProviderId != null && ApiCatalog.presets.any { it.id == initialProviderId }) {
             providerId = initialProviderId
         }
+        initialLoadDone = true
     }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
@@ -316,6 +322,18 @@ import kotlinx.coroutines.flow.first
         }
     }
 }
+
+internal val VoiceApiOptionsSaver = listSaver<VoiceApiOptions, Any>(
+    save = { listOf(it.streaming, it.detectTurns, it.speakerLabels, it.languageHints.sorted().joinToString(",")) },
+    restore = {
+        VoiceApiOptions(
+            streaming = it[0] as Boolean,
+            detectTurns = it[1] as Boolean,
+            speakerLabels = it[2] as Boolean,
+            languageHints = (it[3] as String).split(',').filter(String::isNotBlank).toSet(),
+        )
+    },
+)
 
 /**
  * “Verified” is persisted proof plus current decryptability. A Keystore invalidation must
