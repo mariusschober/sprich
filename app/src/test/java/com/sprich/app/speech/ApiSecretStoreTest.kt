@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.sprich.app.storage.ApiSecretStore
 import com.sprich.app.storage.FakeSecretCryptoBackend
 import com.sprich.app.storage.FailingCryptoBackend
+import com.sprich.app.storage.PermanentlyInvalidatedCryptoBackend
 import com.sprich.app.storage.SecretStoreResult
 import org.junit.Assert.*
 import org.junit.Test
@@ -81,18 +82,31 @@ class ApiSecretStoreTest {
     }
 
     @Test
-    fun hasSecretMeansDecryptable() {
+    fun transientDecryptFailureIsUnavailableButPreserved() {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
         val good = ApiSecretStore(ctx, FakeSecretCryptoBackend())
         good.clearAll()
         good.saveSecret("k", "value")
         assertTrue(good.hasSecret("k"))
-        // Simulate key invalidation: replace with failing backend that cannot decrypt
-        val bad = ApiSecretStore(ctx, FailingCryptoBackend("invalidated"))
-        // hasSecret should be false and file should be deleted (fail closed)
+        // A generic Keystore/IO failure may be transient. Never delete the only copy of the key.
+        val bad = ApiSecretStore(ctx, FailingCryptoBackend("temporarily unavailable"))
         assertFalse(bad.hasSecret("k"))
-        // After bad check, file should be gone
-        assertFalse(good.hasSecret("k"))
+        assertEquals(ApiSecretStore.SecretHealth.UNAVAILABLE, bad.secretHealth("k"))
+        val file = java.io.File(ctx.noBackupFilesDir, "api_secrets/k.enc")
+        assertTrue(file.exists())
+        // A later successful backend can still read it.
+        assertEquals("value", good.loadSecret("k"))
+    }
+
+    @Test
+    fun permanentlyInvalidatedKeyIsRemovedSoTheUiCanAskForReentry() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val good = ApiSecretStore(ctx, FakeSecretCryptoBackend())
+        good.clearAll()
+        good.saveSecret("k", "value")
+        val invalidated = ApiSecretStore(ctx, PermanentlyInvalidatedCryptoBackend())
+        assertEquals(ApiSecretStore.SecretHealth.MISSING, invalidated.secretHealth("k"))
+        assertFalse(java.io.File(ctx.noBackupFilesDir, "api_secrets/k.enc").exists())
     }
     @Test fun providerAndEndpointChangesCannotReuseCredentials() = kotlinx.coroutines.runBlocking {
         val store = ApiSecretStore(ApplicationProvider.getApplicationContext<Context>(), FakeSecretCryptoBackend())
