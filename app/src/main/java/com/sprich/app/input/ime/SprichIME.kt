@@ -1307,12 +1307,18 @@ class SprichIME : InputMethodService() {
             // Coalesced lane: set latest RMS, visual lane reads at frame rate (~60fps), throttled 50ms gate kept for safety
             lastRms = result.rms
             visualRms = result.rms
-            // Keep 50ms gate only as secondary throttle if lane is running, otherwise direct
+            // AudioCapture calls this on its reader thread. RMS may be computed there, but View
+            // reads/writes remain main-confined even when the animation lane is not running.
             if (!visualRunning && utteranceActive.get()) {
                 val nowElapsed = android.os.SystemClock.elapsedRealtime()
                 if (nowElapsed - lastVisualUpdateElapsed >= 50) {
                     lastVisualUpdateElapsed = nowElapsed
-                    try { updateLiquidVisual(result.rms) } catch (_: Exception) {}
+                    val rms = result.rms
+                    MainThreadVisualDispatcher.post {
+                        if (generation == sessionGeneration.get()) {
+                            try { updateLiquidVisual(rms) } catch (_: Exception) {}
+                        }
+                    }
                 }
             }
             if (result.state != lastVadState) {
@@ -2602,6 +2608,10 @@ class SprichIME : InputMethodService() {
 
     /** Applies rms to bar, glow, aura and pill stroke on Main thread. Properties only — no requestLayout. */
     private fun updateLiquidVisual(rms: Float) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            Log.w("SprichIME", "updateLiquidVisual rejected off-main call")
+            return
+        }
         try {
             val isApi = isApiPalette()
             val colors = gradientForRms(rms, isApi)
