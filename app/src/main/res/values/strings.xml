@@ -175,6 +175,8 @@
     <string name="keyboard_title">Keyboard</string>
     <string name="app_language">App language</string>
     <string name="app_language_description">Choose English, German, French or Spanish for Sprich.</string>
+    <string name="phone_language">Phone language</string>
+    <string name="phone_language_description">Android 12 and older only offer one language for the whole phone. Sprich follows that language.</string>
     <string name="cleanup_title">Clean up my words</string>
     <string name="cleanup_off">Off · Keep it on device</string>
     <string name="cleanup_description">Natural punctuation, fewer fillers, and clear self-corrections. Your meaning stays yours.</string>

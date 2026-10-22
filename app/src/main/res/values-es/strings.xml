@@ -175,6 +175,8 @@
     <string name="keyboard_title">Teclado</string>
     <string name="app_language">Idioma de la aplicación</string>
     <string name="app_language_description">Elige inglés, alemán, francés o español para Sprich.</string>
+    <string name="phone_language">Idioma del teléfono</string>
+    <string name="phone_language_description">Android 12 y anteriores solo ofrecen un idioma para todo el teléfono. Sprich sigue ese idioma.</string>
     <string name="cleanup_title">Mejorar mi texto</string>
     <string name="cleanup_off">Desactivado · Se queda en el dispositivo</string>
     <string name="cleanup_description">Puntuación natural, menos muletillas y autocorrecciones claras. Tu intención sigue siendo la tuya.</string>

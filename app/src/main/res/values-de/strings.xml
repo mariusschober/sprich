@@ -175,6 +175,8 @@
     <string name="keyboard_title">Tastatur</string>
     <string name="app_language">App-Sprache</string>
     <string name="app_language_description">Wähle für Sprich Englisch, Deutsch, Französisch oder Spanisch.</string>
+    <string name="phone_language">Sprache des Telefons</string>
+    <string name="phone_language_description">Android 12 und älter bieten nur eine Sprache für das ganze Telefon. Sprich folgt dieser Sprache.</string>
     <string name="cleanup_title">Text verfeinern</string>
     <string name="cleanup_off">Aus · Bleibt auf dem Gerät</string>
     <string name="cleanup_description">Natürliche Zeichensetzung, weniger Füllwörter und klare Selbstkorrekturen. Deine Aussage bleibt deine.</string>

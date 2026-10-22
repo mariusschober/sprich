@@ -51,6 +51,7 @@ import kotlinx.coroutines.launch
     val automatic = language is SpeechLanguage.Auto
     val apiVoice = config?.transcriptionMode == TranscriptionMode.API_PRIMARY
     val cleanup = config?.refinementMode != null && config?.refinementMode != RefinementMode.OFF
+    val languageCopy = appLanguageCopy(Build.VERSION.SDK_INT)
     Scaffold(contentWindowInsets = WindowInsets(0), topBar = {
         TopAppBar(title = { Text(stringResource(R.string.settings)) }, windowInsets = WindowInsets(0), navigationIcon = {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back)) }
@@ -86,7 +87,7 @@ import kotlinx.coroutines.launch
                 SettingsToggle(stringResource(R.string.spoken_editing), stringResource(R.string.commands_description), config?.commandsEnabled != false) { scope.launch { prefs.setCommands(it) } }
             }
             SettingsGroup(stringResource(R.string.keyboard_title)) {
-                SettingsLink(stringResource(R.string.app_language), stringResource(R.string.app_language_description)) { openAppLanguageSettings(context) }
+                SettingsLink(stringResource(languageCopy.title), stringResource(languageCopy.description)) { openAppLanguageSettings(context) }
                 HorizontalDivider()
                 SettingsToggle(stringResource(R.string.instant_dictation), stringResource(R.string.instant_description), config?.instantMode == true) { scope.launch { prefs.setInstantMode(it) } }
                 SettingsToggle(stringResource(R.string.whisper_mode), stringResource(R.string.whisper_description), config?.whisperMode == true) { scope.launch { prefs.setWhisperMode(it) } }
