@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -23,6 +24,14 @@ object SharedVocabStore {
 
 /** A readable copy of an unreadable vocabulary file, kept before a new list is published. */
 data class VocabularyCorruption(val preservedFileName: String?, val detectedAtMillis: Long)
+
+@Serializable internal data class VocabExport(
+    val version: Int = 1,
+    val entries: List<VocabEntryJson> = emptyList(),
+    val learned: List<LearnedWord> = emptyList(),
+)
+
+data class ImportSummary(val imported: Int, val skipped: Int)
 
 /** Disk commits and memory publication are ordered under one process-wide mutex, off Main. */
 class VocabRepository(context: Context, @Suppress("UNUSED_PARAMETER") prefs: Preferences) {
@@ -43,6 +52,53 @@ class VocabRepository(context: Context, @Suppress("UNUSED_PARAMETER") prefs: Pre
     suspend fun removeLearned(id: String) = change { it.copy(learned = it.learned.filterNot { word -> word.id == id }) }
     suspend fun remove(spoken: String) = change { it.copy(entries = it.entries.filterNot { entry -> VocabularyText.key(entry.spoken) == VocabularyText.key(spoken) }) }
     suspend fun clear() = change { VocabJson() }
+
+    /** Versioned local JSON: spellings and already-saved lessons only, never audio. */
+    suspend fun exportJson(): String = withContext(Dispatchers.IO) {
+        lock.withLock {
+            val document = loadLocked()
+            Json { prettyPrint = true; encodeDefaults = true }
+                .encodeToString(VocabExport(1, document.entries, document.learned))
+        }
+    }
+
+    /**
+     * Merge a versioned export, validating size, schema, limits and conflicts first. Invalid
+     * entries are skipped; the existing dictionary is never cleared as part of an import.
+     */
+    suspend fun importJson(text: String): ImportSummary {
+        require(text.toByteArray(Charsets.UTF_8).size <= 1_000_000) { "Vocabulary import is too large" }
+        val export = try {
+            Json { ignoreUnknownKeys = true }.decodeFromString<VocabExport>(text)
+        } catch (_: Exception) {
+            throw IllegalArgumentException("Invalid vocabulary export")
+        }
+        require(export.version == 1) { "Unsupported vocabulary version" }
+        val manual = export.entries.take(WordLesson.MAX_WORDS).filter {
+            VocabularyText.validManual(it.spoken, 128) && VocabularyText.validManual(it.written, 256)
+        }.distinctBy { VocabularyText.key(it.spoken) }
+        val lessons = export.learned.take(WordLesson.MAX_WORDS).filter { it.isValid() }
+        var imported = 0
+        var skipped = (export.entries.size - manual.size) + (export.learned.size - lessons.size)
+        change { current ->
+            var working = current
+            for (entry in manual) {
+                val existing = working.entries.firstOrNull { VocabularyText.key(it.spoken) == VocabularyText.key(entry.spoken) }
+                if (existing != null && VocabularyText.clean(existing.written) != VocabularyText.clean(entry.written)) {
+                    skipped++
+                    continue
+                }
+                val result = runCatching { working.addManual(entry.spoken, entry.written) }
+                result.onSuccess { working = it; imported++ }.onFailure { skipped++ }
+            }
+            for (lesson in lessons) {
+                val result = runCatching { working.addWord(lesson) }
+                result.onSuccess { working = it; imported++ }.onFailure { skipped++ }
+            }
+            working
+        }
+        return ImportSummary(imported, skipped)
+    }
 
     private suspend fun change(transform: (VocabJson) -> VocabJson) = withContext(Dispatchers.IO) {
         lock.withLock {

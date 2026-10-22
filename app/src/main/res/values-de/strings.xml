@@ -128,6 +128,12 @@
     <string name="vocab_count">%1$d von %2$d Einträgen</string>
     <string name="vocab_search">Vokabular durchsuchen</string>
     <string name="vocab_no_matches">Keine Einträge passen zur Suche.</string>
+    <string name="vocab_export">Exportieren</string>
+    <string name="vocab_import">Importieren</string>
+    <string name="vocab_export_done">Vokabular exportiert.</string>
+    <string name="vocab_export_failed">Vokabular konnte nicht exportiert werden. Versuch es erneut.</string>
+    <string name="vocab_import_done">%1$d Einträge importiert. %2$d Konflikte oder ungültige Einträge übersprungen.</string>
+    <string name="vocab_import_failed">Diese Datei konnte nicht importiert werden. Wähle einen Sprich-Vokabular-Export.</string>
     <string name="vocab_corrupt_title">Vokabular konnte nicht gelesen werden</string>
     <string name="vocab_corrupt_body">Eine Kopie der alten Datei bleibt auf diesem Smartphone. Es wird eine neue leere Liste angezeigt; Speichern ersetzt die aktive Liste.</string>
     <string name="vocab_corrupt_body_unpreserved">Die alte Datei konnte nicht kopiert werden und bleibt unverändert. Speichern ist blockiert, bis die Datei gesichert werden kann.</string>

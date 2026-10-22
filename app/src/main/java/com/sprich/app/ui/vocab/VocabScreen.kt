@@ -1,5 +1,7 @@
 package com.sprich.app.ui.vocab
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,7 +28,9 @@ import com.sprich.app.ui.readableWidth
 import com.sprich.app.ui.theme.VoiceMark
 import com.sprich.app.vocab.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun VocabScreen(onBack: () -> Unit, onLearn: () -> Unit = {}) {
@@ -42,6 +46,37 @@ import kotlinx.coroutines.launch
     var saving by remember { mutableStateOf(false) }
     var corruption by remember { mutableStateOf(repo.corruption()) }
     var query by rememberSaveable { mutableStateOf("") }
+    var transferMessage by remember { mutableStateOf<String?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) scope.launch {
+            try {
+                val json = repo.exportJson()
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+                        ?: error("Could not open export destination")
+                }
+                transferMessage = context.getString(R.string.vocab_export_done)
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (_: Exception) { transferMessage = context.getString(R.string.vocab_export_failed) }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            saving = true
+            try {
+                val text = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use(::readVocabularyImport)
+                        ?: error("Could not open vocabulary import")
+                }
+                val summary = repo.importJson(text)
+                document = repo.document()
+                error = null
+                transferMessage = context.getString(R.string.vocab_import_done, summary.imported, summary.skipped)
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (_: Exception) { transferMessage = context.getString(R.string.vocab_import_failed) }
+            finally { saving = false }
+        }
+    }
     val total = document.entries.size + document.learned.size
     val limit = total >= WordLesson.MAX_WORDS
     val showSearch = total > 6
@@ -139,6 +174,17 @@ import kotlinx.coroutines.launch
                     }
                 }
             }
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(enabled = !saving, onClick = { exportLauncher.launch("sprich-vocabulary.json") }) {
+                        Text(stringResource(R.string.vocab_export))
+                    }
+                    TextButton(enabled = !saving, onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }) {
+                        Text(stringResource(R.string.vocab_import))
+                    }
+                }
+            }
+            transferMessage?.let { message -> item { Text(message, style = MaterialTheme.typography.bodySmall) } }
             item {
                 TextButton(onClick = { manual = !manual }, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(if (manual) R.string.vocab_hide_manual else R.string.vocab_add_manual))

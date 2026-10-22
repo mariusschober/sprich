@@ -128,6 +128,12 @@
     <string name="vocab_count">%1$d sur %2$d entrées</string>
     <string name="vocab_search">Rechercher dans le vocabulaire</string>
     <string name="vocab_no_matches">Aucune entrée ne correspond à la recherche.</string>
+    <string name="vocab_export">Exporter</string>
+    <string name="vocab_import">Importer</string>
+    <string name="vocab_export_done">Vocabulaire exporté.</string>
+    <string name="vocab_export_failed">Impossible d’exporter le vocabulaire. Réessayez.</string>
+    <string name="vocab_import_done">%1$d éléments importés. %2$d conflits ou éléments non valides ignorés.</string>
+    <string name="vocab_import_failed">Impossible d’importer ce fichier. Choisissez un export de vocabulaire Sprich.</string>
     <string name="vocab_corrupt_title">Impossible de lire le vocabulaire</string>
     <string name="vocab_corrupt_body">Une copie de l’ancien fichier a été conservée sur ce téléphone. Une nouvelle liste vide est affichée ; l’enregistrement remplace la liste active.</string>
     <string name="vocab_corrupt_body_unpreserved">L’ancien fichier n’a pas pu être copié et reste intact. L’enregistrement est bloqué tant qu’il ne peut pas être conservé.</string>
