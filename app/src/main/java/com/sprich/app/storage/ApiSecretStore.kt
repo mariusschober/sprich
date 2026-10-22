@@ -45,12 +45,26 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
         } catch (_: Exception) { SecretStoreResult.Failure("Secure storage unavailable. Try again.") }
     }
 
-    open fun loadSecret(id: String): String? = synchronized(lock) {
+    open fun loadSecret(id: String): String? = when (val result = readSecret(id)) {
+        is SecretRead.Ok -> result.value
+        else -> null
+    }
+
+    private sealed interface SecretRead {
+        data class Ok(val value: String) : SecretRead
+        data object Missing : SecretRead
+        data object Unavailable : SecretRead
+    }
+
+    private fun readSecret(id: String): SecretRead = synchronized(lock) {
         try {
             val source = file(id)
             val backup = File(source.baseFile.path + ".bak")
-            if (!source.baseFile.exists() && !backup.exists()) return@synchronized null
-            if (source.baseFile.length() > 32_768 || backup.length() > 32_768) { source.delete(); return@synchronized null }
+            if (!source.baseFile.exists() && !backup.exists()) return@synchronized SecretRead.Missing
+            if (source.baseFile.length() > 32_768 || backup.length() > 32_768) {
+                source.delete()
+                return@synchronized SecretRead.Missing
+            }
             source.openRead().use { input ->
                 val bytes = ByteArray(32_769)
                 var size = 0
@@ -59,19 +73,39 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
                     if (count < 0) break
                     size += count
                 }
-                if (size > 32_768) { source.delete(); return@synchronized null }
-                String(crypto.decrypt(bytes.copyOf(size)), Charsets.UTF_8)
+                if (size > 32_768) {
+                    source.delete()
+                    return@synchronized SecretRead.Missing
+                }
+                SecretRead.Ok(String(crypto.decrypt(bytes.copyOf(size)), Charsets.UTF_8))
             }
-        } catch (_: Exception) { runCatching { file(id).delete() }; null }
+        } catch (e: Exception) {
+            // A corrupt file or permanently invalidated Keystore key cannot recover. A generic
+            // Keystore/IO failure may be transient, so keep the ciphertext for a later retry.
+            if (isPermanentInvalidation(e)) runCatching { file(id).delete() }
+            if (isPermanentInvalidation(e)) SecretRead.Missing else SecretRead.Unavailable
+        }
     }
+
+    private fun isPermanentInvalidation(error: Throwable): Boolean =
+        error is android.security.keystore.KeyPermanentlyInvalidatedException ||
+            error is IllegalArgumentException ||
+            (error.cause != null && isPermanentInvalidation(error.cause!!))
+
     fun removeSecret(id: String) = synchronized(lock) { file(id).delete() }
     fun clearAll() = synchronized(lock) {
         val dir = directory()
         check(dir.deleteRecursively()) { "Could not clear keys" }
         (crypto as? AndroidKeystoreCryptoBackend)?.deleteKey()
     }
+    enum class SecretHealth { MISSING, AVAILABLE, UNAVAILABLE }
+    fun secretHealth(id: String): SecretHealth = when (readSecret(id)) {
+        is SecretRead.Ok -> SecretHealth.AVAILABLE
+        SecretRead.Missing -> SecretHealth.MISSING
+        SecretRead.Unavailable -> SecretHealth.UNAVAILABLE
+    }
     fun hasSecret(id: String): Boolean = !loadSecret(id).isNullOrBlank()
-    fun hasDecryptableSecret(id: String) = hasSecret(id)
+    fun hasDecryptableSecret(id: String) = secretHealth(id) == SecretHealth.AVAILABLE
 
     suspend fun saveBoundSecret(provider: String, endpoint: String, key: String): String? {
         val normalized = normalizeEndpoint(endpoint) ?: return null

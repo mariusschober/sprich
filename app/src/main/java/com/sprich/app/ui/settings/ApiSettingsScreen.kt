@@ -76,9 +76,13 @@ import kotlinx.coroutines.flow.first
     val savedRef = listOfNotNull(saved, other).firstOrNull {
         it.providerId == providerId && it.endpoint == effectiveEndpoint && it.credentialRef.startsWith("bound_")
     }?.credentialRef.orEmpty()
+    val keyHealth by produceState<ApiSecretStore.SecretHealth?>(initialValue = null, savedRef) {
+        value = if (savedRef.isBlank()) null else withContext(Dispatchers.IO) { secrets.secretHealth(savedRef) }
+    }
+    val keyUnavailable = savedRef.isNotEmpty() && keyHealth == ApiSecretStore.SecretHealth.UNAVAILABLE
     val matchesSaved = saved?.let { it.providerId == providerId && it.endpoint == effectiveEndpoint && it.model == effectiveModel && key.isEmpty() &&
         (!metaVoice || it.voiceOptions == effectiveOptions) } == true
-    val verified = matchesSaved && saved?.verified == true
+    val verified = savedKeyVerified(matchesSaved, saved?.verified == true, keyHealth)
     val enabled = matchesSaved && (if (use == ApiUse.VOICE) config?.transcriptionMode == TranscriptionMode.API_PRIMARY else config?.refinementMode != null && config?.refinementMode != RefinementMode.OFF)
 
     LaunchedEffect(initialProviderId) {
@@ -221,6 +225,7 @@ import kotlinx.coroutines.flow.first
                 visualTransformation = PasswordVisualTransformation(), singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
                 modifier = Modifier.fillMaxWidth().onFocusChanged { keyFocused = it.isFocused })
+            if (keyUnavailable) Text(stringResource(R.string.api_key_missing), color = MaterialTheme.colorScheme.error)
             if (savedRef.isNotEmpty() && other?.credentialRef == savedRef) Text(stringResource(R.string.api_shared_key, providerName), style = MaterialTheme.typography.bodySmall)
             if (preset.keyUrl.isNotEmpty()) TextButton(onClick = { uri.openUri(preset.keyUrl) }) { Text(stringResource(R.string.api_get_key, providerName)) }
             Text(stringResource(if (use == ApiUse.WRITING) R.string.api_text_disclosure else R.string.api_audio_disclosure, providerName), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -304,3 +309,13 @@ import kotlinx.coroutines.flow.first
         }
     }
 }
+
+/**
+ * “Verified” is persisted proof plus current decryptability. A Keystore invalidation must
+ * hide the enable action and ask for the key again rather than enabling a broken choice.
+ */
+internal fun savedKeyVerified(
+    matchesSaved: Boolean,
+    persistedVerified: Boolean,
+    health: ApiSecretStore.SecretHealth?,
+): Boolean = matchesSaved && persistedVerified && health == ApiSecretStore.SecretHealth.AVAILABLE

@@ -26,3 +26,11 @@ class FailingCryptoBackend(private val msg: String = "keystore unavailable") : S
     override fun encrypt(plaintext: ByteArray): ByteArray = throw IllegalStateException(msg)
     override fun decrypt(combined: ByteArray): ByteArray = throw IllegalStateException(msg)
 }
+
+/** Simulates a lock-screen change that permanently invalidates the Keystore key. */
+class PermanentlyInvalidatedCryptoBackend : SecretCryptoBackend {
+    override fun encrypt(plaintext: ByteArray): ByteArray =
+        throw android.security.keystore.KeyPermanentlyInvalidatedException()
+    override fun decrypt(combined: ByteArray): ByteArray =
+        throw android.security.keystore.KeyPermanentlyInvalidatedException()
+}
