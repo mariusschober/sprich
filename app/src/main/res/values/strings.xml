@@ -112,6 +112,7 @@
     <string name="sprich_writes">Sprich writes</string>
     <string name="add_vocabulary">Save word or phrase</string>
     <string name="vocab_save_failed">Could not save. Check free storage and try again.</string>
+    <string name="pref_save_failed">Couldn’t save this change. Check free storage and try again.</string>
     <string name="vocab_limit">You have reached 200 entries. Remove an entry to add another.</string>
     <string name="vocab_empty">No entries yet. Add a name or phrase you use often.</string>
     <string name="vocab_count">%1$d of %2$d entries</string>

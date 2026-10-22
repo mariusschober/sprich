@@ -112,6 +112,7 @@
     <string name="sprich_writes">Sprich schreibt</string>
     <string name="add_vocabulary">Wort oder Phrase speichern</string>
     <string name="vocab_save_failed">Speichern fehlgeschlagen. Prüfe den freien Speicher und versuch es erneut.</string>
+    <string name="pref_save_failed">Änderung konnte nicht gespeichert werden. Prüfe den freien Speicher und versuch es erneut.</string>
     <string name="vocab_limit">Du hast 200 Einträge erreicht. Entferne einen Eintrag, bevor du einen neuen hinzufügst.</string>
     <string name="vocab_empty">Noch keine Einträge. Füge einen Namen oder eine häufige Phrase hinzu.</string>
     <string name="vocab_count">%1$d von %2$d Einträgen</string>

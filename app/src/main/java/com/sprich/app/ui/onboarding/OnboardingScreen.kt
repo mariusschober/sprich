@@ -19,6 +19,7 @@ import com.sprich.app.models.manager.ModelManager
 import com.sprich.app.models.manager.ModelStatus
 import com.sprich.app.storage.Preferences
 import com.sprich.app.ui.setup.*
+import com.sprich.app.ui.persistPreference
 import com.sprich.app.ui.theme.VoiceMark
 import kotlinx.coroutines.launch
 
@@ -32,12 +33,21 @@ import kotlinx.coroutines.launch
     val instantStart by prefs.instantMode.collectAsState(initial = true)
     val scope = rememberCoroutineScope()
     var step by rememberSaveable { mutableIntStateOf(0) }
+    var saveError by remember { mutableStateOf(false) }
     val ready = lid is ModelStatus.Ready && fast is ModelStatus.Ready
-    fun done() { scope.launch { prefs.setOnboardingDone(true); onDone() } }
+    fun done() {
+        scope.launch {
+            if (persistPreference({ saveError = true }) { prefs.setOnboardingDone(true) }) {
+                saveError = false
+                onDone()
+            }
+        }
+    }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
+        if (saveError) Text(stringResource(R.string.pref_save_failed), color = MaterialTheme.colorScheme.error)
         Text(stringResource(R.string.setup_step, step + 1, 4), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when (step) {
             0 -> {
@@ -53,7 +63,11 @@ import kotlinx.coroutines.launch
                 Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(
                         Modifier.fillMaxWidth()
-                            .toggleable(instantStart, role = Role.Switch) { scope.launch { prefs.setInstantMode(it) } }
+                            .toggleable(instantStart, role = Role.Switch) { enabled ->
+                                scope.launch {
+                                    if (persistPreference({ saveError = true }) { prefs.setInstantMode(enabled) }) saveError = false
+                                }
+                            }
                             .padding(18.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {

@@ -112,6 +112,7 @@
     <string name="sprich_writes">Sprich escribe</string>
     <string name="add_vocabulary">Guardar palabra o frase</string>
     <string name="vocab_save_failed">No se pudo guardar. Comprueba el espacio libre e inténtalo de nuevo.</string>
+    <string name="pref_save_failed">No se pudo guardar este cambio. Comprueba el espacio libre e inténtalo de nuevo.</string>
     <string name="vocab_limit">Has llegado a 200 entradas. Elimina una antes de añadir otra.</string>
     <string name="vocab_empty">Todavía no hay entradas. Añade un nombre o una frase que uses a menudo.</string>
     <string name="vocab_count">%1$d de %2$d entradas</string>

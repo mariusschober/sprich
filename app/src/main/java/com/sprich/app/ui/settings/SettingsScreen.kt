@@ -35,6 +35,7 @@ import com.sprich.app.speech.api.SpeechLanguage
 import com.sprich.app.speech.refinement.RefinementMode
 import com.sprich.app.storage.Preferences
 import com.sprich.app.ui.setup.ModelSetup
+import com.sprich.app.ui.persistPreference
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -48,6 +49,12 @@ import kotlinx.coroutines.launch
     var about by rememberSaveable { mutableStateOf(false) }
     var gestures by rememberSaveable { mutableStateOf(false) }
     var clearConfirm by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf(false) }
+    fun write(block: suspend () -> Unit) {
+        scope.launch {
+            if (persistPreference({ saveError = true }) { block() }) saveError = false
+        }
+    }
     val automatic = language is SpeechLanguage.Auto
     val apiVoice = config?.transcriptionMode == TranscriptionMode.API_PRIMARY
     val cleanup = config?.refinementMode != null && config?.refinementMode != RefinementMode.OFF
@@ -58,14 +65,15 @@ import kotlinx.coroutines.launch
         })
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+            if (saveError) Text(stringResource(R.string.pref_save_failed), color = MaterialTheme.colorScheme.error)
             SettingsGroup(stringResource(R.string.voice_typing)) {
                 SettingsLink(stringResource(R.string.recognition), if (apiVoice) apiProviderName(config!!.sttProviderId) else stringResource(R.string.path_local)) { onApi(ApiUse.VOICE) }
                 if (!apiVoice) {
                     HorizontalDivider()
                     Column(Modifier.selectableGroup()) {
-                        ModeChoice(stringResource(R.string.automatic), stringResource(R.string.automatic_short), automatic) { scope.launch { prefs.setSpeechLanguage(SpeechLanguage.Auto) } }
+                        ModeChoice(stringResource(R.string.automatic), stringResource(R.string.automatic_short), automatic) { write { prefs.setSpeechLanguage(SpeechLanguage.Auto) } }
                         ModeChoice(stringResource(R.string.accurate), stringResource(R.string.accurate_short), !automatic) {
-                            if (automatic) scope.launch {
+                            if (automatic) write {
                                 val target = accurateLanguageFor(prefs.lastAccurateLanguageTag(), java.util.Locale.getDefault().toLanguageTag())
                                 prefs.setSpeechLanguage(target)
                             }
@@ -74,7 +82,7 @@ import kotlinx.coroutines.launch
                 }
                 if (!automatic) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("en" to R.string.ime_subtype_en, "de" to R.string.ime_subtype_de, "es" to R.string.ime_subtype_es, "fr" to R.string.ime_subtype_fr).forEach { (tag, title) ->
-                        FilterChip(selected = (language as? SpeechLanguage.Fixed)?.tag == tag, onClick = { scope.launch { prefs.setSpeechLanguage(SpeechLanguage.Fixed(tag)) } }, label = { Text(stringResource(title)) })
+                        FilterChip(selected = (language as? SpeechLanguage.Fixed)?.tag == tag, onClick = { write { prefs.setSpeechLanguage(SpeechLanguage.Fixed(tag)) } }, label = { Text(stringResource(title)) })
                     }
                 }
                 if (!apiVoice) ModelSetup(automatic)
@@ -84,14 +92,14 @@ import kotlinx.coroutines.launch
                 Text(stringResource(R.string.cleanup_description), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
                 HorizontalDivider()
                 SettingsLink(stringResource(R.string.personal_vocabulary), stringResource(R.string.vocab_short)) { onVocab() }
-                SettingsToggle(stringResource(R.string.spoken_editing), stringResource(R.string.commands_description), config?.commandsEnabled != false) { scope.launch { prefs.setCommands(it) } }
+                SettingsToggle(stringResource(R.string.spoken_editing), stringResource(R.string.commands_description), config?.commandsEnabled != false) { write { prefs.setCommands(it) } }
             }
             SettingsGroup(stringResource(R.string.keyboard_title)) {
                 SettingsLink(stringResource(languageCopy.title), stringResource(languageCopy.description)) { openAppLanguageSettings(context) }
                 HorizontalDivider()
-                SettingsToggle(stringResource(R.string.instant_dictation), stringResource(R.string.instant_description), config?.instantMode == true) { scope.launch { prefs.setInstantMode(it) } }
-                SettingsToggle(stringResource(R.string.whisper_mode), stringResource(R.string.whisper_description), config?.whisperMode == true) { scope.launch { prefs.setWhisperMode(it) } }
-                SettingsToggle(stringResource(R.string.haptics), stringResource(R.string.haptics_description), config?.hapticsEnabled != false) { scope.launch { prefs.setHaptics(it) } }
+                SettingsToggle(stringResource(R.string.instant_dictation), stringResource(R.string.instant_description), config?.instantMode == true) { write { prefs.setInstantMode(it) } }
+                SettingsToggle(stringResource(R.string.whisper_mode), stringResource(R.string.whisper_description), config?.whisperMode == true) { write { prefs.setWhisperMode(it) } }
+                SettingsToggle(stringResource(R.string.haptics), stringResource(R.string.haptics_description), config?.hapticsEnabled != false) { write { prefs.setHaptics(it) } }
                 TextButton(onClick = { gestures = !gestures }) { Text(stringResource(if (gestures) R.string.hide_gesture_help else R.string.bar_gestures)) }
                 if (gestures) Text(stringResource(R.string.gesture_help), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -112,7 +120,7 @@ import kotlinx.coroutines.launch
             if (advanced) {
                 Text(stringResource(R.string.model_details), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (apiVoice) ModelSetup(automatic)
-                SettingsToggle(stringResource(R.string.api_vocab_title), stringResource(R.string.api_vocab_description), config?.personalVocabHintEnabled == true) { scope.launch { prefs.setPersonalVocabHintEnabled(it) } }
+                SettingsToggle(stringResource(R.string.api_vocab_title), stringResource(R.string.api_vocab_description), config?.personalVocabHintEnabled == true) { write { prefs.setPersonalVocabHintEnabled(it) } }
                 if (BuildConfig.ENABLE_BENCHMARK) TextButton(onClick = onBenchmark) { Text(stringResource(R.string.debug_tools)) }
             }
         }

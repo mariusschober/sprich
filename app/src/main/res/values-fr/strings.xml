@@ -112,6 +112,7 @@
     <string name="sprich_writes">Sprich écrit</string>
     <string name="add_vocabulary">Enregistrer le mot ou la phrase</string>
     <string name="vocab_save_failed">Impossible d’enregistrer. Vérifiez l’espace libre et réessayez.</string>
+    <string name="pref_save_failed">Impossible d’enregistrer ce changement. Vérifiez l’espace libre et réessayez.</string>
     <string name="vocab_limit">Vous avez atteint 200 entrées. Supprimez-en une avant d’en ajouter une autre.</string>
     <string name="vocab_empty">Aucune entrée pour le moment. Ajoutez un nom ou une phrase que vous utilisez souvent.</string>
     <string name="vocab_count">%1$d sur %2$d entrées</string>
