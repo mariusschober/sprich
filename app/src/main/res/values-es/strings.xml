@@ -139,13 +139,13 @@
     <string name="ime_no_cursor">Toca un campo de texto</string>
     <string name="ime_no_cursor_hint">El dictado no está disponible en este campo</string>
     <string name="ime_setup">Terminar configuración</string>
-    <string name="ime_setup_hint">Abre Sprich para descargar Automático</string>
+    <string name="ime_setup_hint">Toca la barra para descargar Automático</string>
     <string name="ime_mic_permission">El micrófono está desactivado</string>
-    <string name="ime_mic_permission_hint">Abre Sprich para permitir el acceso</string>
+    <string name="ime_mic_permission_hint">Toca la barra para permitir el acceso</string>
     <string name="ime_loading">Preparando…</string>
     <string name="ime_first_start">La primera vez puede tardar un momento</string>
     <string name="ime_model_failed">Archivos de voz no disponibles</string>
-    <string name="ime_model_failed_hint">Abre Sprich para comprobar la descarga</string>
+    <string name="ime_model_failed_hint">Toca la barra para comprobar la descarga</string>
     <string name="ime_api_config_failure">La API de voz no está configurada</string>
     <string name="ime_sentence_delete_failed">No se pudo borrar esa frase. Mueve el cursor e inténtalo de nuevo.</string>
     <string name="ime_mic_stopped">El micrófono se ha detenido</string>
@@ -158,6 +158,7 @@
     <string name="ime_insert_failed">No se pudo insertar el texto</string>
     <string name="ime_stopping">Terminando…</string>
     <string name="ime_start_action">Iniciar dictado</string>
+    <string name="ime_open_setup_action">Abrir la configuración de Sprich</string>
     <string name="ime_delete_action">Borrar palabra anterior</string>
     <string name="ime_undo_action">Deshacer borrado</string>
     <string name="ime_finishing">Escribiendo tus últimas palabras</string>
@@ -238,7 +239,7 @@
     <string name="ime_local_fallback">Se usó el reconocimiento del dispositivo</string>
     <string name="ime_api_failure">Tu API no ha podido transcribir esto. Compruébala en Sprich.</string>
     <string name="ime_no_speech">No se ha reconocido voz. Inténtalo de nuevo.</string>
-    <string name="api_check_key">Comprueba tu clave API en Ajustes</string>
+    <string name="api_check_key">Toca la barra para comprobar tu clave API</string>
     <string name="api_transmission">Cuándo enviar el audio</string>
     <string name="api_streaming">Mientras hablo</string>
     <string name="api_recording_mode">Después de hablar</string>

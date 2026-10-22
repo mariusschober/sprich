@@ -139,13 +139,13 @@
     <string name="ime_no_cursor">Tippe auf ein Textfeld</string>
     <string name="ime_no_cursor_hint">In diesem Feld ist kein Diktat möglich</string>
     <string name="ime_setup">Einrichtung abschließen</string>
-    <string name="ime_setup_hint">Öffne Sprich und lade Automatisch herunter</string>
+    <string name="ime_setup_hint">Tippe auf die Leiste, um Automatisch herunterzuladen</string>
     <string name="ime_mic_permission">Mikrofonzugriff ist aus</string>
-    <string name="ime_mic_permission_hint">Öffne Sprich und erlaube den Zugriff</string>
+    <string name="ime_mic_permission_hint">Tippe auf die Leiste, um den Zugriff zu erlauben</string>
     <string name="ime_loading">Wird vorbereitet…</string>
     <string name="ime_first_start">Beim ersten Mal kann es kurz dauern</string>
     <string name="ime_model_failed">Sprachdateien nicht verfügbar</string>
-    <string name="ime_model_failed_hint">Öffne Sprich und prüfe den Download</string>
+    <string name="ime_model_failed_hint">Tippe auf die Leiste, um den Download zu prüfen</string>
     <string name="ime_api_config_failure">Sprach-API ist nicht eingerichtet</string>
     <string name="ime_sentence_delete_failed">Der Satz konnte nicht gelöscht werden. Setze den Cursor neu und versuch es erneut.</string>
     <string name="ime_mic_stopped">Mikrofon wurde beendet</string>
@@ -158,6 +158,7 @@
     <string name="ime_insert_failed">Text konnte nicht eingefügt werden</string>
     <string name="ime_stopping">Wird abgeschlossen…</string>
     <string name="ime_start_action">Diktat starten</string>
+    <string name="ime_open_setup_action">Sprich-Einrichtung öffnen</string>
     <string name="ime_delete_action">Vorheriges Wort löschen</string>
     <string name="ime_undo_action">Löschen rückgängig machen</string>
     <string name="ime_finishing">Letzte Wörter werden geschrieben</string>
@@ -238,7 +239,7 @@
     <string name="ime_local_fallback">Spracherkennung auf dem Gerät verwendet</string>
     <string name="ime_api_failure">Deine API konnte das nicht transkribieren. Prüfe sie in Sprich.</string>
     <string name="ime_no_speech">Keine Sprache erkannt. Versuch es erneut.</string>
-    <string name="api_check_key">Prüfe deinen API-Schlüssel in den Einstellungen</string>
+    <string name="api_check_key">Tippe auf die Leiste, um deinen API-Schlüssel zu prüfen</string>
     <string name="api_transmission">Audio senden</string>
     <string name="api_streaming">Während ich spreche</string>
     <string name="api_recording_mode">Nach dem Sprechen</string>

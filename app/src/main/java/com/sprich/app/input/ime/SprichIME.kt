@@ -85,6 +85,7 @@ class SprichIME : InputMethodService() {
     @Volatile private var localizedResourceKey: String? = null
     @Volatile private var localizedResources: android.content.res.Resources? = null
     @Volatile private var staticMessageIds: Pair<Int, Int>? = null
+    @Volatile private var barOpensSetup = false
 
     private fun uiResources(): android.content.res.Resources {
         val locales = if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -109,6 +110,7 @@ class SprichIME : InputMethodService() {
         strings: android.content.res.Resources = uiResources(),
     ) {
         staticMessageIds = title to hint
+        barOpensSetup = ImeBarAction.opensSetup(title)
         statusText?.text = strings.getString(title)
         (statusText?.tag as? TextView)?.text = strings.getString(hint)
     }
@@ -560,7 +562,12 @@ class SprichIME : InputMethodService() {
                     if (!isPasswordField) {
                         info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(
                             android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK,
-                            uiString(when { tapCancelsWork() -> com.sprich.app.R.string.cancel; isDictationRunning() -> com.sprich.app.R.string.ime_stop_action; else -> com.sprich.app.R.string.ime_start_action })))
+                            uiString(when {
+                                barOpensSetup -> com.sprich.app.R.string.ime_open_setup_action
+                                tapCancelsWork() -> com.sprich.app.R.string.cancel
+                                isDictationRunning() -> com.sprich.app.R.string.ime_stop_action
+                                else -> com.sprich.app.R.string.ime_start_action
+                            })))
                         info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_delete_word, uiString(com.sprich.app.R.string.ime_delete_unit_preview)))
                         info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_delete_phrase, uiString(com.sprich.app.R.string.ime_delete_sentence_preview)))
                         info.addAction(androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat(com.sprich.app.R.id.action_whisper_mode, uiString(if (whisperMode) com.sprich.app.R.string.ime_whisper_off_action else com.sprich.app.R.string.ime_whisper_on_action)))
@@ -1049,6 +1056,10 @@ class SprichIME : InputMethodService() {
 
     private fun toggleDictation() {
         try {
+            if (barOpensSetup) {
+                openSprichSettings()
+                return
+            }
             if (isDictationRunning()) {
                 stopDictation(if (tapCancelsWork()) StopReason.CURSOR_MOVED else StopReason.USER_STOP)
             } else {

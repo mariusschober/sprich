@@ -139,13 +139,13 @@
     <string name="ime_no_cursor">Tap a text field</string>
     <string name="ime_no_cursor_hint">Dictation is unavailable in this field</string>
     <string name="ime_setup">Finish setup</string>
-    <string name="ime_setup_hint">Open Sprich to download Automatic</string>
+    <string name="ime_setup_hint">Tap the bar to download Automatic</string>
     <string name="ime_mic_permission">Microphone access is off</string>
-    <string name="ime_mic_permission_hint">Open Sprich to allow access</string>
+    <string name="ime_mic_permission_hint">Tap the bar to allow access</string>
     <string name="ime_loading">Getting ready…</string>
     <string name="ime_first_start">First use can take a moment</string>
     <string name="ime_model_failed">Speech files unavailable</string>
-    <string name="ime_model_failed_hint">Open Sprich to check the download</string>
+    <string name="ime_model_failed_hint">Tap the bar to check the download</string>
     <string name="ime_api_config_failure">Voice API is not set up</string>
     <string name="ime_sentence_delete_failed">Couldn’t delete that sentence. Move the cursor and try again.</string>
     <string name="ime_mic_stopped">Microphone stopped</string>
@@ -158,6 +158,7 @@
     <string name="ime_insert_failed">Could not insert text</string>
     <string name="ime_stopping">Finishing…</string>
     <string name="ime_start_action">Start dictation</string>
+    <string name="ime_open_setup_action">Open Sprich setup</string>
     <string name="ime_delete_action">Delete previous word</string>
     <string name="ime_undo_action">Undo deletion</string>
     <string name="ime_finishing">Writing your last words</string>
@@ -238,7 +239,7 @@
     <string name="ime_local_fallback">Used on-device recognition</string>
     <string name="ime_api_failure">Your API could not transcribe this. Check it in Sprich.</string>
     <string name="ime_no_speech">No speech recognized. Try again.</string>
-    <string name="api_check_key">Check your API key in Settings</string>
+    <string name="api_check_key">Tap the bar to check your API key</string>
     <string name="api_transmission">When to send audio</string>
     <string name="api_streaming">As I speak</string>
     <string name="api_recording_mode">After I speak</string>

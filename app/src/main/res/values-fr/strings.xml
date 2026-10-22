@@ -139,13 +139,13 @@
     <string name="ime_no_cursor">Touchez un champ de texte</string>
     <string name="ime_no_cursor_hint">La dictée n’est pas disponible dans ce champ</string>
     <string name="ime_setup">Terminer la configuration</string>
-    <string name="ime_setup_hint">Ouvrez Sprich pour télécharger Automatique</string>
+    <string name="ime_setup_hint">Touchez la barre pour télécharger Automatique</string>
     <string name="ime_mic_permission">Le microphone est désactivé</string>
-    <string name="ime_mic_permission_hint">Ouvrez Sprich pour l’autoriser</string>
+    <string name="ime_mic_permission_hint">Touchez la barre pour l’autoriser</string>
     <string name="ime_loading">Préparation…</string>
     <string name="ime_first_start">La première utilisation peut prendre un instant</string>
     <string name="ime_model_failed">Fichiers vocaux indisponibles</string>
-    <string name="ime_model_failed_hint">Ouvrez Sprich pour vérifier le téléchargement</string>
+    <string name="ime_model_failed_hint">Touchez la barre pour vérifier le téléchargement</string>
     <string name="ime_api_config_failure">L’API vocale n’est pas configurée</string>
     <string name="ime_sentence_delete_failed">Impossible de supprimer cette phrase. Déplacez le curseur et réessayez.</string>
     <string name="ime_mic_stopped">Le microphone s’est arrêté</string>
@@ -158,6 +158,7 @@
     <string name="ime_insert_failed">Impossible d’insérer le texte</string>
     <string name="ime_stopping">Finalisation…</string>
     <string name="ime_start_action">Démarrer la dictée</string>
+    <string name="ime_open_setup_action">Ouvrir la configuration de Sprich</string>
     <string name="ime_delete_action">Supprimer le mot précédent</string>
     <string name="ime_undo_action">Annuler la suppression</string>
     <string name="ime_finishing">Écriture de vos derniers mots</string>
@@ -238,7 +239,7 @@
     <string name="ime_local_fallback">Reconnaissance sur l’appareil utilisée</string>
     <string name="ime_api_failure">Votre API n’a pas pu transcrire ceci. Vérifiez-la dans Sprich.</string>
     <string name="ime_no_speech">Aucune parole reconnue. Réessayez.</string>
-    <string name="api_check_key">Vérifiez votre clé API dans les réglages</string>
+    <string name="api_check_key">Touchez la barre pour vérifier votre clé API</string>
     <string name="api_transmission">Quand envoyer l’audio</string>
     <string name="api_streaming">Pendant que je parle</string>
     <string name="api_recording_mode">Après avoir parlé</string>
