@@ -63,7 +63,12 @@ import kotlinx.coroutines.launch
                     HorizontalDivider()
                     Column(Modifier.selectableGroup()) {
                         ModeChoice(stringResource(R.string.automatic), stringResource(R.string.automatic_short), automatic) { scope.launch { prefs.setSpeechLanguage(SpeechLanguage.Auto) } }
-                        ModeChoice(stringResource(R.string.accurate), stringResource(R.string.accurate_short), !automatic) { if (automatic) scope.launch { prefs.setSpeechLanguage(SpeechLanguage.Fixed("en")) } }
+                        ModeChoice(stringResource(R.string.accurate), stringResource(R.string.accurate_short), !automatic) {
+                            if (automatic) scope.launch {
+                                val target = accurateLanguageFor(prefs.lastAccurateLanguageTag(), java.util.Locale.getDefault().toLanguageTag())
+                                prefs.setSpeechLanguage(target)
+                            }
+                        }
                     }
                 }
                 if (!automatic) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
