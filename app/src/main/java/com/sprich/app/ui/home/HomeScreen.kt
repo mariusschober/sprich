@@ -30,6 +30,7 @@ import com.sprich.app.storage.ApiSecretStore
 import com.sprich.app.api.ApiUse
 import com.sprich.app.api.apiChoice
 import com.sprich.app.ui.setup.*
+import com.sprich.app.ui.readableWidth
 import com.sprich.app.ui.theme.VoiceMark
 
 @Composable fun HomeScreen(onSettings: () -> Unit, onBenchmarkTap: () -> Unit) {
@@ -59,8 +60,9 @@ import com.sprich.app.ui.theme.VoiceMark
     // Dictation is deliberately ephemeral, including across process recreation.
     var trial by remember { mutableStateOf("") }
     val colors = MaterialTheme.colorScheme
+    Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.TopCenter) {
     Column(
-        Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp),
+        Modifier.readableWidth().fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
@@ -108,5 +110,6 @@ import com.sprich.app.ui.theme.VoiceMark
         Text(stringResource(R.string.automatic_languages), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
         if (ready) TextButton(onClick = { showKeyboardPicker(context) }) { Text(stringResource(R.string.switch_keyboard)) }
         if (BuildConfig.ENABLE_BENCHMARK) TextButton(onClick = onBenchmarkTap) { Text(stringResource(R.string.debug_tools)) }
+    }
     }
 }

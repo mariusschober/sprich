@@ -35,6 +35,7 @@ import com.sprich.app.speech.api.SpeechLanguage
 import com.sprich.app.speech.refinement.RefinementMode
 import com.sprich.app.storage.Preferences
 import com.sprich.app.ui.setup.ModelSetup
+import com.sprich.app.ui.readableWidth
 import com.sprich.app.ui.persistPreference
 import kotlinx.coroutines.launch
 
@@ -64,7 +65,8 @@ import kotlinx.coroutines.launch
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back)) }
         })
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
+        Column(Modifier.readableWidth().fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
             if (saveError) Text(stringResource(R.string.pref_save_failed), color = MaterialTheme.colorScheme.error)
             SettingsGroup(stringResource(R.string.voice_typing)) {
                 SettingsLink(stringResource(R.string.recognition), if (apiVoice) apiProviderName(config!!.sttProviderId) else stringResource(R.string.path_local)) { onApi(ApiUse.VOICE) }
@@ -123,6 +125,7 @@ import kotlinx.coroutines.launch
                 SettingsToggle(stringResource(R.string.api_vocab_title), stringResource(R.string.api_vocab_description), config?.personalVocabHintEnabled == true) { write { prefs.setPersonalVocabHintEnabled(it) } }
                 if (BuildConfig.ENABLE_BENCHMARK) TextButton(onClick = onBenchmark) { Text(stringResource(R.string.debug_tools)) }
             }
+        }
         }
     }
     if (clearConfirm) AlertDialog(

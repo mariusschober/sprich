@@ -20,6 +20,7 @@ import com.sprich.app.models.manager.ModelStatus
 import com.sprich.app.storage.Preferences
 import com.sprich.app.ui.setup.*
 import com.sprich.app.ui.persistPreference
+import com.sprich.app.ui.readableWidth
 import com.sprich.app.ui.theme.VoiceMark
 import kotlinx.coroutines.launch
 
@@ -43,8 +44,9 @@ import kotlinx.coroutines.launch
             }
         }
     }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        Modifier.readableWidth().fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         if (saveError) Text(stringResource(R.string.pref_save_failed), color = MaterialTheme.colorScheme.error)
@@ -107,5 +109,6 @@ import kotlinx.coroutines.launch
         }
         if (step > 0) TextButton(onClick = { step-- }) { Text(stringResource(R.string.back)) }
         TextButton(onClick = { done() }) { Text(stringResource(R.string.finish_later)) }
+    }
     }
 }

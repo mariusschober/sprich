@@ -19,6 +19,7 @@ import androidx.compose.ui.text.input.PlatformImeOptions
 import androidx.compose.ui.unit.dp
 import com.sprich.app.R
 import com.sprich.app.storage.Preferences
+import com.sprich.app.ui.readableWidth
 import com.sprich.app.ui.theme.VoiceMark
 import com.sprich.app.vocab.*
 import kotlinx.coroutines.CancellationException
@@ -72,7 +73,8 @@ import kotlinx.coroutines.launch
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back)) }
         })
     }) { padding ->
-        LazyColumn(Modifier.fillMaxSize().padding(padding).imePadding(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Box(Modifier.fillMaxSize().padding(padding).imePadding(), contentAlignment = Alignment.TopCenter) {
+        LazyColumn(Modifier.readableWidth().fillMaxWidth(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item {
                 LearningCard {
                     VoiceMark(Modifier.size(64.dp).align(Alignment.CenterHorizontally))
@@ -174,6 +176,7 @@ import kotlinx.coroutines.launch
             }
             error?.let { message -> item { Text(stringResource(message), color = MaterialTheme.colorScheme.error) } }
             item { Text(stringResource(R.string.vocab_learning_footer), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
         }
     }
 }

@@ -39,6 +39,7 @@ import com.sprich.app.speech.remote.RemoteTranscriptUpdate
 import com.sprich.app.storage.ApiSecretStore
 import com.sprich.app.storage.Preferences
 import com.sprich.app.ui.setup.MicrophoneAccess
+import com.sprich.app.ui.readableWidth
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 
@@ -211,7 +212,8 @@ import kotlinx.coroutines.flow.first
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) }
         })
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).imePadding().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Box(Modifier.fillMaxSize().padding(padding).imePadding(), contentAlignment = Alignment.TopCenter) {
+        Column(Modifier.readableWidth().fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(stringResource(if (use == ApiUse.WRITING) R.string.cleanup_intro else R.string.api_voice_intro), style = MaterialTheme.typography.bodyLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ApiCatalog.presets.forEach { p -> FilterChip(selected = providerId == p.id, enabled = !busy, onClick = {
@@ -319,6 +321,7 @@ import kotlinx.coroutines.flow.first
                 if (preset.privacyUrl.isNotEmpty()) TextButton(onClick = { uri.openUri(preset.privacyUrl) }) { Text(stringResource(R.string.api_provider_privacy)) }
                 TextButton(onClick = { providerId = "custom"; key = ""; result = null; message = null }, enabled = !busy) { Text(stringResource(R.string.api_custom)) }
             }
+        }
         }
     }
 }
