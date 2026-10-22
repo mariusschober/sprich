@@ -142,6 +142,7 @@
     <string name="ime_first_start">La première utilisation peut prendre un instant</string>
     <string name="ime_model_failed">Fichiers vocaux indisponibles</string>
     <string name="ime_model_failed_hint">Ouvrez Sprich pour vérifier le téléchargement</string>
+    <string name="ime_api_config_failure">L’API vocale n’est pas configurée</string>
     <string name="ime_mic_stopped">Le microphone s’est arrêté</string>
     <string name="ime_retry">Touchez pour réessayer</string>
     <string name="ime_mic_unavailable">Microphone indisponible</string>

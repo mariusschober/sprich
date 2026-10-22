@@ -142,6 +142,7 @@
     <string name="ime_first_start">Beim ersten Mal kann es kurz dauern</string>
     <string name="ime_model_failed">Sprachdateien nicht verfügbar</string>
     <string name="ime_model_failed_hint">Öffne Sprich und prüfe den Download</string>
+    <string name="ime_api_config_failure">Sprach-API ist nicht eingerichtet</string>
     <string name="ime_mic_stopped">Mikrofon wurde beendet</string>
     <string name="ime_retry">Zum erneuten Versuch tippen</string>
     <string name="ime_mic_unavailable">Mikrofon nicht verfügbar</string>

@@ -142,6 +142,7 @@
     <string name="ime_first_start">La primera vez puede tardar un momento</string>
     <string name="ime_model_failed">Archivos de voz no disponibles</string>
     <string name="ime_model_failed_hint">Abre Sprich para comprobar la descarga</string>
+    <string name="ime_api_config_failure">La API de voz no está configurada</string>
     <string name="ime_mic_stopped">El micrófono se ha detenido</string>
     <string name="ime_retry">Toca para volver a intentar</string>
     <string name="ime_mic_unavailable">Micrófono no disponible</string>

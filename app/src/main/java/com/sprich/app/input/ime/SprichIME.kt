@@ -1161,20 +1161,28 @@ class SprichIME : InputMethodService() {
             // Route-aware loading — only load required engines, do NOT load Canary for Automatic. For API_PRIMARY, local not required.
             val routeForSession = determineRoute(snapAtStart.speechLanguage)
             val requiresLocalLoad = snapAtStart.transcriptionMode != TranscriptionMode.API_PRIMARY
-            val mmForLoad = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
-            val loadResult: Result<Unit> = if (!requiresLocalLoad && transcriptionMode == TranscriptionMode.API_PRIMARY) {
-                // API primary: no local model required for successful remote path; fallback loaded lazily on failure
+            if (!requiresLocalLoad && transcriptionMode == TranscriptionMode.API_PRIMARY) {
+                // API primary: no local model required for the successful remote path. A missing
+                // endpoint/key is an API problem, not a missing speech-file download.
                 val remoteCfg = buildRemoteSttConfig(snapAtStart)
-                if (remoteCfg == null) {
-                    Result.failure(Exception("Remote STT not configured — set base URL/model/API key in Settings"))
-                } else {
-                    // Verify credential exists — secure store only, legacy plaintext no longer supported (P0-4)
-                    val cred = withContext(Dispatchers.IO) { apiSecretStore.loadBoundSecret(remoteCfg.credentialRef, remoteCfg.providerId, remoteCfg.endpoint) ?: "" }
-                    if (cred.isBlank()) {
-                        Result.failure(Exception("Missing API key for ${remoteCfg.providerId} — add in Settings"))
-                    } else Result.success(Unit)
+                val credentialPresent = if (remoteCfg == null) false else withContext(Dispatchers.IO) {
+                    apiSecretStore.loadBoundSecret(remoteCfg.credentialRef, remoteCfg.providerId, remoteCfg.endpoint)?.isNotBlank() == true
                 }
-            } else when (routeForSession) {
+                val failure = StartFailureText.remote(remoteCfg != null, credentialPresent)
+                if (failure != null) {
+                    if (generation != sessionGeneration.get()) return
+                    val copy = StartFailureText.copy(failure)
+                    failSession(
+                        generation,
+                        "remote preflight failed kind=$failure provider=${remoteCfg?.providerId ?: "unconfigured"} mode=$transcriptionMode",
+                        copy.status,
+                        copy.hint,
+                        null,
+                    )
+                    return
+                }
+            }
+            val loadResult: Result<Unit> = if (transcriptionMode == TranscriptionMode.API_PRIMARY) Result.success(Unit) else when (routeForSession) {
                 is LocalAsrRoute.AutomaticFastConformer -> {
                     // Automatic already validated LID+Fast ready above; now load them, never Canary
                     val lidR = try { lidEngine.load().also { lidLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
@@ -1187,11 +1195,12 @@ class SprichIME : InputMethodService() {
             }
             if (generation != sessionGeneration.get()) return
             if (loadResult.isFailure) {
+                val copy = StartFailureText.copy(StartFailureKind.LOCAL_MODEL)
                 failSession(
                     generation,
                     "engine load failed route=$routeForSession mode=$transcriptionMode",
-                    com.sprich.app.R.string.ime_model_failed,
-                    com.sprich.app.R.string.ime_model_failed_hint,
+                    copy.status,
+                    copy.hint,
                     loadResult.exceptionOrNull(),
                 )
                 return

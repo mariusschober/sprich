@@ -142,6 +142,7 @@
     <string name="ime_first_start">First use can take a moment</string>
     <string name="ime_model_failed">Speech files unavailable</string>
     <string name="ime_model_failed_hint">Open Sprich to check the download</string>
+    <string name="ime_api_config_failure">Voice API is not set up</string>
     <string name="ime_mic_stopped">Microphone stopped</string>
     <string name="ime_retry">Tap to try again</string>
     <string name="ime_mic_unavailable">Microphone unavailable</string>
