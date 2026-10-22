@@ -146,6 +146,8 @@ class SprichIME : InputMethodService() {
     private val endpointPending = AtomicBoolean(false)
     @Volatile private var lastVadState = Vad.State.SILENCE
     private var activeConfig = SpeechSessionConfig()
+    // Sampled on the main thread at session start; onset/audio callbacks only read this.
+    @Volatile private var localFallbackReady = false
     @Volatile private var lastPartialText = ""
 
     // Single authoritative coordinator — owns field/session/utterance finalization
@@ -1181,6 +1183,10 @@ class SprichIME : InputMethodService() {
             // Route-aware loading — only load required engines, do NOT load Canary for Automatic. For API_PRIMARY, local not required.
             val routeForSession = determineRoute(snapAtStart.speechLanguage)
             val requiresLocalLoad = snapAtStart.transcriptionMode != TranscriptionMode.API_PRIMARY
+            // File stats run here, once, on the session-start coroutine. The audio thread
+            // must only read the cached answer when it freezes an utterance plan.
+            localFallbackReady = snapAtStart.transcriptionMode == TranscriptionMode.API_PRIMARY &&
+                snapAtStart.apiLocalFallback && localRouteReady(routeForSession)
             if (!requiresLocalLoad && transcriptionMode == TranscriptionMode.API_PRIMARY) {
                 // API primary: no local model required for the successful remote path. A missing
                 // endpoint/key is an API problem, not a missing speech-file download.
@@ -2725,7 +2731,7 @@ class SprichIME : InputMethodService() {
         val localRoute = determineRoute(s.speechLanguage)
         val transcription: TranscriptionPlan = when (s.transcriptionMode) {
             TranscriptionMode.ON_DEVICE -> TranscriptionPlan.Local(localRoute)
-            TranscriptionMode.API_PRIMARY -> buildRemoteSttConfig(s)?.let { TranscriptionPlan.ApiPrimary(it, localRoute.takeIf { s.apiLocalFallback && localRouteReady(it) }) } ?: return null
+            TranscriptionMode.API_PRIMARY -> buildRemoteSttConfig(s)?.let { TranscriptionPlan.ApiPrimary(it, fallbackRouteFor(s.transcriptionMode, s.apiLocalFallback, localFallbackReady, localRoute)) } ?: return null
             TranscriptionMode.LOCAL_API_FALLBACK -> buildRemoteSttConfig(s)?.let { TranscriptionPlan.LocalApiFallback(localRoute, it) } ?: return null
         }
         val config = SpeechSessionConfig(language = s.speechLanguage.toLegacyLanguage(), speechLanguage = s.speechLanguage,
