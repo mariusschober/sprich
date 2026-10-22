@@ -59,6 +59,7 @@ import com.sprich.app.ui.theme.VoiceMark
     )
     // Dictation is deliberately ephemeral, including across process recreation.
     var trial by remember { mutableStateOf("") }
+    var showGestures by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
     Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.TopCenter) {
     Column(
@@ -107,9 +108,16 @@ import com.sprich.app.ui.theme.VoiceMark
             !api && !modelsReady -> ModelSetup(automatic)
             !keyboard.selected -> Button(onClick = { showKeyboardPicker(context) }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.choose_keyboard)) }
         }
+        TextButton(onClick = { showGestures = true }) { Text(stringResource(R.string.bar_gestures)) }
         Text(stringResource(R.string.automatic_languages), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
         if (ready) TextButton(onClick = { showKeyboardPicker(context) }) { Text(stringResource(R.string.switch_keyboard)) }
         if (BuildConfig.ENABLE_BENCHMARK) TextButton(onClick = onBenchmarkTap) { Text(stringResource(R.string.debug_tools)) }
     }
     }
+    if (showGestures) AlertDialog(
+        onDismissRequest = { showGestures = false },
+        title = { Text(stringResource(R.string.bar_gestures)) },
+        text = { Text(stringResource(R.string.gesture_help)) },
+        confirmButton = { TextButton(onClick = { showGestures = false }) { Text(stringResource(R.string.close)) } },
+    )
 }

@@ -50,7 +50,7 @@ import kotlinx.coroutines.launch
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         if (saveError) Text(stringResource(R.string.pref_save_failed), color = MaterialTheme.colorScheme.error)
-        Text(stringResource(R.string.setup_step, step + 1, 4), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(stringResource(R.string.setup_step, step + 1, ONBOARDING_STEPS), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when (step) {
             0 -> {
                 VoiceMark(Modifier.size(112.dp))
@@ -90,7 +90,7 @@ import kotlinx.coroutines.launch
                 when {
                     keyboardStepReady(keyboard.enabled, keyboard.selected) -> {
                         Text(stringResource(R.string.keyboard_enabled))
-                        Button(onClick = { step = 3 }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_action)) }
+                        Button(onClick = { step = ONBOARDING_GESTURE_STEP }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_action)) }
                     }
                     keyboard.enabled -> {
                         Text(stringResource(R.string.keyboard_enabled))
@@ -99,6 +99,11 @@ import kotlinx.coroutines.launch
                     }
                     else -> Button(onClick = onOpenImeSettings, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.open_keyboard_settings)) }
                 }
+            }
+            3 -> {
+                Text(stringResource(R.string.bar_gestures), style = MaterialTheme.typography.headlineMedium)
+                Text(stringResource(R.string.gesture_help), style = MaterialTheme.typography.bodyLarge)
+                Button(onClick = { step = ONBOARDING_MODEL_STEP }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_action)) }
             }
             else -> {
                 Text(stringResource(R.string.setup_offline), style = MaterialTheme.typography.headlineMedium)
