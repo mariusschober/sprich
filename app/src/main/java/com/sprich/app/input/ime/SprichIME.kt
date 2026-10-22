@@ -1893,9 +1893,11 @@ class SprichIME : InputMethodService() {
                     ok
                 }
                 is PreparedFinalAction.DeleteSentence -> {
-                    // For this release: sentence delete disabled unless exact span can be safely established — zero mutation
-                    Log.i("SprichIME", "spoken deleteSentence requested but disabled for release — zero mutation token=$token")
-                    false
+                    // Same exact-authority path as swipe sentence delete: one sentence only when
+                    // field, cursor and surrounding text are unchanged; otherwise zero mutation.
+                    val ok = executeSpokenDeleteSentence(token)
+                    if (ok) finalCommitCount++
+                    ok
                 }
                 is PreparedFinalAction.Text -> {
                     val finalText = (prepared as PreparedFinalAction.Text).text
@@ -1914,6 +1916,10 @@ class SprichIME : InputMethodService() {
                 // UTTERANCE-SCOPED: editor ambiguous must NOT destroy active B
                 failUtteranceScoped(token, "final text insertion ambiguous token=$token", null)
                 return
+            }
+            if (prepared is PreparedFinalAction.DeleteSentence && !applied) {
+                resultNotice = com.sprich.app.R.string.ime_sentence_delete_failed
+                resultNotice?.let { micContainer?.announceForAccessibility(uiString(it)) }
             }
             if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isBlank() && !applied) {
                 resultNotice = if (plan.transcription is TranscriptionPlan.ApiPrimary && transcriptionCoordinator?.lastRemoteFailure != null) com.sprich.app.R.string.ime_api_failure else com.sprich.app.R.string.ime_no_speech
@@ -2024,8 +2030,23 @@ class SprichIME : InputMethodService() {
         finalizeOnce(token, StopReason.ENDPOINT)
     }
 
-    // Spoken delete "delete that" — only deletes exact owned insertion if cursor proof holds; zero mutation otherwise (no 40/120 guess)
-    private fun executeSpokenDeleteLast(token: UtteranceToken): Boolean {
+    // Spoken delete commands only mutate exactly the owned insertion/sentence after an unchanged
+    // cursor/text proof. Any mismatch is zero mutation and an explicit notice where applicable.
+    private fun executeSpokenDeleteLast(token: UtteranceToken): Boolean =
+        executeSpokenDelete(token, "deleteThat") { ic, isPass ->
+            editorActionController.deleteLastSprichInsertion(ic, currentFieldId, fieldGeneration.get(), isPass)
+        }
+
+    private fun executeSpokenDeleteSentence(token: UtteranceToken): Boolean =
+        executeSpokenDelete(token, "deleteSentence") { ic, isPass ->
+            editorActionController.deletePreviousSentence(ic, currentFieldId, fieldGeneration.get(), isPass)
+        }
+
+    private fun executeSpokenDelete(
+        token: UtteranceToken,
+        label: String,
+        delete: (android.view.inputmethod.InputConnection, Boolean) -> Boolean,
+    ): Boolean {
         if (token.generation != sessionGeneration.get()) { staleCallbackDrops++; return false }
         if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) { staleCallbackDrops++; return false }
         if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) { staleCallbackDrops++; return false }
@@ -2033,11 +2054,11 @@ class SprichIME : InputMethodService() {
         val ic = currentInputConnection ?: return false
         val isPass = isPasswordField || isPassword(currentInputEditorInfo)
         if (isPass) {
-            Log.i("SprichIME", "spoken deleteThat blocked password field token=$token")
+            Log.i("SprichIME", "spoken $label blocked password field token=$token")
             return false
         }
         if (!editorStillOwned()) { cancelForEditorChange(); return false }
-        val ok = editorActionController.deleteLastSprichInsertion(ic, currentFieldId, fieldGeneration.get(), isPass)
+        val ok = delete(ic, isPass)
         noteOwnEditorChange(ok)
         if (ok) {
             try { fieldController.commitUtterance(token.sessionId, token.utteranceId, ic, "") } catch (_: Exception) {}

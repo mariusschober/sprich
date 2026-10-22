@@ -42,6 +42,19 @@ class SpokenEditingParserTest {
     }
 
     @Test
+    fun sentenceDeleteCommandsAreRecognizedButRespectTheCommandSwitch() {
+        for ((text, language) in listOf(
+            "delete last sentence" to Language.EN,
+            "letzten satz löschen" to Language.DE,
+        )) {
+            val enabled = SpokenEditingParser.parse(text, language, true)
+            assertEquals("__DELETE_SENTENCE__", enabled.text)
+            assertTrue(SpokenEditingParser.isDeleteCommand(enabled.text))
+            assertEquals(text, SpokenEditingParser.parse(text, language, false).text)
+        }
+    }
+
+    @Test
     fun noFalsePositiveForNormalSpeechContainingComma() {
         // "comma" inside word should not trigger?
         // Our parser is word-boundary, so "comma" as standalone word should trigger, but "comma" in sentence may be punctuation intent
