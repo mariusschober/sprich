@@ -16,7 +16,7 @@ class FakeSecretCryptoBackend : SecretCryptoBackend {
     }
 
     override fun decrypt(combined: ByteArray): ByteArray {
-        if (combined.size <= 12) throw IllegalArgumentException("too short")
+        if (combined.size <= 12) throw CorruptSecretFormatException("too short")
         val ct = combined.copyOfRange(12, combined.size)
         return ByteArray(ct.size) { i -> (ct[i].toInt() xor key[i % key.size].toInt()).toByte() }
     }

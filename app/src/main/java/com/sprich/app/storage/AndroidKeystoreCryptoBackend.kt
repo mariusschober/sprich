@@ -41,7 +41,7 @@ class AndroidKeystoreCryptoBackend : SecretCryptoBackend {
     }
 
     override fun decrypt(combined: ByteArray): ByteArray {
-        if (combined.size <= GCM_IV_LEN) throw IllegalArgumentException("Ciphertext too short")
+        if (combined.size <= GCM_IV_LEN) throw CorruptSecretFormatException("Ciphertext too short")
         val iv = combined.copyOfRange(0, GCM_IV_LEN)
         val ct = combined.copyOfRange(GCM_IV_LEN, combined.size)
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

@@ -176,6 +176,73 @@ class ApiSecretStorePruneTest {
         assertEquals("recoverable-key", good.loadBoundSecret(ref, "custom", "https://api.example/v1"))
     }
 
+    @Test fun genericIllegalArgumentExceptionFromDecryptIsTransientAndKeepsCiphertext() = runBlocking {
+        val good = freshStore()
+        val endpoint = "https://api.example/v1"
+        val ref = good.saveBoundSecret("custom", endpoint, "recoverable-key")!!
+        val file = secretFile(ref)
+        val buggy = ApiSecretStore(context, object : SecretCryptoBackend {
+            override fun encrypt(plaintext: ByteArray): ByteArray = throw UnsupportedOperationException()
+            override fun decrypt(combined: ByteArray): ByteArray =
+                throw IllegalArgumentException("unrelated parser bug")
+        })
+
+        assertNull(buggy.loadBoundSecret(ref, "custom", endpoint))
+        assertEquals(ApiSecretStore.SecretHealth.UNAVAILABLE, buggy.secretHealth(ref))
+        assertTrue(file.exists())
+        assertEquals("recoverable-key", good.loadBoundSecret(ref, "custom", endpoint))
+    }
+
+    @Test fun permanentlyInvalidatedExceptionInCauseChainDeletesCiphertextAndMarker() = runBlocking {
+        val good = freshStore()
+        val endpoint = "https://api.example/v1"
+        val ref = good.saveBoundSecret("custom", endpoint, "invalidated-key")!!
+        val file = secretFile(ref)
+        val marker = markerFile(ref).apply { writeText("1") }
+        val wrapped = ApiSecretStore(context, object : SecretCryptoBackend {
+            override fun encrypt(plaintext: ByteArray): ByteArray = throw UnsupportedOperationException()
+            override fun decrypt(combined: ByteArray): ByteArray = throw IllegalStateException(
+                "wrapped keystore failure",
+                android.security.keystore.KeyPermanentlyInvalidatedException(),
+            )
+        })
+
+        assertEquals(ApiSecretStore.SecretHealth.MISSING, wrapped.secretHealth(ref))
+        assertFalse(file.exists())
+        assertFalse(marker.exists())
+    }
+
+    @Test fun corruptCiphertextFormatDeletesCiphertextAndMarker() = runBlocking {
+        val store = freshStore()
+        val endpoint = "https://api.example/v1"
+        val ref = store.saveBoundSecret("custom", endpoint, "corrupt-key")!!
+        val file = secretFile(ref)
+        val marker = markerFile(ref).apply { writeText("1") }
+        file.writeBytes(byteArrayOf(1, 2, 3))
+
+        assertEquals(ApiSecretStore.SecretHealth.MISSING, store.secretHealth(ref))
+        assertFalse(file.exists())
+        assertFalse(marker.exists())
+    }
+
+    @Test fun oversizedCiphertextAndBackupDeletionClearUnreadableMarker() {
+        val store = freshStore()
+        listOf("bound_oversized", "bound_oversized_backup").forEach { id ->
+            store.saveSecret(id, "value")
+            val file = secretFile(id)
+            val backup = File(file.path + ".bak")
+            val marker = markerFile(id).apply { writeText("1") }
+            if (id.endsWith("_backup")) backup.writeBytes(ByteArray(32_769))
+            else file.writeBytes(ByteArray(32_769))
+
+            assertNull(store.loadSecret(id))
+            assertEquals(ApiSecretStore.SecretHealth.MISSING, store.secretHealth(id))
+            assertFalse(file.exists())
+            assertFalse(backup.exists())
+            assertFalse(marker.exists())
+        }
+    }
+
     @Test fun removeSecretAndClearAllRemoveUnreadableMarkers() = runBlocking {
         val good = freshStore()
         val endpoint = "https://api.example/v1"

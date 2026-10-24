@@ -69,6 +69,7 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
             if (!source.baseFile.exists() && !backup.exists()) return@synchronized SecretRead.Missing
             if (source.baseFile.length() > 32_768 || backup.length() > 32_768) {
                 source.delete()
+                clearUnreadableMarker(id)
                 return@synchronized SecretRead.Missing
             }
             source.openRead().use { input ->
@@ -81,6 +82,7 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
                 }
                 if (size > 32_768) {
                     source.delete()
+                    clearUnreadableMarker(id)
                     return@synchronized SecretRead.Missing
                 }
                 val value = String(crypto.decrypt(bytes.copyOf(size)), Charsets.UTF_8)
@@ -100,10 +102,17 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
         }
     }
 
-    private fun isPermanentInvalidation(error: Throwable): Boolean =
-        error is android.security.keystore.KeyPermanentlyInvalidatedException ||
-            error is IllegalArgumentException ||
-            (error.cause != null && isPermanentInvalidation(error.cause!!))
+    private fun isPermanentInvalidation(error: Throwable): Boolean {
+        val seen = mutableSetOf<Throwable>()
+        var current: Throwable? = error
+        while (current != null && seen.add(current)) {
+            if (current is android.security.keystore.KeyPermanentlyInvalidatedException ||
+                current is CorruptSecretFormatException
+            ) return true
+            current = current.cause
+        }
+        return false
+    }
 
     fun removeSecret(id: String) = synchronized(lock) {
         file(id).delete()

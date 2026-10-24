@@ -1,6 +1,13 @@
 package com.sprich.app.storage
 
 /**
+ * Ciphertext that cannot possibly be a valid stored secret (for example a truncated header).
+ * This is deliberately distinct from a generic [IllegalArgumentException], which may come from
+ * an unrelated bug and must not cause the stored ciphertext to be deleted.
+ */
+internal class CorruptSecretFormatException(message: String) : Exception(message)
+
+/**
  * Crypto backend for API secret storage.
  * Production implementation uses Android Keystore AES-GCM.
  * Test implementations live in src/test only and must never be used in production.
