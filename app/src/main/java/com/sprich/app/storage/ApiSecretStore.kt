@@ -29,6 +29,10 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
         require(secretIdPattern.matches(id) && id != "." && id != "..")
         return AtomicFile(File(directory(), "$id.enc"))
     }
+    private fun unreadableMarker(id: String): File = File(directory(), "$id.unreadable")
+    private fun clearUnreadableMarker(id: String) {
+        runCatching { unreadableMarker(id).delete() }
+    }
 
     /** Low-level storage API. Production callers use provider-bound references below, on IO. */
     open fun saveSecret(id: String, plaintext: String): SecretStoreResult = synchronized(lock) {
@@ -41,6 +45,7 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
             val output = destination.startWrite()
             try { output.write(encrypted); destination.finishWrite(output) }
             catch (e: Exception) { destination.failWrite(output); throw e }
+            clearUnreadableMarker(id)
             SecretStoreResult.Success
         } catch (_: Exception) { SecretStoreResult.Failure("Secure storage unavailable. Try again.") }
     }
@@ -54,6 +59,7 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
         data class Ok(val value: String) : SecretRead
         data object Missing : SecretRead
         data object Unavailable : SecretRead
+        data object Invalidated : SecretRead
     }
 
     private fun readSecret(id: String): SecretRead = synchronized(lock) {
@@ -77,13 +83,20 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
                     source.delete()
                     return@synchronized SecretRead.Missing
                 }
-                SecretRead.Ok(String(crypto.decrypt(bytes.copyOf(size)), Charsets.UTF_8))
+                val value = String(crypto.decrypt(bytes.copyOf(size)), Charsets.UTF_8)
+                clearUnreadableMarker(id)
+                SecretRead.Ok(value)
             }
         } catch (e: Exception) {
             // A corrupt file or permanently invalidated Keystore key cannot recover. A generic
             // Keystore/IO failure may be transient, so keep the ciphertext for a later retry.
-            if (isPermanentInvalidation(e)) runCatching { file(id).delete() }
-            if (isPermanentInvalidation(e)) SecretRead.Missing else SecretRead.Unavailable
+            if (isPermanentInvalidation(e)) {
+                runCatching { file(id).delete() }
+                clearUnreadableMarker(id)
+                SecretRead.Invalidated
+            } else {
+                SecretRead.Unavailable
+            }
         }
     }
 
@@ -92,7 +105,10 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
             error is IllegalArgumentException ||
             (error.cause != null && isPermanentInvalidation(error.cause!!))
 
-    fun removeSecret(id: String) = synchronized(lock) { file(id).delete() }
+    fun removeSecret(id: String) = synchronized(lock) {
+        file(id).delete()
+        clearUnreadableMarker(id)
+    }
     fun clearAll() = synchronized(lock) {
         val dir = directory()
         check(dir.deleteRecursively()) { "Could not clear keys" }
@@ -101,7 +117,7 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
     enum class SecretHealth { MISSING, AVAILABLE, UNAVAILABLE }
     fun secretHealth(id: String): SecretHealth = when (readSecret(id)) {
         is SecretRead.Ok -> SecretHealth.AVAILABLE
-        SecretRead.Missing -> SecretHealth.MISSING
+        SecretRead.Missing, SecretRead.Invalidated -> SecretHealth.MISSING
         SecretRead.Unavailable -> SecretHealth.UNAVAILABLE
     }
     fun hasSecret(id: String): Boolean = !loadSecret(id).isNullOrBlank()
@@ -109,8 +125,10 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
 
     /**
      * Best-effort removal of abandoned bound secrets that can no longer be decrypted.
-     * Decryptable files are retained because an in-flight utterance plan may still use them,
-     * and non-bound legacy ids are never touched.
+     * A transient read failure only records a marker and keeps the ciphertext; a later failed
+     * prune removes it. Permanent invalidation removes it immediately. Decryptable files are
+     * retained because an in-flight utterance plan may still use them, and non-bound legacy ids
+     * are never touched.
      */
     fun pruneUnreferenced(referenced: Set<String>) = synchronized(lock) {
         val dir = directory()
@@ -127,11 +145,28 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
             .distinct()
             .toList()
         candidates.forEach { id ->
-            if (secretHealth(id) != SecretHealth.UNAVAILABLE) return@forEach
-            runCatching { file(id).delete() }
-            // AtomicFile keeps its backup sibling if an earlier write was interrupted.
-            runCatching { File(dir, "$id.enc.bak").delete() }
+            when (readSecret(id)) {
+                is SecretRead.Ok -> clearUnreadableMarker(id)
+                SecretRead.Missing -> clearUnreadableMarker(id)
+                SecretRead.Invalidated -> deleteUnreadableFiles(dir, id)
+                SecretRead.Unavailable -> {
+                    val marker = unreadableMarker(id)
+                    if (marker.exists()) {
+                        deleteUnreadableFiles(dir, id)
+                    } else {
+                        // First failure: remember it without ever storing key material.
+                        runCatching { marker.writeText(System.currentTimeMillis().toString()) }
+                    }
+                }
+            }
         }
+    }
+
+    private fun deleteUnreadableFiles(dir: File, id: String) {
+        runCatching { file(id).delete() }
+        // AtomicFile keeps its backup sibling if an earlier write was interrupted.
+        runCatching { File(dir, "$id.enc.bak").delete() }
+        clearUnreadableMarker(id)
     }
 
     suspend fun saveBoundSecret(provider: String, endpoint: String, key: String): String? {

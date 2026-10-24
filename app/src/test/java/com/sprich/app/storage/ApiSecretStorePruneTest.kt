@@ -26,8 +26,9 @@ class ApiSecretStorePruneTest {
         ApiSecretStore(context, crypto).also { it.clearAll() }
 
     private fun secretFile(id: String) = File(context.noBackupFilesDir, "api_secrets/$id.enc")
+    private fun markerFile(id: String) = File(context.noBackupFilesDir, "api_secrets/$id.unreadable")
 
-    @Test fun unreferencedUnreadableBoundRefIsDeletedAfterReentry() = runBlocking {
+    @Test fun unreferencedUnreadableBoundRefIsDeletedAfterRepeatedPruneFailure() = runBlocking {
         val prefs = Preferences(context).also { it.clearAll() }
         val good = freshStore()
         val endpoint = "https://api.example/v1"
@@ -44,11 +45,84 @@ class ApiSecretStorePruneTest {
 
         val latest = prefs.runtimeConfigSnapshot.first()
         assertEquals(newRef, latest.sttCredentialRef)
-        unreadable.pruneUnreferenced(setOf(latest.sttCredentialRef, latest.refinementCredentialRef))
+        val latestRefs = setOf(latest.sttCredentialRef, latest.refinementCredentialRef)
 
+        unreadable.pruneUnreferenced(latestRefs)
+        assertTrue(secretFile(oldRef).exists())
+        assertTrue(markerFile(oldRef).exists())
+
+        unreadable.pruneUnreferenced(latestRefs)
         assertFalse(secretFile(oldRef).exists())
+        assertFalse(markerFile(oldRef).exists())
         assertTrue(secretFile(newRef).exists())
         assertEquals("new-key", unreadable.loadBoundSecret(newRef, "custom", endpoint))
+    }
+
+    @Test fun singleTransientPruneFailureKeepsCiphertextAndRecordsMarker() = runBlocking {
+        val good = freshStore()
+        val endpoint = "https://api.example/v1"
+        val ref = good.saveBoundSecret("custom", endpoint, "recoverable-key")!!
+        val unreadable = ApiSecretStore(context, AeadBadTagCryptoBackend(secretFile(ref).readBytes()))
+
+        unreadable.pruneUnreferenced(emptySet())
+
+        assertTrue(secretFile(ref).exists())
+        val marker = markerFile(ref)
+        assertTrue(marker.exists())
+        val recorded = marker.readText()
+        assertFalse(recorded.contains("recoverable-key"))
+        assertTrue(recorded.toLong() > 0)
+        assertEquals("recoverable-key", good.loadBoundSecret(ref, "custom", endpoint))
+    }
+
+    @Test fun repeatedTransientPruneFailureDeletesCiphertextBackupAndMarker() = runBlocking {
+        val good = freshStore()
+        val endpoint = "https://api.example/v1"
+        val ref = good.saveBoundSecret("custom", endpoint, "unrecoverable-key")!!
+        val file = secretFile(ref)
+        val backup = File(file.path + ".bak")
+        val unreadable = ApiSecretStore(context, AeadBadTagCryptoBackend(file.readBytes()))
+
+        unreadable.pruneUnreferenced(emptySet())
+        assertTrue(file.exists())
+        assertTrue(markerFile(ref).exists())
+
+        // AtomicFile adopts an interrupted-write backup on read, so recreate one before the retry.
+        backup.writeBytes(file.readBytes())
+        unreadable.pruneUnreferenced(emptySet())
+        assertFalse(file.exists())
+        assertFalse(backup.exists())
+        assertFalse(markerFile(ref).exists())
+        assertEquals(ApiSecretStore.SecretHealth.MISSING, unreadable.secretHealth(ref))
+    }
+
+    @Test fun successfulReadAfterTransientFailureClearsMarkerAndPreventsDeletion() = runBlocking {
+        val good = freshStore()
+        val endpoint = "https://api.example/v1"
+        val ref = good.saveBoundSecret("custom", endpoint, "recoverable-key")!!
+        val unreadable = ApiSecretStore(context, AeadBadTagCryptoBackend(secretFile(ref).readBytes()))
+
+        unreadable.pruneUnreferenced(emptySet())
+        assertTrue(markerFile(ref).exists())
+
+        assertEquals("recoverable-key", good.loadBoundSecret(ref, "custom", endpoint))
+        assertFalse(markerFile(ref).exists())
+
+        unreadable.pruneUnreferenced(emptySet())
+        assertTrue(secretFile(ref).exists())
+        assertTrue(markerFile(ref).exists())
+    }
+
+    @Test fun permanentlyInvalidatedUnreferencedBoundRefIsDeletedOnFirstPrune() = runBlocking {
+        val good = freshStore()
+        val ref = good.saveBoundSecret("custom", "https://api.example/v1", "invalidated-key")!!
+        val invalidated = ApiSecretStore(context, PermanentlyInvalidatedCryptoBackend())
+
+        invalidated.pruneUnreferenced(emptySet())
+
+        assertFalse(secretFile(ref).exists())
+        assertFalse(markerFile(ref).exists())
+        assertEquals(ApiSecretStore.SecretHealth.MISSING, invalidated.secretHealth(ref))
     }
 
     @Test fun unreadableButStillReferencedBoundRefIsKept() = runBlocking {
@@ -57,8 +131,10 @@ class ApiSecretStorePruneTest {
         val unreadable = ApiSecretStore(context, AeadBadTagCryptoBackend(secretFile(ref).readBytes()))
 
         unreadable.pruneUnreferenced(setOf(ref))
+        unreadable.pruneUnreferenced(setOf(ref))
 
         assertTrue(secretFile(ref).exists())
+        assertFalse(markerFile(ref).exists())
         assertEquals(ApiSecretStore.SecretHealth.UNAVAILABLE, unreadable.secretHealth(ref))
     }
 
@@ -79,8 +155,10 @@ class ApiSecretStorePruneTest {
         val unreadable = ApiSecretStore(context, AeadBadTagCryptoBackend(secretFile("stt_default").readBytes()))
 
         unreadable.pruneUnreferenced(emptySet())
+        unreadable.pruneUnreferenced(emptySet())
 
         assertTrue(secretFile("stt_default").exists())
+        assertFalse(markerFile("stt_default").exists())
         assertEquals(ApiSecretStore.SecretHealth.UNAVAILABLE, unreadable.secretHealth("stt_default"))
     }
 
@@ -96,5 +174,26 @@ class ApiSecretStorePruneTest {
 
         // A transient failure must not destroy the ciphertext for a later successful retry.
         assertEquals("recoverable-key", good.loadBoundSecret(ref, "custom", "https://api.example/v1"))
+    }
+
+    @Test fun removeSecretAndClearAllRemoveUnreadableMarkers() = runBlocking {
+        val good = freshStore()
+        val endpoint = "https://api.example/v1"
+        val removedRef = good.saveBoundSecret("custom", endpoint, "removed-key")!!
+        val unreadable = ApiSecretStore(context, AeadBadTagCryptoBackend(secretFile(removedRef).readBytes()))
+
+        unreadable.pruneUnreferenced(emptySet())
+        assertTrue(markerFile(removedRef).exists())
+        unreadable.removeSecret(removedRef)
+        assertFalse(secretFile(removedRef).exists())
+        assertFalse(markerFile(removedRef).exists())
+
+        val clearedRef = good.saveBoundSecret("custom", endpoint, "cleared-key")!!
+        val unreadableAgain = ApiSecretStore(context, AeadBadTagCryptoBackend(secretFile(clearedRef).readBytes()))
+        unreadableAgain.pruneUnreferenced(emptySet())
+        assertTrue(markerFile(clearedRef).exists())
+        unreadableAgain.clearAll()
+        assertFalse(secretFile(clearedRef).exists())
+        assertFalse(markerFile(clearedRef).exists())
     }
 }
