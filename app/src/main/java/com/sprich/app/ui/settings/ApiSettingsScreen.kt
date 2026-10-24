@@ -142,9 +142,13 @@ import kotlinx.coroutines.flow.first
             busy = true; result = null; message = null; providerDetail = null; liveProgress = null
             var createdRef: String? = null
             var replacedRef: String? = null
+            var committed = false
             try {
                 val epoch = ApiHttp.currentEpoch
                 val previousChoice = prefs.apiChoiceForCheck(use)
+                // Capture before the commit: DataStore can finish the write and then surface a
+                // cancellation, so an assignment after commitApiCheck returns would leak the old file.
+                replacedRef = previousChoice.credentialRef
                 val previous = prefs.runtimeConfigSnapshot.first()
                 // A stale screen must not reattach an unreferenced key while its removal is finishing.
                 val currentReuse = reuse.takeIf { it in setOf(previous.sttCredentialRef, previous.refinementCredentialRef) }.orEmpty()
@@ -166,7 +170,7 @@ import kotlinx.coroutines.flow.first
                 } else ApiConnectionCheck.check(choice, secret)
                 currentCoroutineContext().ensureActive()
                 if (prefs.commitApiCheck(choice, previousChoice, epoch)) {
-                    replacedRef = previousChoice.credentialRef
+                    committed = true
                     key = ""
                     result = checked
                 }
@@ -191,9 +195,13 @@ import kotlinx.coroutines.flow.first
                 // Keep a failed candidate's masked input for retry, and only remove keys no longer in use.
                 withContext(NonCancellable + Dispatchers.IO) {
                     val latest = prefs.runtimeConfigSnapshot.first()
+                    val latestRefs = setOf(latest.sttCredentialRef, latest.refinementCredentialRef)
                     listOfNotNull(createdRef, replacedRef).filter { it.startsWith("bound_") }.distinct().forEach { ref ->
-                        if (ref !in setOf(latest.sttCredentialRef, latest.refinementCredentialRef)) secrets.removeSecret(ref)
+                        if (ref !in latestRefs) secrets.removeSecret(ref)
                     }
+                    // A previous crash or cancellation can leave an unreferenced undecryptable ref
+                    // that this attempt never saw. Only sweep after a confirmed re-entry commit.
+                    if (committed && enteredKey.isNotEmpty()) secrets.pruneUnreferenced(latestRefs)
                 }
             }
         }

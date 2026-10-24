@@ -26,7 +26,7 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
         check(it.isDirectory || it.mkdirs()) { "Secure storage unavailable" }
     }
     private fun file(id: String): AtomicFile {
-        require(Regex("[A-Za-z0-9._-]{1,120}").matches(id) && id != "." && id != "..")
+        require(secretIdPattern.matches(id) && id != "." && id != "..")
         return AtomicFile(File(directory(), "$id.enc"))
     }
 
@@ -107,6 +107,33 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
     fun hasSecret(id: String): Boolean = !loadSecret(id).isNullOrBlank()
     fun hasDecryptableSecret(id: String) = secretHealth(id) == SecretHealth.AVAILABLE
 
+    /**
+     * Best-effort removal of abandoned bound secrets that can no longer be decrypted.
+     * Decryptable files are retained because an in-flight utterance plan may still use them,
+     * and non-bound legacy ids are never touched.
+     */
+    fun pruneUnreferenced(referenced: Set<String>) = synchronized(lock) {
+        val dir = directory()
+        val candidates = dir.listFiles().orEmpty().asSequence()
+            .filter { it.isFile }
+            .mapNotNull { candidate ->
+                when {
+                    candidate.name.endsWith(".enc.bak") -> candidate.name.removeSuffix(".enc.bak")
+                    candidate.name.endsWith(".enc") -> candidate.name.removeSuffix(".enc")
+                    else -> null
+                }
+            }
+            .filter { it.startsWith("bound_") && it !in referenced && secretIdPattern.matches(it) }
+            .distinct()
+            .toList()
+        candidates.forEach { id ->
+            if (secretHealth(id) != SecretHealth.UNAVAILABLE) return@forEach
+            runCatching { file(id).delete() }
+            // AtomicFile keeps its backup sibling if an earlier write was interrupted.
+            runCatching { File(dir, "$id.enc.bak").delete() }
+        }
+    }
+
     suspend fun saveBoundSecret(provider: String, endpoint: String, key: String): String? {
         val normalized = normalizeEndpoint(endpoint) ?: return null
         if (provider.isBlank() || key.isBlank() || key.length > 4096 || key.any { it.isISOControl() }) return null
@@ -131,6 +158,7 @@ open class ApiSecretStore(private val context: Context, private val crypto: Secr
     }
     companion object {
         private val lock = Any()
+        private val secretIdPattern = Regex("[A-Za-z0-9._-]{1,120}")
         private fun normalizeEndpoint(endpoint: String): String? {
             val url = endpoint.toHttpUrlOrNull() ?: return null
             if (!url.isHttps || url.username.isNotEmpty() || url.password.isNotEmpty() || url.fragment != null || url.query != null) return null

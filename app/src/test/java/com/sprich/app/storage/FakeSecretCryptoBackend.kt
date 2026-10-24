@@ -27,6 +27,17 @@ class FailingCryptoBackend(private val msg: String = "keystore unavailable") : S
     override fun decrypt(combined: ByteArray): ByteArray = throw IllegalStateException(msg)
 }
 
+/** Simulates unreadable ciphertext (AEADBadTag) while still allowing new keys to be saved. */
+class AeadBadTagCryptoBackend(private vararg val unreadable: ByteArray) : SecretCryptoBackend {
+    private val delegate = FakeSecretCryptoBackend()
+
+    override fun encrypt(plaintext: ByteArray): ByteArray = delegate.encrypt(plaintext)
+
+    override fun decrypt(combined: ByteArray): ByteArray =
+        if (unreadable.any { it.contentEquals(combined) }) throw javax.crypto.AEADBadTagException("bad tag")
+        else delegate.decrypt(combined)
+}
+
 /** Simulates a lock-screen change that permanently invalidates the Keystore key. */
 class PermanentlyInvalidatedCryptoBackend : SecretCryptoBackend {
     override fun encrypt(plaintext: ByteArray): ByteArray =
