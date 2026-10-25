@@ -22,11 +22,12 @@ with zipfile.ZipFile(aar) as z:
 print('PASS: recognition-only ARM64 runtime inputs match reviewed provenance')
 source=(root/'app/src/main/java/com/sprich/app/models/manager/ModelManifest.kt').read_text().split(') + if (com.sprich.app.BuildConfig.DEBUG)')[0]
 entries=re.findall(r'ModelEntry\(\s*id = "([^"]+)".*?sourceUrl = "([^"]+)".*?sizeBytes = (\d+)L.*?sha256 = "([0-9a-f]+)"',source,re.S)
-require({e[0] for e in entries}=={'accurate','lid','fastconformer'},'unexpected production model manifest')
+require({e[0] for e in entries}=={'accurate','lid'},'unexpected production model manifest')
 for name,url,size,digest in entries:
     require(len(digest)==64 and len(set(digest))>10,'missing archive hash: '+name)
     require(url.startswith('https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/'),'unexpected model source: '+name)
     require(int(size)>1_000_000,'missing measured archive size: '+name)
+    require('fastconformer' not in url.lower() and 'ngc' not in url.lower(),'NGC/FastConformer artifact still in production manifest: '+name)
     if a.archives:
         path=a.archives/url.rsplit('/',1)[1]
         require(path.is_file(),'required model archive unavailable: '+str(path))

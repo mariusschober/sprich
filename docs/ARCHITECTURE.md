@@ -7,8 +7,8 @@ AudioRecord (16 kHz mono PCM16)
   → per-IME Silero speech detector + bounded endpoint state machine
   → immutable runtime configuration and utterance plan at onset
   → immutable PCM snapshot at endpoint or explicit finish
-  → Automatic: Whisper Tiny language ID → FastConformer CTC
-     Accurate: Canary with explicit EN / DE / ES / FR
+  → Automatic: Whisper Tiny language ID → Canary 180M Flash in the detected language
+     Accurate: Canary 180M Flash with explicit EN / DE / ES / FR
   → deterministic spoken editing, vocabulary and typography
   → authority check → at most one irreversible editor mutation
 ```

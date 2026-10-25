@@ -35,7 +35,7 @@ class FreshInstallDeviceTest {
 
         Log.i("FreshInstall", "=== Fresh-install gate start ===")
         // 1-2: simulate cleared data — delete all models (no adb push allowed)
-        mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron()
+        mm.deleteCanary(); mm.deleteLid(); mm.deleteCanary(); mm.deleteNemotron()
         Log.i("FreshInstall", "cleared all models, canaryReady=${mm.isCanaryReady()} lidReady=${mm.isWhisperTinyReady()}")
 
         // Verify Auto unavailable when LID not downloaded (single source)
@@ -101,18 +101,18 @@ class FreshInstallDeviceTest {
             lid.unload()
         }
 
-        // Automatic also needs FastConformer: provision it through the same
-        // production flow so the device ends fully installed.
-        dm.downloadFastConformer { p -> Log.i("FreshInstall", "fastconformer download $p") }
-        assertTrue("fastconformer Ready after production download", mm.verifyInstalled("fastconformer"))
-        Log.i("FreshInstall", "fastconformer production download Ready")
+        // T3: Automatic = Whisper Tiny LID + Canary 180M Flash. Provision Canary through the
+        // same production download flow so the device ends with a license-clean configuration.
+        dm.downloadCanary { p -> Log.i("FreshInstall", "canary download $p") }
+        assertTrue("canary Ready after production download", mm.verifyInstalled("accurate"))
+        Log.i("FreshInstall", "canary production download Ready (Automatic is now LID + Canary)")
 
         // 9: reboot/relaunch — a FRESH manager (no in-memory state, like a new
         // process) must re-verify from disk: receipts survive restarts.
         val mm2 = ModelManager(app)
         assertTrue("canary must survive relaunch", mm2.verifyInstalled("accurate"))
         assertTrue("lid must survive relaunch", mm2.verifyInstalled("lid"))
-        assertTrue("fastconformer must survive relaunch", mm2.verifyInstalled("fastconformer"))
+        assertTrue("canary must survive relaunch", mm2.verifyInstalled("accurate"))
         Log.i("FreshInstall", "relaunch check canaryReady=${mm2.isCanaryReady()} lidReady=${mm2.isWhisperTinyReady()}")
 
         // 11-13: delete model from Settings and verify Auto becomes unavailable cleanly

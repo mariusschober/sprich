@@ -102,7 +102,7 @@
     <string name="privacy">Privacy</string>
     <string name="advanced">Advanced</string>
     <string name="hide_advanced">Hide advanced</string>
-    <string name="model_details">Automatic: Whisper Tiny language detection and FastConformer CTC. Accurate: Canary 180M Flash. All run on your phone.</string>
+    <string name="model_details">Automatic: Whisper Tiny language detection and Canary 180M Flash (license-clean). Accurate: Canary 180M Flash with a selected language. All run on your phone.</string>
     <string name="licenses">Licenses and notices</string>
     <string name="clear_data">Clear Sprich data</string>
     <string name="clear_data_question">Clear Sprich data?</string>
@@ -376,7 +376,6 @@
     <string name="notice_description_kissfft">Frequency analysis inside the speech runtime.</string>
     <string name="notice_description_llvm">Native C++ support used by Sprich and its dependencies. The complete notice distributed with the exact Android NDK toolchain is included.</string>
     <string name="notice_description_whisper">Identifies the language for Automatic mode. Downloaded separately; not included in the APK.</string>
-    <string name="notice_description_fastconformer">Recognition model for Automatic mode. Downloaded separately; not included in the APK. Its model card specifies NGC terms, not the Apache license of the training or conversion code.</string>
-    <string name="notice_description_canary">Recognition model for Accurate mode. Downloaded separately; not included in the APK.</string>
+    <string name="notice_description_canary">Recognition model for Automatic and Accurate modes. Downloaded separately; not included in the APK.</string>
     <string name="notice_description_silero">Detects when speech begins and ends. This small model is included in Sprich and runs locally. The exact model asset is pinned in docs/MODELS.md in the Sprich repository.</string>
 </resources>

@@ -85,10 +85,9 @@ internal fun openAppSettings(context: Context) { context.startActivity(Intent(Se
     val downloader = remember { DownloadManager(context, manager) }
     val scope = rememberCoroutineScope()
     val lid by manager.lidStatus.collectAsState()
-    val fast by manager.fastConformerStatus.collectAsState()
     val accurate by manager.canaryStatus.collectAsState()
-    val states = if (automatic) listOf(lid, fast) else listOf(accurate)
-    val ids = if (automatic) listOf("lid", "fastconformer") else listOf("accurate")
+    val states = if (automatic) listOf(lid, accurate) else listOf(accurate)
+    val ids = if (automatic) listOf("lid", "accurate") else listOf("accurate")
     val ready = states.all { it is ModelStatus.Ready }
     val busy = states.any { it is ModelStatus.Downloading || it is ModelStatus.Verifying }
     val failed = states.filterIsInstance<ModelStatus.Failed>().firstOrNull()

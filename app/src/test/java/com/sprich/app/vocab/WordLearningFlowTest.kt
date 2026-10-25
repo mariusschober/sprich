@@ -27,7 +27,7 @@ import java.io.File
 class WordLearningFlowTest {
     private lateinit var repo: VocabRepository
     private val owners = ViewModelStore()
-    private val profile = RecognitionProfile.local(LocalAsrRoute.AutomaticFastConformer, false)
+    private val profile = RecognitionProfile.local(LocalAsrRoute.AutomaticCanary, false)
     @Before fun setUp() = runBlocking {
         Dispatchers.setMain(Dispatchers.Unconfined)
         val context = ApplicationProvider.getApplicationContext<Context>()

@@ -172,7 +172,6 @@ class SprichIME : InputMethodService() {
     private var localCoordinator: LocalTranscriptionCoordinator? = null
     // Diagnostics for Auto-without-Canary gate
     private val canaryLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
-    private val fastLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
     private val lidLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
     private var startJob: Job? = null
     private var engineJob: Job? = null
@@ -407,14 +406,11 @@ class SprichIME : InputMethodService() {
     // ViewRootImpl rejects accessibility content changes off the UI thread
     // (error today, fatal on future Android) — audio callbacks must hop here.
     private val mainThreadHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    // Production Automatic: Tiny LID (Whisper Tiny 98M, per-utterance SLID) → FastConformer CTC 126M (implicit EN-DE-ES-FR)
-    // Accurate explicit: Canary 180M Flash INT8 (fixed EN/DE/ES/FR)
+    // Production Automatic: Whisper Tiny LID (98M, per-utterance) → Canary 180M Flash INT8 with the
+    // detected language (license-clean; FastConformer/NGC removed in T3).
+    // Accurate explicit: the same Canary 180M Flash INT8 (fixed EN/DE/ES/FR).
     private val lidEngine by lazy {
         com.sprich.app.speech.lid.WhisperLidEngine(this, (application as SprichApp).let { com.sprich.app.models.manager.ModelManager(it) })
-    }
-    // FastConformer CTC EN-DE-ES-FR 14288 INT8 — primary for Automatic, not fallback
-    private val fastConformerEngine by lazy {
-        com.sprich.app.speech.fastconformer.FastConformerEngine(this)
     }
 
     // Views — native View IME, full-bar tappable magical
@@ -1110,7 +1106,6 @@ class SprichIME : InputMethodService() {
             try { utteranceAudio.clear() } catch (_: Exception) {}
             try { engine.clearUtteranceCapture() } catch (_: Exception) {}
             // Keep engine ring clear for partials when in Accurate mode, but collector is authoritative
-            try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
             currentUtteranceToken = null
             activeUtterance = null
             utteranceActive.set(false)
@@ -1235,7 +1230,6 @@ class SprichIME : InputMethodService() {
             try { retiredCapture?.awaitStop() } catch (_: Exception) {}
             try { speechPresence.release() } catch (_: Exception) {}
             try { lidEngine.unload() } catch (_: Exception) {}
-            try { fastConformerEngine.unload() } catch (_: Exception) {}
             try { engine.unload() } catch (_: Exception) {}
             try { utteranceAudio.clear() } catch (_: Exception) {}
             try { composition.discardPartial(null) } catch (_: Exception) {}
@@ -1307,34 +1301,26 @@ class SprichIME : InputMethodService() {
                 showStaticMessage(com.sprich.app.R.string.ime_no_cursor, com.sprich.app.R.string.ime_no_cursor_hint)
                 return
             }
-            // Language handling: Automatic = Tiny LID + FastConformer (no Canary), Accurate = Canary explicit
-            // Automatic requires BOTH Tiny LID and FastConformer (isAutomaticReady) when ON_DEVICE or LOCAL_API_FALLBACK.
-            // API_PRIMARY must NOT require local models when provider supports Automatic (phase 4).
+            // Language handling: Automatic = Tiny LID + Canary with detected language, Accurate = Canary explicit
+            // Automatic requires BOTH Whisper Tiny LID and Canary (isAutomaticReady) when ON_DEVICE
+            // or LOCAL_API_FALLBACK. API_PRIMARY must NOT require local models (phase 4).
             val requiresLocalForAuto = transcriptionMode == TranscriptionMode.ON_DEVICE || transcriptionMode == TranscriptionMode.LOCAL_API_FALLBACK
             if (speechLanguage is SpeechLanguage.Auto && requiresLocalForAuto) {
-                // Winner 2026-09-02: Automatic = Tiny LID (98M) + FastConformer 126M (Architecture B). Both required.
+                // T3: Automatic = Whisper Tiny LID (98M) + Canary 180M Flash (198M). Both required.
                 val mmForCheck = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
                 val lidReady = try { mmForCheck?.isWhisperTinyReady() == true } catch (_: Exception) { false }
-                val fastReady = try { mmForCheck?.isFastConformerReady() == true } catch (_: Exception) { false }
-                if (!lidReady) {
-                    Log.w("SprichIME", "Auto language requested but Tiny LID not downloaded — explicit selection required.")
+                val canaryReady = try { mmForCheck?.isCanaryReady() == true } catch (_: Exception) { false }
+                if (!lidReady || !canaryReady) {
+                    Log.w("SprichIME", "Auto language requested but Tiny LID/Canary not downloaded — explicit selection required (lid=$lidReady canary=$canaryReady)")
                     try { session.error("language auto not supported without LID") } catch (_: Exception) {}
                     showStaticMessage(com.sprich.app.R.string.ime_setup, com.sprich.app.R.string.ime_setup_hint)
                     try { vibrateTick() } catch (_: Exception) {}
                     writeDiagnostics("blocked Auto (no LID) resolved=${activeConfig.resolvedLanguageTag()} speechLanguage=$speechLanguage")
                     return
                 }
-                if (!fastReady) {
-                    Log.w("SprichIME", "Auto (winner FastConformer) requested but FastConformer 126M not downloaded — download required.")
-                    try { session.error("auto not supported without FastConformer") } catch (_: Exception) {}
-                    showStaticMessage(com.sprich.app.R.string.ime_setup, com.sprich.app.R.string.ime_setup_hint)
-                    try { vibrateTick() } catch (_: Exception) {}
-                    writeDiagnostics("blocked Auto (no FastConformer) speechLanguage=$speechLanguage")
-                    return
-                }
-                Log.i("SprichIME", "Auto via Tiny LID per-utterance + FastConformer 126M (winner) — proceeding, LID will detect EN/DE/ES/FR, FastConformer will transcribe (RTF 0.038)")
+                Log.i("SprichIME", "Auto via Whisper Tiny LID + Canary 180M Flash — proceeding; LID detects EN/DE/ES/FR and Canary transcribes with the detected language")
             } else if (speechLanguage is SpeechLanguage.Auto && transcriptionMode == TranscriptionMode.API_PRIMARY) {
-                Log.i("SprichIME", "API_PRIMARY with Auto — skipping local LID/FastConformer gate, provider handles language (Phase 4 independence)")
+                Log.i("SprichIME", "API_PRIMARY with Auto — skipping local LID/Canary gate, provider handles language (Phase 4 independence)")
                 // Local fallback will be loaded lazily on remote failure if available
             }
             if (session.state.value is SessionState.Listening || session.state.value is SessionState.Speech) {
@@ -1397,11 +1383,15 @@ class SprichIME : InputMethodService() {
                     } else Result.success(Unit)
                 }
             } else when (routeForSession) {
-                is LocalAsrRoute.AutomaticFastConformer -> {
-                    // Automatic already validated LID+Fast ready above; now load them, never Canary
+                is LocalAsrRoute.AutomaticCanary -> {
+                    // Automatic already validated LID+Canary readiness above; load language detection
+                    // first, then the Canary recognizer used with the detected language.
                     val lidR = try { lidEngine.load().also { lidLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
-                    val fastR = try { fastConformerEngine.load().also { fastLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
-                    if (lidR.isFailure) lidR else fastR
+                    if (lidR.isFailure) {
+                        lidR
+                    } else {
+                        try { engine.load().also { canaryLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
+                    }
                 }
                 is LocalAsrRoute.AccurateCanary -> {
                     try { engine.load().also { canaryLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
@@ -1421,7 +1411,7 @@ class SprichIME : InputMethodService() {
             if (requiresLocalLoad) speechPresence.prepare(snapAtStart.whisperMode)
             if (generation != sessionGeneration.get()) return
             // Ensure coordinator exists
-            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, engine)
             // Housekeeping: unload unused resident engines if queue drained
             maybeUnloadUnused(routeForSession)
 
@@ -1436,7 +1426,6 @@ class SprichIME : InputMethodService() {
             lastPartialText = ""
             try { utteranceAudio.clear() } catch (_: Exception) {}
             try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-            try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
             currentUtteranceToken = null
             activeUtterance = null
             Log.i("SprichIME", "vad reset ${vad.calibrationInfo()} activeConfig=$activeConfig prefsLang=$language speechLang=$speechLanguage")
@@ -1454,7 +1443,6 @@ class SprichIME : InputMethodService() {
             // All production routes transcribe the immutable final PCM snapshot once.
             // Avoid speculative Canary decoding and its second live PCM buffer.
             engine.cancelSession()
-            fastConformerEngine.cancelSession()
 
             val started = try {
                 audio.startWithOffset(
@@ -2070,7 +2058,7 @@ class SprichIME : InputMethodService() {
                 }
             } catch (_: Exception) {}
             // NEW: Unified transcription via UtterancePlan (Phase 2-5). One immutable plan per utterance, remote-first with safe fallback.
-            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, engine)
             // Ensure coordinator exists with shared HttpClient (connection pooling, keep-alive, HTTP/2)
             val plan = pending.plan
             val t0 = android.os.SystemClock.elapsedRealtime()
@@ -2638,7 +2626,6 @@ class SprichIME : InputMethodService() {
         lastPartialText = ""
         try { utteranceAudio.clear() } catch (_: Exception) {}
         try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-        try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
         session.error(reason)
         showStaticMessage(userStatus, userHint)
         writeDiagnostics("error=$reason generation=$generation staleDrops=$staleCallbackDrops claims=$finalizationClaims commits=$finalCommitCount")
@@ -2732,9 +2719,7 @@ class SprichIME : InputMethodService() {
                 engineJob = null
                 endpointJob = null
                 try { engine.cancelSession() } catch (_: Exception) {}
-                try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
                 try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-                try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
                 utteranceActive.set(false)
                 endpointPending.set(false)
                 lastPartialText = ""
@@ -2792,9 +2777,7 @@ class SprichIME : InputMethodService() {
         try { engineJob?.cancel() } catch (_: Exception) {}
         engineJob = null
         try { engine.cancelSession() } catch (_: Exception) {}
-        try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
         try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-        try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
         try { utteranceAudio.clear() } catch (_: Exception) {}
         utteranceActive.set(false)
         endpointPending.set(false)
@@ -2818,11 +2801,11 @@ class SprichIME : InputMethodService() {
     private fun writeDiagnostics(event: String) {
         if (!com.sprich.app.BuildConfig.DEBUG) return
         val routeStr = try { determineRoute(speechLanguage).toString() } catch (_: Exception) { "unknown" }
-        val collectorState = "collectorSamples=${utteranceAudio.size()} frozen=${utteranceAudio.isFrozen()} canaryLoads=${canaryLoadAttempts.get()} fastLoads=${fastLoadAttempts.get()}"
+        val collectorState = "collectorSamples=${utteranceAudio.size()} frozen=${utteranceAudio.isFrozen()} canaryLoads=${canaryLoadAttempts.get()} lidLoads=${lidLoadAttempts.get()}"
         val text = Diagnostics.collect(this, engine.engineId, languageTag = activeConfig.resolvedLanguageTag(), task = activeConfig.resolvedTask().name, sessionId = session.sessionId) +
             event + " route=$routeStr $collectorState\n" +
             latency.report() + "\n" +
-            "audioActive=${audio.isActive()} vad=${vad.currentState()} engineLoaded=${engine.isLoaded()} fastLoaded=${fastConformerEngine.isLoaded()} lidLoaded=${lidEngine.isLoaded()} sessionId=${session.sessionId}\n"
+            "audioActive=${audio.isActive()} vad=${vad.currentState()} engineLoaded=${engine.isLoaded()} lidLoaded=${lidEngine.isLoaded()} sessionId=${session.sessionId}\n"
         scope.launch(Dispatchers.IO) {
             try { Diagnostics.write(this@SprichIME, text) } catch (_: Exception) {}
         }
@@ -3601,7 +3584,7 @@ class SprichIME : InputMethodService() {
     private fun localRouteReady(route: LocalAsrRoute): Boolean {
         val manager = com.sprich.app.models.manager.ModelManager(this)
         return when (route) {
-            is LocalAsrRoute.AutomaticFastConformer -> manager.isAutomaticReady()
+            is LocalAsrRoute.AutomaticCanary -> manager.isAutomaticReady()
             is LocalAsrRoute.AccurateCanary -> manager.canaryStatus.value is com.sprich.app.models.manager.ModelStatus.Ready
         }
     }
@@ -3619,7 +3602,7 @@ class SprichIME : InputMethodService() {
 
     private fun ensureTranscriptionCoordinator(): TranscriptionCoordinator {
         transcriptionCoordinator?.let { return it }
-        if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+        if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, engine)
         val coord = TranscriptionCoordinator(localCoordinator!!, emptyMap(), apiSecretStore, DeadlinePolicy.DEFAULT)
         transcriptionCoordinator = coord
         return coord
@@ -3639,19 +3622,13 @@ class SprichIME : InputMethodService() {
         // Avoid keeping both heavy stacks resident — unload unused when queue drained.
         if (queueDepth.get() != 0) return // pending work — do not unload while finalizing
         when (activeRoute) {
-            is LocalAsrRoute.AutomaticFastConformer -> {
-                // Automatic keeps LID+Fast, unload Canary if idle
-                if (engine.isLoaded()) {
-                    engine.unload()
-                    Log.i("SprichIME", "maybeUnload: Automatic active — unloading Canary to save memory")
-                }
-            }
+            // Both local routes keep the Canary recognizer warm while listening; LID can be
+            // released between utterances because it only runs once per Automatic utterance.
+            is LocalAsrRoute.AutomaticCanary -> Unit
             is LocalAsrRoute.AccurateCanary -> {
-                // Accurate keeps Canary, may unload LID/Fast after safe transition
-                if (lidEngine.isLoaded() || fastConformerEngine.isLoaded()) {
+                if (lidEngine.isLoaded()) {
                     lidEngine.unload()
-                    fastConformerEngine.unload()
-                    Log.i("SprichIME", "maybeUnload: Accurate active — unloading LID/Fast")
+                    Log.i("SprichIME", "maybeUnload: Accurate active — unloading LID")
                 }
             }
         }
@@ -3659,18 +3636,16 @@ class SprichIME : InputMethodService() {
 
     // Visibility for tests — gate assertions
     fun getCanaryLoadAttemptsForTest(): Long = canaryLoadAttempts.get()
-    fun getFastLoadAttemptsForTest(): Long = fastLoadAttempts.get()
     fun getLidLoadAttemptsForTest(): Long = lidLoadAttempts.get()
     fun getLocalNativeDecodeStartsForTest(): Long = localNativeDecodeStarts
     fun getRemoteTranscriptionStartsForTest(): Long = remoteTranscriptionStarts
     fun getRefinementStartsForTest(): Long = refinementStarts
     fun getNativeDecodeStartsForTest(): Long = nativeDecodeStarts
     fun getLastRemoteFailureForTest(): com.sprich.app.speech.remote.ApiFailure? = try { transcriptionCoordinator?.lastRemoteFailure } catch (_: Exception) { null }
-    fun isAutomaticRouteForTest(): Boolean = determineRoute(speechLanguage) is LocalAsrRoute.AutomaticFastConformer
+    fun isAutomaticRouteForTest(): Boolean = determineRoute(speechLanguage) is LocalAsrRoute.AutomaticCanary
     fun getCurrentRouteForTest(): String = determineRoute(speechLanguage).toString()
     fun getUtteranceAudioCollectorForTest(): UtteranceAudioCollector = utteranceAudio
     fun isCanaryLoadedForTest(): Boolean = try { engine.isLoaded() } catch (_: Exception) { false }
-    fun isFastLoadedForTest(): Boolean = try { fastConformerEngine.isLoaded() } catch (_: Exception) { false }
     fun isLidLoadedForTest(): Boolean = try { lidEngine.isLoaded() } catch (_: Exception) { false }
 
     // Retained for instrumentation callers; mutation still passes the production authority gate.

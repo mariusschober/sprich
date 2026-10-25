@@ -26,16 +26,18 @@ class AutomaticReadinessTest {
         mm.writeReceipt(dir, e)
         assertTrue(mm.verifyInstalled(id))
     }
-    @Test fun automaticNeedsBothVerifiedInstallations() = runBlocking {
+    @Test fun automaticNeedsLidAndCanaryVerified() = runBlocking {
         val mm = manager(); mm.deleteAll()
         assertFalse(mm.isAutomaticReady())
         receiptFixture(mm, "lid")
         assertFalse(mm.isAutomaticReady())
-        receiptFixture(mm, "fastconformer")
+        receiptFixture(mm, "accurate")
         assertTrue(mm.isAutomaticReady())
-        assertFalse(mm.isCanaryReady())
+        assertTrue(mm.isCanaryReady())
         mm.deleteLid()
-        assertTrue(mm.isFastConformerReady())
+        assertTrue(mm.isCanaryReady())
+        assertFalse(mm.isAutomaticReady())
+        mm.deleteCanary()
         assertFalse(mm.isAutomaticReady())
     }
     @Test fun oldMarkerAndPlausibleSizesAreNotAuthority() = runBlocking {
@@ -50,10 +52,10 @@ class AutomaticReadinessTest {
         assertFalse(mm.isWhisperTinyReady())
     }
     @Test fun modificationInvalidatesReceiptAndReadiness() = runBlocking {
-        val mm = manager(); mm.deleteAll(); receiptFixture(mm, "fastconformer")
-        File(mm.directory("fastconformer"), "model.int8.onnx").appendText("corrupt")
-        assertFalse(mm.isFastConformerReady())
-        assertFalse(mm.verifyInstalled("fastconformer"))
+        val mm = manager(); mm.deleteAll(); receiptFixture(mm, "accurate")
+        File(mm.directory("accurate"), "encoder.int8.onnx").appendText("corrupt")
+        assertFalse(mm.isCanaryReady())
+        assertFalse(mm.verifyInstalled("accurate"))
     }
     @Test fun interruptedReplacementRestoresVerifiedBackup() = runBlocking {
         val mm = manager(); mm.deleteAll(); receiptFixture(mm, "lid")

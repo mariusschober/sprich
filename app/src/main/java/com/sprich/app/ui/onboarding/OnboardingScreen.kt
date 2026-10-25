@@ -27,12 +27,12 @@ import kotlinx.coroutines.launch
     val prefs = remember { Preferences(context) }
     val manager = remember { ModelManager(context) }
     val lid by manager.lidStatus.collectAsState()
-    val fast by manager.fastConformerStatus.collectAsState()
+    val accurate by manager.canaryStatus.collectAsState()
     val keyboard = rememberKeyboardState()
     val instantStart by prefs.instantMode.collectAsState(initial = true)
     val scope = rememberCoroutineScope()
     var step by rememberSaveable { mutableIntStateOf(0) }
-    val ready = lid is ModelStatus.Ready && fast is ModelStatus.Ready
+    val ready = lid is ModelStatus.Ready && accurate is ModelStatus.Ready
     fun done() { scope.launch { prefs.setOnboardingDone(true); onDone() } }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),

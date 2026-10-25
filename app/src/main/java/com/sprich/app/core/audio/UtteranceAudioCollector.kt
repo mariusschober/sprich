@@ -9,11 +9,11 @@ package com.sprich.app.core.audio
  * - preRoll inserted exactly once via begin() — clears previous utterance, appends one copy
  * - audio chunks appended exactly once via append() — no duplication of preRoll
  * - immutable frozen snapshot via freeze() — copyOf() isolates pending utterance; live buffer may be reused
- * - no ASR-engine ownership — neutral core/audio location, usable by FastConformer, Canary, future API STT
+ * - no ASR-engine ownership — neutral core/audio location, usable by Canary and future API STT
  * - no previous-utterance leakage — begin() clears, freeze() prevents further appends until begin/clear
  * - clear lifecycle — begin / append* / freeze / clear ; snapshot returns frozen if present else current
  *
- * Located in core/audio (neutral) — not under canary/fastconformer — so API STT and fallback can reuse same PCM.
+ * Located in core/audio (neutral) — not under canary — so API STT and fallback can reuse same PCM.
  */
 class UtteranceAudioCollector(
     private val maxSamples: Int = 16000 * 30,

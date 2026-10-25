@@ -35,7 +35,6 @@ class DownloadManager internal constructor(context: Context, private val modelMa
     fun cancelModel(id: String) = cancelFor(context, id)
     suspend fun downloadCanary(onProgress: ((Float) -> Unit)? = null) = download("accurate", onProgress)
     suspend fun downloadLid(onProgress: ((Float) -> Unit)? = null) = download("lid", onProgress)
-    suspend fun downloadFastConformer(onProgress: ((Float) -> Unit)? = null) = download("fastconformer", onProgress)
     suspend fun downloadNemotron(onProgress: ((Float) -> Unit)? = null) = downloadNemotron560(onProgress)
     suspend fun downloadNemotron560(onProgress: ((Float) -> Unit)? = null) = download("nemotron-560", onProgress)
     suspend fun downloadNemotron160(onProgress: ((Float) -> Unit)? = null) = download("nemotron-160", onProgress)
@@ -46,7 +45,10 @@ class DownloadManager internal constructor(context: Context, private val modelMa
                     try {
                         if (!modelManager.verifyInstalled("lid")) downloadLid()
                         currentCoroutineContext().ensureActive()
-                        if (!modelManager.verifyInstalled("fastconformer")) downloadFastConformer()
+                        if (!modelManager.verifyInstalled("accurate")) downloadCanary(onProgress = null)
+                        // T3 upgrade migration: once the replacement verifies, remove obsolete
+                        // FastConformer files immediately (never before).
+                        modelManager.cleanupObsoleteFastConformer()
                     } finally { synchronized(running) { if (running[key("automatic")] === op) running.remove(key("automatic")) } }
                 }
                 running[key("automatic")] = op

@@ -9,7 +9,7 @@ import org.junit.Test
 
 /**
  * Phase 15-17 — Unknown-LID behavior.
- * When LID is unresolved but FastConformer produces text, we must use generic-only processing:
+ * When an unresolvable language reaches post-processing (e.g. explicit API text), we must use generic-only processing:
  * no English/German/Spanish command map, no English email ITN, only safe typography.
  */
 class UnknownLanguagePostProcessingTest {

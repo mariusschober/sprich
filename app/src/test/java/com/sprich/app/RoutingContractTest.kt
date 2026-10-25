@@ -18,10 +18,10 @@ import org.junit.Test
 class RoutingContractTest {
 
     @Test
-    fun automaticMeansFastConformerNeverCanary() {
+    fun automaticMeansCanaryWithDetectedLanguage() {
         val route = LocalAsrRoute.fromLanguage(SpeechLanguage.Auto)
-        assertTrue(route is LocalAsrRoute.AutomaticFastConformer)
-        assertEquals("fastconformer-ctc-en-de-es-fr-14288-int8", route.engineId())
+        assertTrue(route is LocalAsrRoute.AutomaticCanary)
+        assertEquals("canary-180m-flash-int8", route.engineId())
     }
 
     @Test
@@ -42,7 +42,7 @@ class RoutingContractTest {
         val auto1 = LocalAsrRoute.fromLanguage(SpeechLanguage.Auto)
         val auto2 = LocalAsrRoute.fromLanguage(SpeechLanguage.Auto)
         assertEquals(auto1, auto2)
-        assertTrue(auto1 is LocalAsrRoute.AutomaticFastConformer)
+        assertTrue(auto1 is LocalAsrRoute.AutomaticCanary)
         assertTrue(de is LocalAsrRoute.AccurateCanary)
     }
 

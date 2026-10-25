@@ -25,7 +25,7 @@ class RemoteSttMatrixTest {
         val credentialRef = secretStore.saveBoundSecret("mock", "https://api.example.com/v1", "test-credential")!!
         val remoteCfg = RemoteSttConfig("mock", "https://api.example.com/v1", "whisper", LanguagePolicy.Automatic, 1000L, credentialRef)
         val coord2 = TranscriptionCoordinator(local, mapOf("mock" to mock), secretStore, DeadlinePolicy.TEST_SHORT)
-        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(remoteCfg, LocalAsrRoute.AutomaticFastConformer), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
+        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(remoteCfg, LocalAsrRoute.AutomaticCanary), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
         val result = coord2.transcribe(ShortArray(16000), plan)
         assertEquals("hello from api", result.text)
         assertEquals(1, mock.transcribeCalls)
@@ -41,7 +41,7 @@ class RemoteSttMatrixTest {
         val credentialRef = secretStore.saveBoundSecret("mock", "https://api.example.com/v1", "test-credential")!!
         val coord = TranscriptionCoordinator(local, mapOf("mock" to mock), secretStore, DeadlinePolicy.TEST_SHORT)
         val remoteCfg = RemoteSttConfig("mock", "https://api.example.com/v1", "whisper", LanguagePolicy.Automatic, 500L, credentialRef)
-        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(remoteCfg, LocalAsrRoute.AutomaticFastConformer), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
+        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(remoteCfg, LocalAsrRoute.AutomaticCanary), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
         val result = coord.transcribe(ShortArray(16000), plan)
         assertEquals("local fallback", result.text)
         assertEquals(1, mock.calls)
@@ -71,7 +71,7 @@ class RemoteSttMatrixTest {
         val credentialRef = secretStore.saveBoundSecret("mock", "https://api.example.com/v1", "test-credential")!!
         val coord = TranscriptionCoordinator(local, mapOf("mock" to mock), secretStore, DeadlinePolicy.TEST_SHORT)
         val remoteCfg = RemoteSttConfig("mock", "https://api.example.com/v1", "whisper", LanguagePolicy.Automatic, 500L, credentialRef)
-        val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticFastConformer, remoteCfg), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
+        val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticCanary, remoteCfg), RefinementPlan.Off, com.sprich.app.speech.api.SpeechSessionConfig())
         val result = coord.transcribe(ShortArray(16000), plan)
         assertEquals("remote after blank", result.text)
         assertEquals(1, mock.transcribeCalls)
@@ -89,7 +89,6 @@ class RemoteSttMatrixTest {
     // Minimal fake local coordinator for tests
     class FakeLocal(private val ctx: Context, private val text: String = "fake") : LocalTranscriptionCoordinator(
         lid = com.sprich.app.speech.lid.WhisperLidEngine(ctx, com.sprich.app.models.manager.ModelManager(ctx)),
-        fast = com.sprich.app.speech.fastconformer.FastConformerEngine(ctx),
         canary = com.sprich.app.speech.canary.CanaryEngine(ctx, com.sprich.app.models.manager.ModelManager(ctx))
     ) {
         var calls = 0

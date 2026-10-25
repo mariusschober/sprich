@@ -39,7 +39,6 @@ import com.sprich.app.ui.theme.VoiceMark
     val manager = remember { ModelManager(context) }
     val config by prefs.runtimeConfigSnapshot.collectAsState(initial = null)
     val lid by manager.lidStatus.collectAsState()
-    val fast by manager.fastConformerStatus.collectAsState()
     val accurate by manager.canaryStatus.collectAsState()
     val automatic = config?.speechLanguage !is SpeechLanguage.Fixed
     val api = config?.transcriptionMode == TranscriptionMode.API_PRIMARY
@@ -48,7 +47,7 @@ import com.sprich.app.ui.theme.VoiceMark
         value = if (!api) true else voiceChoice?.let { !ApiSecretStore(context).loadBoundSecret(it.credentialRef, it.providerId, it.endpoint).isNullOrBlank() } == true
     }
     val cleanup = config?.refinementMode?.let { it != RefinementMode.OFF } == true
-    val modelsReady = if (automatic) lid is ModelStatus.Ready && fast is ModelStatus.Ready else accurate is ModelStatus.Ready
+    val modelsReady = if (automatic) lid is ModelStatus.Ready && accurate is ModelStatus.Ready else accurate is ModelStatus.Ready
     val keyboard = rememberKeyboardState()
     // Plan §9.2: never expose the practice field as ready while another keyboard remains selected.
     val ready = config != null && keyboard.enabled && keyboard.selected && keyboard.microphone && (if (api) keyAvailable == true else modelsReady)

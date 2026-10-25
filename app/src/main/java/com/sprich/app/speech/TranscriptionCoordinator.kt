@@ -142,7 +142,6 @@ class TranscriptionCoordinator(
                     resolvedLanguage = r.resolvedLanguage,
                     effectiveConfig = r.effectiveConfig,
                     source = when (r.engineId) {
-                        "fastconformer-ctc-en-de-es-fr-14288-int8" -> TranscriptionSourceId.LOCAL_FAST
                         else -> TranscriptionSourceId.LOCAL_CANARY
                     },
                     timingMs = android.os.SystemClock.elapsedRealtime() - t0,
@@ -166,7 +165,6 @@ class TranscriptionCoordinator(
                             resolvedLanguage = r.resolvedLanguage,
                             effectiveConfig = r.effectiveConfig,
                             source = when (r.engineId) {
-                                "fastconformer-ctc-en-de-es-fr-14288-int8" -> TranscriptionSourceId.LOCAL_FAST
                                 else -> TranscriptionSourceId.LOCAL_CANARY
                             },
                             timingMs = android.os.SystemClock.elapsedRealtime() - t0,
@@ -194,7 +192,6 @@ class TranscriptionCoordinator(
                         resolvedLanguage = localResult.resolvedLanguage,
                         effectiveConfig = localResult.effectiveConfig,
                         source = when (localResult.engineId) {
-                            "fastconformer-ctc-en-de-es-fr-14288-int8" -> TranscriptionSourceId.LOCAL_FAST
                             else -> TranscriptionSourceId.LOCAL_CANARY
                         },
                         timingMs = android.os.SystemClock.elapsedRealtime() - t0,

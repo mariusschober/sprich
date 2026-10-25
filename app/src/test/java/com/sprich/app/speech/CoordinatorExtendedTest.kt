@@ -30,7 +30,7 @@ class CoordinatorExtendedTest {
 
         val cfg = RemoteSttConfig("mock", "https://api.example.com/v1", "whisper", LanguagePolicy.Automatic, 1000L, credentialRef)
         val coord = TranscriptionCoordinator(local, mapOf("mock" to mock), secretStore, DeadlinePolicy.TEST_SHORT)
-        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(cfg, LocalAsrRoute.AutomaticFastConformer), RefinementPlan.Off, SpeechSessionConfig(speechLanguage = SpeechLanguage.Auto))
+        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(cfg, LocalAsrRoute.AutomaticCanary), RefinementPlan.Off, SpeechSessionConfig(speechLanguage = SpeechLanguage.Auto))
         val result = coord.transcribe(ShortArray(16000), plan, utteranceId = 42L)
         assertEquals("hello", result.text)
         // Local should not have been called
@@ -70,7 +70,7 @@ class CoordinatorExtendedTest {
         val cfg = RemoteSttConfig("mock", "https://api.example.com/v1", "whisper", LanguagePolicy.Automatic, 500L, credentialRef)
         val coord = TranscriptionCoordinator(local, mapOf("mock" to failing), secretStore, DeadlinePolicy.TEST_SHORT)
         val pcm = ShortArray(8000) { (it % 100).toShort() }
-        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(cfg, LocalAsrRoute.AutomaticFastConformer), RefinementPlan.Off, SpeechSessionConfig())
+        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(cfg, LocalAsrRoute.AutomaticCanary), RefinementPlan.Off, SpeechSessionConfig())
         val result = coord.transcribe(pcm, plan, utteranceId = 200L)
         assertEquals("fallback text", result.text)
         assertEquals(1, failing.calls)
@@ -99,7 +99,6 @@ class CoordinatorExtendedTest {
 
     class CountingLocal(private val ctx: Context, private val textToReturn: String = "local") : LocalTranscriptionCoordinator(
         lid = com.sprich.app.speech.lid.WhisperLidEngine(ctx, com.sprich.app.models.manager.ModelManager(ctx)),
-        fast = com.sprich.app.speech.fastconformer.FastConformerEngine(ctx),
         canary = com.sprich.app.speech.canary.CanaryEngine(ctx, com.sprich.app.models.manager.ModelManager(ctx))
     ) {
         var transcribeCalls = 0

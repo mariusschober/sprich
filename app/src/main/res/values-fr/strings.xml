@@ -102,7 +102,7 @@
     <string name="privacy">Confidentialité</string>
     <string name="advanced">Avancé</string>
     <string name="hide_advanced">Masquer les options avancées</string>
-    <string name="model_details">Automatique : détection de langue Whisper Tiny et FastConformer CTC. Précis : Canary 180M Flash. Tout fonctionne sur votre téléphone.</string>
+    <string name="model_details">Automatique : détection de langue Whisper Tiny et Canary 180M Flash (licence claire). Précis : Canary 180M Flash avec une langue choisie. Tout fonctionne sur votre téléphone.</string>
     <string name="licenses">Licences et mentions</string>
     <string name="clear_data">Effacer les données de Sprich</string>
     <string name="clear_data_question">Effacer les données de Sprich ?</string>
@@ -375,7 +375,6 @@
     <string name="notice_description_kissfft">Analyse de fréquences dans l’environnement vocal.</string>
     <string name="notice_description_llvm">Prise en charge native de C++ pour Sprich et ses dépendances. La mention complète fournie avec la version exacte du NDK Android est incluse.</string>
     <string name="notice_description_whisper">Identifie la langue du mode Automatique. Téléchargé séparément ; non inclus dans l’APK.</string>
-    <string name="notice_description_fastconformer">Modèle de reconnaissance du mode Automatique. Téléchargé séparément ; non inclus dans l’APK. Sa fiche de modèle indique les conditions NGC, et non la licence Apache du code d’entraînement ou de conversion.</string>
-    <string name="notice_description_canary">Modèle de reconnaissance du mode Précis. Téléchargé séparément ; non inclus dans l’APK.</string>
+    <string name="notice_description_canary">Modèle de reconnaissance des modes Automatique et Précis. Téléchargé séparément ; non inclus dans l’APK.</string>
     <string name="notice_description_silero">Détecte le début et la fin de la parole. Ce petit modèle est inclus dans Sprich et fonctionne localement. Sa version exacte est fixée dans docs/MODELS.md du dépôt Sprich.</string>
 </resources>

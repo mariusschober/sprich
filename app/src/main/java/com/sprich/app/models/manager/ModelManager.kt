@@ -36,12 +36,32 @@ class ModelManager(context: Context, private val manifest: ModelManifest = Built
     private fun status(id: String) = state.statuses.computeIfAbsent(id) { MutableStateFlow<ModelStatus>(ModelStatus.NotDownloaded) }
     val canaryStatus: StateFlow<ModelStatus> get() = status("accurate")
     val lidStatus: StateFlow<ModelStatus> get() = status("lid")
-    val fastConformerStatus: StateFlow<ModelStatus> get() = status("fastconformer")
     val nemotron560Status: StateFlow<ModelStatus> get() = status("nemotron-560")
     val nemotron160Status: StateFlow<ModelStatus> get() = status("nemotron-160")
     val nemotronStatus: StateFlow<ModelStatus> get() = status("nemotron-560")
 
-    init { if (state.started.compareAndSet(false, true)) scope.launch { refresh() } }
+    init {
+        if (state.started.compareAndSet(false, true)) scope.launch {
+            refresh()
+            cleanupObsoleteFastConformer()
+        }
+    }
+
+    /**
+     * T3 migration: the production configuration no longer uses FastConformer. Its files are
+     * removed only after the replacement (Whisper Tiny LID + Canary) verifies from disk, never
+     * before, so an interrupted update cannot leave a device with neither recognizer.
+     */
+    internal suspend fun cleanupObsoleteFastConformer() = withContext(Dispatchers.IO) {
+        if (!isWhisperTinyReady() || !isCanaryReady()) return@withContext
+        val obsolete = File(context.filesDir, "fastconformer")
+        if (!obsolete.exists()) return@withContext
+        lock("fastconformer").withLock {
+            state.verified.remove("fastconformer")
+            File(context.cacheDir, "model-fastconformer.tar.bz2").delete()
+            check(obsolete.deleteRecursively()) { "Could not remove obsolete model" }
+        }
+    }
 
     fun getManifest() = manifest
     internal fun directory(id: String) = File(context.filesDir, when (id) { "accurate" -> "canary"; "lid" -> "whisper-tiny"; else -> id })
@@ -57,16 +77,15 @@ class ModelManager(context: Context, private val manifest: ModelManifest = Built
     fun isCanaryReady() = ready("accurate")
     fun isWhisperTinyReady() = ready("lid")
     fun isWhisperTinyReadyForRelease() = isWhisperTinyReady()
-    fun isFastConformerReady() = ready("fastconformer")
-    fun isAutomaticReady() = isWhisperTinyReady() && isFastConformerReady()
-    fun isAutomaticReadyStatus(lid: ModelStatus, fast: ModelStatus) = lid is ModelStatus.Ready && fast is ModelStatus.Ready
+    /** Automatic = on-device language detection (Whisper Tiny) + Canary 180M Flash. */
+    fun isAutomaticReady() = isWhisperTinyReady() && isCanaryReady()
+    fun isAutomaticReadyStatus(lid: ModelStatus, canary: ModelStatus) = lid is ModelStatus.Ready && canary is ModelStatus.Ready
     fun isNemotron560Ready() = ready("nemotron-560")
     fun isNemotron160Ready() = ready("nemotron-160")
     fun isNemotronReady() = isNemotron560Ready() || isNemotron160Ready()
     fun isNemotronReadyForRelease() = isNemotronReady()
     fun canaryDir(): File? = directory("accurate").takeIf { isCanaryReady() }
     fun lidDir(): File? = directory("lid").takeIf { isWhisperTinyReady() }
-    fun fastConformerDir(): File? = directory("fastconformer").takeIf { isFastConformerReady() }
     fun nemotron560Dir(): File? = directory("nemotron-560").takeIf { isNemotron560Ready() }
     fun nemotron160Dir(): File? = directory("nemotron-160").takeIf { isNemotron160Ready() }
     fun nemotronDir(): File? = nemotron560Dir() ?: nemotron160Dir()
@@ -143,7 +162,7 @@ class ModelManager(context: Context, private val manifest: ModelManifest = Built
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
-        if (id == "lid" || id == "fastconformer") DownloadManager.cancelFor(context, "automatic")
+        if (id == "lid" || id == "accurate") DownloadManager.cancelFor(context, "automatic")
         DownloadManager.cancelFor(context, id)
         lock(id).withLock {
             state.verified.remove(id)
@@ -157,7 +176,6 @@ class ModelManager(context: Context, private val manifest: ModelManifest = Built
     }
     suspend fun deleteCanary() = delete("accurate")
     suspend fun deleteLid() = delete("lid")
-    suspend fun deleteFastConformer() = delete("fastconformer")
     suspend fun deleteNemotron560() = delete("nemotron-560")
     suspend fun deleteNemotron160() = delete("nemotron-160")
     suspend fun deleteNemotron() { deleteNemotron560(); deleteNemotron160(); withContext(Dispatchers.IO) { File(context.filesDir, "nemotron").deleteRecursively() } }

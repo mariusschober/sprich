@@ -7,7 +7,6 @@ import com.sprich.app.models.manager.ModelManager
 import com.sprich.app.speech.*
 import com.sprich.app.speech.api.SpeechSessionConfig
 import com.sprich.app.speech.canary.CanaryEngine
-import com.sprich.app.speech.fastconformer.FastConformerEngine
 import com.sprich.app.speech.lid.WhisperLidEngine
 import com.sprich.app.speech.remote.*
 import com.sprich.app.storage.ApiSecretStore
@@ -62,7 +61,7 @@ class WordLearningRecorder(context: Context, snapshot: RuntimeConfigSnapshot) : 
             } else {
                 val manager = ModelManager(context)
                 val ready = when (localRoute) {
-                    is LocalAsrRoute.AutomaticFastConformer -> manager.verifyInstalled("lid") && manager.verifyInstalled("fastconformer")
+                    is LocalAsrRoute.AutomaticCanary -> manager.verifyInstalled("lid") && manager.verifyInstalled("accurate")
                     is LocalAsrRoute.AccurateCanary -> manager.verifyInstalled("accurate")
                 }
                 if (!ready) throw LearningModelsUnavailable()
@@ -152,11 +151,10 @@ class WordLearningRecorder(context: Context, snapshot: RuntimeConfigSnapshot) : 
     private class LocalEngines(context: Context) {
         private val manager = ModelManager(context)
         private val lid = WhisperLidEngine(context, manager)
-        private val fast = FastConformerEngine(context)
         private val accurate = CanaryEngine(context, manager)
-        val coordinator = LocalTranscriptionCoordinator(lid, fast, accurate)
+        val coordinator = LocalTranscriptionCoordinator(lid, accurate)
         suspend fun release() {
-            try { lid.unload() } finally { try { fast.unload() } finally { accurate.unload() } }
+            try { lid.unload() } finally { accurate.unload() }
         }
     }
 }

@@ -59,21 +59,6 @@ object BuiltinManifest {
                 license = "MIT (OpenAI Whisper) + Apache-2.0 (sherpa)",
                 quantization = "INT8"
             ),
-            ModelEntry(
-                id = "fastconformer",
-                displayName = "FastConformer Multilingual",
-                technicalName = "NeMo FastConformer CTC EN-DE-ES-FR 14288 INT8",
-                engine = "nemo-ctc",
-                version = "1.0.0",
-                sourceUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-fast-conformer-ctc-en-de-es-fr-14288-int8.tar.bz2",
-                sizeBytes = 102875642L, // MEASURED archive 102,875,642 bytes, extracted 126M model.int8.onnx (126MB) + 23K tokens, 6 files inc test_wavs
-                sha256 = "ea7434ecff117272a70b8a60b70cfc2f04b9b07553aa0ecb91065b69c7b91ec5", // MEASURED 2026-09-01
-                files = listOf("model.int8.onnx","tokens.txt"),
-                requiredFreeBytes = 300L * 1024 * 1024,
-                languages = listOf("en","de","es","fr"),
-                license = "NVIDIA NGC Terms of Use (model) + Apache-2.0 (sherpa conversion)",
-                quantization = "INT8"
-            ),
         ) + if (com.sprich.app.BuildConfig.DEBUG) listOf(
             ModelEntry(
                 id = "nemotron-560",

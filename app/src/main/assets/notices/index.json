@@ -527,27 +527,12 @@
     ]
   },
   {
-    "id": "fastconformer",
-    "name": "FastConformer speech model",
-    "version": "1.21.0 · CTC export 14288 · INT8",
-    "license": "NVIDIA NGC terms",
-    "source": "https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_multilingual_fastconformer_hybrid_large_pc_blend_eu",
-    "description": "Recognition model for Automatic mode. Downloaded separately; not included in the APK. Its model card specifies NGC terms, not the Apache license of the training or conversion code.",
-    "attribution": "NVIDIA. Converted to ONNX, limited to EN/DE/ES/FR and quantized to INT8 by sherpa-onnx. The NGC terms linked by the model card are reproduced below (retrieved 3 September 2026). Sprich does not grant additional rights to this model.",
-    "documents": [
-      {
-        "title": "NVIDIA Technology Access Terms of Use",
-        "path": "texts/NVIDIA-NGC-terms-2025-04-07.txt"
-      }
-    ]
-  },
-  {
     "id": "canary",
     "name": "Canary speech model",
     "version": "180M Flash · INT8 export",
     "license": "CC BY 4.0",
     "source": "https://huggingface.co/nvidia/canary-180m-flash",
-    "description": "Recognition model for Accurate mode. Downloaded separately; not included in the APK.",
+    "description": "Recognition model for Automatic and Accurate modes. Downloaded separately; not included in the APK.",
     "attribution": "NVIDIA, Canary 180M Flash. Converted to ONNX and quantized to INT8 by sherpa-onnx. The model has been adapted from the original checkpoint. License: https://creativecommons.org/licenses/by/4.0/. No endorsement by NVIDIA is implied.",
     "documents": [
       {

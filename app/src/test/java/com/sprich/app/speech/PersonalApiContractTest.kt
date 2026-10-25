@@ -130,7 +130,7 @@ class PersonalApiContractTest {
             }
         }
         val config = RemoteSttConfig("mock", "https://example.test", "test", LanguagePolicy.Automatic, 1000, ref)
-        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(config, LocalAsrRoute.AutomaticFastConformer), RefinementPlan.Off, SpeechSessionConfig())
+        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(config, LocalAsrRoute.AutomaticCanary), RefinementPlan.Off, SpeechSessionConfig())
         try { TranscriptionCoordinator(local, mapOf("mock" to remote), secrets).transcribe(ShortArray(1600), plan); fail("Revoked work completed") }
         catch (_: CancellationException) { assertEquals(0, local.transcribeCalls) }
     }

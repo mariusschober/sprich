@@ -48,7 +48,7 @@ data class RecognitionProfile(
                         is TranscriptionPlan.LocalApiFallback -> route.local
                     } ?: return null
                     val matches = when (localRoute) {
-                        is LocalAsrRoute.AutomaticFastConformer -> source == TranscriptionSourceId.LOCAL_FAST
+                        is LocalAsrRoute.AutomaticCanary -> source == TranscriptionSourceId.LOCAL_CANARY
                         is LocalAsrRoute.AccurateCanary -> source == TranscriptionSourceId.LOCAL_CANARY
                     }
                     if (matches) local(localRoute, plan.whisperMode) else null

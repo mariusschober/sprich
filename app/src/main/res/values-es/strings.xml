@@ -102,7 +102,7 @@
     <string name="privacy">Privacidad</string>
     <string name="advanced">Avanzado</string>
     <string name="hide_advanced">Ocultar opciones avanzadas</string>
-    <string name="model_details">Automático: detección de idioma Whisper Tiny y FastConformer CTC. Preciso: Canary 180M Flash. Todo funciona en tu teléfono.</string>
+    <string name="model_details">Automático: detección de idioma Whisper Tiny y Canary 180M Flash (licencia limpia). Preciso: Canary 180M Flash con idioma seleccionado. Todo funciona en tu teléfono.</string>
     <string name="licenses">Licencias y avisos</string>
     <string name="clear_data">Borrar datos de Sprich</string>
     <string name="clear_data_question">¿Borrar los datos de Sprich?</string>
@@ -375,7 +375,6 @@
     <string name="notice_description_kissfft">Análisis de frecuencia dentro del entorno de voz.</string>
     <string name="notice_description_llvm">Compatibilidad nativa con C++ para Sprich y sus dependencias. Se incluye el aviso completo distribuido con la versión exacta del NDK de Android.</string>
     <string name="notice_description_whisper">Identifica el idioma del modo Automático. Se descarga por separado y no está incluido en el APK.</string>
-    <string name="notice_description_fastconformer">Modelo de reconocimiento del modo Automático. Se descarga por separado y no está incluido en el APK. Su ficha indica las condiciones NGC, no la licencia Apache del código de entrenamiento o conversión.</string>
-    <string name="notice_description_canary">Modelo de reconocimiento del modo Preciso. Se descarga por separado y no está incluido en el APK.</string>
+    <string name="notice_description_canary">Modelo de reconocimiento de los modos Automático y Preciso. Se descarga por separado y no está incluido en el APK.</string>
     <string name="notice_description_silero">Detecta cuándo empieza y termina el habla. Este pequeño modelo está incluido en Sprich y funciona de forma local. El archivo exacto está fijado en docs/MODELS.md del repositorio de Sprich.</string>
 </resources>

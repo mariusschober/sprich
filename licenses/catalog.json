@@ -731,7 +731,7 @@
       "license": "BSD 3-Clause; Unlicense",
       "source": "https://github.com/mborgerding/kissfft/tree/febd4caeed32e33ad8b2e0bb5ea77542c40f18ec",
       "description": "Frequency analysis inside the speech runtime.",
-      "attribution": "Copyright (c) 2003–2010 Mark Borgerding.",
+      "attribution": "Copyright (c) 2003\u20132010 Mark Borgerding.",
       "coordinates": [],
       "documents": [
         {
@@ -775,7 +775,7 @@
     {
       "id": "whisper",
       "name": "Whisper Tiny language model",
-      "version": "Tiny · INT8 export",
+      "version": "Tiny \u00b7 INT8 export",
       "license": "MIT",
       "source": "https://github.com/openai/whisper",
       "description": "Identifies the language for Automatic mode. Downloaded separately; not included in the APK.",
@@ -791,30 +791,12 @@
       ]
     },
     {
-      "id": "fastconformer",
-      "name": "FastConformer speech model",
-      "version": "1.21.0 · CTC export 14288 · INT8",
-      "license": "NVIDIA NGC terms",
-      "source": "https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_multilingual_fastconformer_hybrid_large_pc_blend_eu",
-      "description": "Recognition model for Automatic mode. Downloaded separately; not included in the APK. Its model card specifies NGC terms, not the Apache license of the training or conversion code.",
-      "attribution": "NVIDIA. Converted to ONNX, limited to EN/DE/ES/FR and quantized to INT8 by sherpa-onnx. The NGC terms linked by the model card are reproduced below (retrieved 3 September 2026). Sprich does not grant additional rights to this model.",
-      "coordinates": [],
-      "documents": [
-        {
-          "title": "NVIDIA Technology Access Terms of Use",
-          "path": "texts/NVIDIA-NGC-terms-2025-04-07.txt",
-          "sha256": "cd4a822b9884d0d5bfa74447109f62534a3b6f482f3ce26e2d02a238bc73c2c0",
-          "source": "https://ngc.nvidia.com/legal/consolidated-tou.json"
-        }
-      ]
-    },
-    {
       "id": "canary",
       "name": "Canary speech model",
-      "version": "180M Flash · INT8 export",
+      "version": "180M Flash \u00b7 INT8 export",
       "license": "CC BY 4.0",
       "source": "https://huggingface.co/nvidia/canary-180m-flash",
-      "description": "Recognition model for Accurate mode. Downloaded separately; not included in the APK.",
+      "description": "Recognition model for Automatic and Accurate modes. Downloaded separately; not included in the APK.",
       "attribution": "NVIDIA, Canary 180M Flash. Converted to ONNX and quantized to INT8 by sherpa-onnx. The model has been adapted from the original checkpoint. License: https://creativecommons.org/licenses/by/4.0/. No endorsement by NVIDIA is implied.",
       "coordinates": [],
       "documents": [
@@ -833,7 +815,7 @@
       "license": "MIT",
       "source": "https://github.com/snakers4/silero-vad",
       "description": "Detects when speech begins and ends. This small model is included in Sprich and runs locally. The exact model asset is pinned in docs/MODELS.md in the Sprich repository.",
-      "attribution": "Copyright (c) 2020–present Silero Team. ONNX asset distributed by the sherpa-onnx project.",
+      "attribution": "Copyright (c) 2020\u2013present Silero Team. ONNX asset distributed by the sherpa-onnx project.",
       "coordinates": [],
       "documents": [
         {

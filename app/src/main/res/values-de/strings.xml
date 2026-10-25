@@ -102,7 +102,7 @@
     <string name="privacy">Datenschutz</string>
     <string name="advanced">Erweitert</string>
     <string name="hide_advanced">Erweitertes ausblenden</string>
-    <string name="model_details">Automatisch: Spracherkennung mit Whisper Tiny und FastConformer CTC. Präzise: Canary 180M Flash. Alles läuft auf deinem Smartphone.</string>
+    <string name="model_details">Automatisch: Spracherkennung mit Whisper Tiny und Canary 180M Flash (lizenzklar). Präzise: Canary 180M Flash mit gewählter Sprache. Alles läuft auf deinem Smartphone.</string>
     <string name="licenses">Lizenzen und Hinweise</string>
     <string name="clear_data">Sprich-Daten löschen</string>
     <string name="clear_data_question">Sprich-Daten löschen?</string>
@@ -375,7 +375,6 @@
     <string name="notice_description_kissfft">Frequenzanalyse in der Sprachlaufzeit.</string>
     <string name="notice_description_llvm">Native C++-Unterstützung für Sprich und seine Abhängigkeiten. Der vollständige Hinweis der exakt verwendeten Android-NDK-Version ist enthalten.</string>
     <string name="notice_description_whisper">Erkennt die Sprache für den Modus Automatisch. Wird separat heruntergeladen und ist nicht in der APK enthalten.</string>
-    <string name="notice_description_fastconformer">Erkennungsmodell für Automatisch. Wird separat heruntergeladen und ist nicht in der APK enthalten. Die Modellkarte nennt NGC-Bedingungen, nicht die Apache-Lizenz des Trainings- oder Konvertierungscodes.</string>
-    <string name="notice_description_canary">Erkennungsmodell für Präzise. Wird separat heruntergeladen und ist nicht in der APK enthalten.</string>
+    <string name="notice_description_canary">Erkennungsmodell für Automatisch und Genau. Wird separat heruntergeladen und ist nicht in der APK enthalten.</string>
     <string name="notice_description_silero">Erkennt Anfang und Ende der Sprache. Dieses kleine Modell ist in Sprich enthalten und läuft lokal. Das exakte Modell ist in docs/MODELS.md im Sprich-Repository festgelegt.</string>
 </resources>
