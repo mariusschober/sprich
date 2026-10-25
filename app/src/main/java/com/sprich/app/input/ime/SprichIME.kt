@@ -3017,11 +3017,20 @@ class SprichIME : InputMethodService() {
             } catch (_: Exception) {
                 null
             }
-            if (extracted != null && extracted.text != null) {
-                val text = extracted.text.toString()
-                val selStart = extracted.selectionStart.coerceIn(0, text.length)
-                val selEnd = extracted.selectionEnd.coerceIn(0, text.length)
-                CorrectionEditorSnapshot(text.substring(0, selStart), text.substring(selStart), selStart, selStart == selEnd)
+            // Only a whole-field extraction has authoritative absolute offsets; a positive
+            // startOffset or non-negative partialStartOffset is a window and falls back to the
+            // capped before/after read, which refuses unknown absolute offsets (cursor -1).
+            val window = extracted?.text?.let { text ->
+                absoluteWindowFromExtracted(
+                    text.toString(),
+                    extracted.startOffset,
+                    extracted.partialStartOffset,
+                    extracted.selectionStart,
+                    extracted.selectionEnd,
+                )
+            }
+            if (window != null) {
+                CorrectionEditorSnapshot(window.before, window.after, window.cursorAbsolute, window.collapsed)
             } else {
                 val before = try { ic.getTextBeforeCursor(maxBefore, 0)?.toString() } catch (_: Exception) { null } ?: return null
                 val after = try { ic.getTextAfterCursor(maxAfter, 0)?.toString() } catch (_: Exception) { null } ?: ""
