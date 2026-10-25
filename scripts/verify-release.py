@@ -36,6 +36,10 @@ with zipfile.ZipFile(a.apk) as z, a.apk.open('rb') as raw:
     dex=b''.join(z.read(n) for n in names if re.fullmatch(r'classes\d*\.dex',n))
     for token in [b'Lcom/sprich/app/ui/benchmark/BenchmarkActivity;',b'Lcom/sprich/qa/',b'sherpa-onnx-nemotron-3.5-asr-streaming',b'jfk.wav']:
         require(token not in dex,'production contains a debug/experimental surface: '+token.decode())
+    # Editor text must never reach release logcat: R8 strips android.util.Log calls, and these
+    # templates prove the stripping still happens (they only exist inside Log statements).
+    for token in [b'correction sheet opening word',b'no word before=',b'correction applied word=',b'correction undone restore=']:
+        require(token not in dex,'release DEX still contains an editor-text log template: '+token.decode())
 require(a.sdk,'set ANDROID_SDK_ROOT or use --sdk to verify the merged manifest')
 sdk=pathlib.Path(a.sdk);tool=sdk/'build-tools/36.0.0/aapt2';require(tool.is_file(),'build tools 36.0.0 aapt2 missing')
 manifest=subprocess.check_output([str(tool),'dump','xmltree',str(a.apk),'--file','AndroidManifest.xml'],text=True)
