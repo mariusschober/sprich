@@ -41,6 +41,16 @@ data class UndoEdit(
     val startOffset: Int,
     val expectedCurrent: String,
     val restore: String,
+    /** Field identity captured when the correction was applied; undo is field-bound. */
+    val fieldId: String,
+    val fieldGeneration: Long,
+)
+
+/** Editor facts an undo must revalidate immediately before mutating. */
+data class UndoContext(
+    val currentFieldId: String?,
+    val currentFieldGeneration: Long,
+    val isPasswordField: Boolean,
 )
 
 data class SpellingProposal(val oldForm: String, val newForm: String)
@@ -106,10 +116,23 @@ object CorrectionPlan {
         return CorrectionResult.Apply(
             newBefore = newBefore,
             newAfter = current.after,
-            undo = UndoEdit(start, replacement, target.text),
+            undo = UndoEdit(start, replacement, target.text, target.fieldId, target.fieldGeneration),
             spellingProposal = proposal,
             alternatives = alternatives.toList(),
         )
+    }
+
+    /**
+     * True when [undo] may mutate the current editor: the field and generation must be the
+     * same field the correction was applied to, password/PIN fields must never be mutated, and
+     * the exact span must still match. Mirrors the field/generation/password discipline used by
+     * every other editor mutation.
+     */
+    fun undoApplies(undo: UndoEdit, before: String, context: UndoContext): Boolean {
+        if (context.isPasswordField) return false
+        if (context.currentFieldId == null || context.currentFieldId != undo.fieldId) return false
+        if (context.currentFieldGeneration != undo.fieldGeneration) return false
+        return canUndo(before, undo)
     }
 
     /** True when [undo] provably applies to this snapshot (offset + expected text). */

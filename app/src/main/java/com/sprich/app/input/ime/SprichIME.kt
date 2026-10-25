@@ -1053,15 +1053,26 @@ class SprichIME : InputMethodService() {
 
     @Volatile private var editorAuthority: EditorSnapshot? = null
     @Volatile private var fieldAllowsContext = false
-    private val ownedSelections = ArrayDeque<Pair<Int, Int>>()
+    private val ownSelections = OwnSelectionRegistry()
 
     private fun editorStillOwned(): Boolean = editorAuthority != null && EditorSnapshot.read(currentInputConnection) == editorAuthority
 
     private fun noteOwnEditorChange(success: Boolean) {
         if (!success) { cancelForEditorChange(); return }
         editorAuthority = EditorSnapshot.read(currentInputConnection)
-        editorAuthority?.let { ownedSelections.addLast(it.selectionStart to it.selectionEnd) }
-        while (ownedSelections.size > 16) ownedSelections.removeFirst()
+        editorAuthority?.let { ownSelections.note(it.selectionStart, it.selectionEnd) }
+    }
+
+    /**
+     * E3: the correction sheet mutates the field while the IME owns the session. Register the
+     * expected post-edit cursor as Sprich-owned so the framework's ensuing onUpdateSelection
+     * callback is not mistaken for an external cursor move (which would cancel the session and
+     * clear the insertion record that was just written).
+     */
+    private fun noteOwnCorrectionSelection(cursorAfter: Int) {
+        editorAuthority = EditorSnapshot.read(currentInputConnection)
+        editorAuthority?.let { ownSelections.note(it.selectionStart, it.selectionEnd) }
+        ownSelections.note(cursorAfter, cursorAfter)
     }
 
     private fun cancelForEditorChange() {
@@ -1069,7 +1080,7 @@ class SprichIME : InputMethodService() {
         stopDictation(StopReason.CURSOR_MOVED)
         editorActionController.clearHistory()
         editorActionController.clearSprichInsertion()
-        ownedSelections.clear()
+        ownSelections.clear()
         editorAuthority = null
         updateEditingControls()
     }
@@ -1078,11 +1089,7 @@ class SprichIME : InputMethodService() {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
         if (!::session.isInitialized || isPasswordField) return
         val selection = newSelStart to newSelEnd
-        val ownIndex = ownedSelections.indexOfLast { it == selection }
-        if (ownIndex >= 0 && editorStillOwned()) {
-            repeat(ownIndex + 1) { ownedSelections.removeFirst() }
-            return
-        }
+        if (ownSelections.consumeIfOwned(newSelStart, newSelEnd) && editorStillOwned()) return
         val authority = editorAuthority
         if (authority != null && selection == (authority.selectionStart to authority.selectionEnd) && editorStillOwned()) return
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd || authority != null) cancelForEditorChange()
@@ -1101,7 +1108,7 @@ class SprichIME : InputMethodService() {
             // The capture session is created by startDictationIfNeeded after a tap/instant start.
             editorActionController.clearHistory()
             editorActionController.clearSprichInsertion()
-            ownedSelections.clear()
+            ownSelections.clear()
             fieldAllowsContext = info != null && !isPassword(info) && (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) == 0
             editorAuthority = if (isPassword(info)) null else EditorSnapshot.read(currentInputConnection)
             currentFieldTokenIcHash = currentInputConnection?.hashCode() ?: 0
@@ -3237,6 +3244,7 @@ class SprichIME : InputMethodService() {
                     false
                 }
                 if (ok) {
+                    noteOwnCorrectionSelection(absStart + replacement.length)
                     try { editorActionController.recordSprichInsertion(currentFieldId, fieldGeneration.get(), replacement, ic!!) } catch (_: Exception) {}
                     correctionUndo = res.undo
                     lastAppliedReplacement = replacement
@@ -3255,12 +3263,21 @@ class SprichIME : InputMethodService() {
 
     private fun undoCorrection() {
         val undo = correctionUndo ?: return
-        val snap = readEditorSnapshot() ?: return
-        if (!snap.collapsed || snap.cursorAbsolute < 0) return
-        if (!com.sprich.app.input.correction.CorrectionPlan.canUndo(snap.before, undo)) {
+        // Undo is a mutation like any other: revalidate field, generation and password state
+        // immediately before touching the editor, and fail closed if the sheet went stale.
+        val context = com.sprich.app.input.correction.UndoContext(
+            currentFieldId = currentFieldId,
+            currentFieldGeneration = fieldGeneration.get(),
+            isPasswordField = isPasswordField || isPassword(currentInputEditorInfo),
+        )
+        val snap = readEditorSnapshot()
+        if (snap == null || !snap.collapsed || snap.cursorAbsolute < 0 ||
+            !com.sprich.app.input.correction.CorrectionPlan.undoApplies(undo, snap.before, context)
+        ) {
             correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
             correctionUndo = null
             correctionController.undoAvailable = false
+            Log.w("SprichIME", "correction undo refused: field/generation/password/span changed")
             return
         }
         val absStart = snap.cursorAbsolute - snap.before.length + undo.startOffset
@@ -3282,6 +3299,7 @@ class SprichIME : InputMethodService() {
             false
         }
         if (ok) {
+            noteOwnCorrectionSelection(absStart + undo.restore.length)
             correctionUndo = null
             lastAppliedReplacement = null
             correctionController.undoAvailable = false
