@@ -168,7 +168,7 @@
     <string name="correction_remembered">Ortografía recordada</string>
     <string name="correction_close">Cerrar</string>
     <string name="ime_retry_insert">Reintentar inserción</string>
-    <string name="ime_kept_retry">No insertado — guardado. Toca reintentar para insertar.</string>
+    <string name="ime_kept_retry">No insertado — guardado. Lo encontrarás en la pantalla de inicio de Sprich.</string>
     <string name="recovery_title">Dictado guardado</string>
     <string name="recovery_hint">Vuelve al campo y toca reintentar para insertar, o descártalo aquí.</string>
     <string name="recovery_insert">Insertar aquí</string>

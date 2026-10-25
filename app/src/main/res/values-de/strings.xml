@@ -168,7 +168,7 @@
     <string name="correction_remembered">Schreibweise gemerkt</string>
     <string name="correction_close">Schließen</string>
     <string name="ime_retry_insert">Einfügen wiederholen</string>
-    <string name="ime_kept_retry">Nicht eingefügt – behalten. Tippe auf Wiederholen zum Einfügen.</string>
+    <string name="ime_kept_retry">Nicht eingefügt – behalten. Du findest den Text auf der Sprich-Startseite.</string>
     <string name="recovery_title">Diktat aufbewahrt</string>
     <string name="recovery_hint">Kehre zum Feld zurück und tippe auf Wiederholen, oder verwerfe den Text hier.</string>
     <string name="recovery_insert">Hier einfügen</string>
