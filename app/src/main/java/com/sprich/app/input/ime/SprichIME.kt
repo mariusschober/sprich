@@ -1146,6 +1146,10 @@ class SprichIME : InputMethodService() {
             if (isInputViewShown) refreshLocalizedMessage()
         }, 300L)
         if (isPassword(info)) return
+        if (!FieldLearningPolicy.allowsInstantStart(info?.imeOptions ?: 0)) {
+            Log.i("SprichIME", "instant start skipped: field opted out of personalized learning")
+            return
+        }
         if (info?.packageName == packageName && info.privateImeOptions == com.sprich.app.ui.vocab.TYPED_SPELLING_IME_OPTION) {
             switchToTypingKeyboard()
             return
@@ -3585,7 +3589,7 @@ class SprichIME : InputMethodService() {
         val context = if (fieldAllowsContext && (refinement as? RefinementPlan.Enabled)?.config?.contextEnabled == true) {
             com.sprich.app.speech.refinement.DictationContext.beforeCursor(editorAuthority?.before)
         } else null
-        val hints = if (s.personalVocabHintEnabled) vocabulary.terms().filter { it.length in 1..100 && it.none { c -> c.isISOControl() } }.take(100) else emptyList()
+        val hints = if (s.personalVocabHintEnabled && FieldLearningPolicy.allowsVocabularyHints(fieldAllowsContext)) vocabulary.terms().filter { it.length in 1..100 && it.none { c -> c.isISOControl() } }.take(100) else emptyList()
         return UtterancePlan(transcription, refinement, config, vocabulary, context, hints, whisperMode = s.whisperMode)
     }
 
