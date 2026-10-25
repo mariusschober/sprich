@@ -383,7 +383,7 @@ class SprichIME : InputMethodService() {
     private var correctionTarget: com.sprich.app.input.correction.CorrectionTarget? = null
     private var correctionUndo: com.sprich.app.input.correction.UndoEdit? = null
     private var correctionDictationTarget: com.sprich.app.input.correction.CorrectionTarget? = null
-    private var correctionArmedAtMs: Long = 0L
+    private var correctionArmedAtNanos: Long = 0L
     private var correctionDialog: android.app.Dialog? = null
     private var correctButton: View? = null
     private var lastAppliedReplacement: String? = null
@@ -2126,7 +2126,7 @@ class SprichIME : InputMethodService() {
             // with no cleanup attempted.
             val armedCorrection = correctionDictationTarget
             if (!recognitionFailed && armedCorrection != null && transcriptionResult.text.isNotBlank() &&
-                pending.endpointTimestampNanos / 1_000_000L >= correctionArmedAtMs
+                correctionDictationEndedAfterArm(pending.endpointTimestampNanos, correctionArmedAtNanos)
             ) {
                 deliverCorrectionDictation(transcriptionResult.text)
                 try { utteranceQueue.markCleanupDone(token.utteranceId) } catch (_: Exception) {}
@@ -3153,12 +3153,14 @@ class SprichIME : InputMethodService() {
     /**
      * U02 dictated replacement: arm routing, then start dictation unless
      * already running. Only an utterance endpointed AFTER arming delivers
-     * (guarded by [correctionArmedAtMs] at the finalize site), so an
+     * (guarded by [correctionArmedAtNanos] at the finalize site), so an
      * in-flight unrelated utterance can never be hijacked into the sheet.
+     * Arming and the endpoint timestamp both use [System.nanoTime] so the
+     * guard survives deep sleep (see [correctionDictationEndedAfterArm]).
      */
     private fun armCorrectionDictation() {
         correctionDictationTarget = correctionTarget ?: return
-        correctionArmedAtMs = try { android.os.SystemClock.elapsedRealtime() } catch (_: Exception) { 0L }
+        correctionArmedAtNanos = System.nanoTime()
         correctionController.listening = true
         correctionController.notice = null
         try {
