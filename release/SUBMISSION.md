@@ -15,7 +15,7 @@ Findings and qualification limits are in [REVIEW.md](REVIEW.md). The first packa
 
 1. Create and securely back up the permanent Android app signing key; setup was deferred. Follow [SIGNING.md](SIGNING.md).
 2. Choose your Nostr identity. Add its public `npub…` as `pubkey:` in `zapstore.yaml` and push that change. No publisher key has been invented or selected.
-3. Complete human review of runtime/model redistribution terms, especially NVIDIA NGC terms for FastConformer. MIT covers Sprich's app source, not every downloaded model.
+3. ~~Complete human review of NVIDIA NGC terms for FastConformer.~~ Resolved on 2026-10-25: the NGC-licensed FastConformer model was removed from the production configuration (Automatic = Whisper Tiny LID + Canary 180M Flash; both redistributable). MIT covers Sprich's app source; the remaining model notices are Canary (CC-BY-4.0), Whisper (MIT) and Silero (MIT). Human review of the store listing and signing identity is still outstanding.
 4. Review the listing and confirm publication. Retain a monitored support route; the listing points to the public repository and privacy notice.
 
 These are specific remaining steps, not a reason to repeat the broad test campaign.

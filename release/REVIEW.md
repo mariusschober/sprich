@@ -1,3 +1,5 @@
+> **Note (2026-10-25, release-1.0-prep):** this review describes the 2026-09-02 candidate. The shipped 1.0 configuration no longer uses the NGC-licensed FastConformer model; Automatic is Whisper Tiny LID + Canary 180M Flash (T3), and the 2026-10-25 Parakeet bake-off kept Canary (T4). See ../docs/MODELS.md, ../docs/BAKEOFF_2026-10-25.md and ../docs/KNOWN_LIMITATIONS.md for the current configuration and limits; the measured evidence below remains the record of that earlier candidate.
+
 # Independent release review — 2 September 2026
 
 Current distribution target: **Zapstore beta**. The publisher deferred Play and F-Droid work and asked to close the broad testing campaign.

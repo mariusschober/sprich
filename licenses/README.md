@@ -23,3 +23,15 @@ Standard license examples such as `[yyyy]` in Apache's appendix are part of the 
 **BLOCKED: corresponding-source delivery must accompany the first public binary release.** Desugared Java is derived from OpenJDK and includes GPL 2 code with the Classpath exception. This exception allows Sprich's independent application code to retain its MIT license; it does not remove the library's source-distribution obligations. Its exact source is [Google's 2.1.4 release commit](https://github.com/google/desugar_jdk_libs/tree/50d9c1fb3e85fa4c00161525a45484f712c1f003). Provide the complete source archive, its upstream build files and Sprich's build configuration alongside the binary, with matching release references. Do not substitute a vague written offer or assume a link will remain available indefinitely. Also preserve source availability for MPL-covered Eigen and Public Suffix List material.
 
 Human review of the final package remains separate from these engineering checks. This file records concrete unresolved distribution requirements; the app does not display a claim of legal certification.
+
+## Evaluation corpora (not redistributed)
+
+- FLEURS test split (`google/fleurs`, CC-BY-4.0): used for the 2026-10-25 recognition bake-off.
+  Only a clip manifest (ids, references, hashes) is committed under `docs/bakeoff/`; no audio is
+  redistributed.
+- Synthetic silence/noise clips: generated deterministically; not redistributed.
+- Mozilla Common Voice English (German-accented subset): intended, but BLOCKED because no
+  anonymous data files are available; nothing was fabricated or substituted.
+- NVIDIA Parakeet TDT 0.6B v3 (CC-BY-4.0): evaluated as a debug-only candidate, not shipped and
+  not included in the app notices. Its license and archive hash are recorded in
+  `docs/MODELS.md` and `docs/BAKEOFF_2026-10-25.md`.

@@ -30,3 +30,12 @@ NVIDIA NGC-licensed FastConformer is not part of the shipped configuration: its 
 Canary model attribution: NVIDIA, [canary-180m-flash](https://huggingface.co/nvidia/canary-180m-flash), converted/quantized to ONNX by the sherpa-onnx project. Whisper: OpenAI, [Whisper](https://github.com/openai/whisper), converted/quantized by sherpa-onnx. Silero: Silero Team, [silero-vad](https://github.com/snakers4/silero-vad), distributed via sherpa-onnx's ASR release assets. These are modified/exported model forms, not original training checkpoints. Full upstream license texts and notices are in `licenses/THIRD_PARTY_NOTICES.txt` and the app.
 
 Native versions and source provenance: [native/README.md](../native/README.md). Nemotron and replay fixtures are development experiments excluded from production model choices and APKs.
+
+## Evaluated but not shipped (debug-only bake-off, 2026-10-25)
+
+NVIDIA Parakeet TDT 0.6B v3 INT8 (sherpa-onnx export) was measured as a debug-only candidate:
+weights **CC-BY-4.0** (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), archive
+487,170,055 bytes, SHA-256 `5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf`.
+It is **not** part of the production manifest, is not downloadable by release builds, and no
+Parakeet bytes are shipped. It was rejected for 1.0 on German accuracy, memory and stability; see
+[BAKEOFF_2026-10-25.md](BAKEOFF_2026-10-25.md).
