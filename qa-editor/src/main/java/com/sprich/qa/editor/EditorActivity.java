@@ -13,7 +13,7 @@ import org.json.*;
 /** Disposable real editors. No Sprich code, test hooks or fake InputConnection. */
 public final class EditorActivity extends Activity {
     static volatile String snapshot = "{}";
-    final EditText[] fields = new EditText[4];
+    final EditText[] fields = new EditText[5];
     final JSONArray events = new JSONArray();
     boolean resetting;
     LinearLayout editors;
@@ -34,11 +34,12 @@ public final class EditorActivity extends Activity {
         TextView title = new TextView(this); title.setText("Sprich · real editor QA"); title.setTextSize(20); root.addView(title);
         Button toggle = new Button(this); toggle.setText("Native / WebView"); root.addView(toggle);
         editors = new LinearLayout(this); editors.setOrientation(LinearLayout.VERTICAL);
-        String[] names={"First editor", "Second editor", "Password", "PIN"};
-        int[] types={InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE, InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE, InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD, InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_VARIATION_PASSWORD};
+        String[] names={"First editor", "Second editor", "Password", "PIN", "No personalized learning"};
+        int[] types={InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE, InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE, InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD, InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_VARIATION_PASSWORD, InputType.TYPE_CLASS_TEXT};
         for(int i=0;i<fields.length;i++) {
             final int index=i; EditText field=new EditText(this);fields[i]=field;
             field.setId(100+i);field.setHint(names[i]);field.setInputType(types[i]);field.setTextSize(18);field.setMaxLines(i<2?3:1);
+            if(i==4) field.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
             field.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
             field.setMinHeight(96);editors.addView(field,new LinearLayout.LayoutParams(-1,-2));
             field.addTextChangedListener(new TextWatcher() {
@@ -62,7 +63,7 @@ public final class EditorActivity extends Activity {
     }
     protected void onDestroy(){unregisterReceiver(commands);web.destroy();super.onDestroy();}
     void command(Intent intent) {
-        int n=Math.max(0,Math.min(3,intent.getIntExtra("field",0)));EditText field=fields[n];String op=intent.getStringExtra("op");
+        int n=Math.max(0,Math.min(fields.length-1,intent.getIntExtra("field",0)));EditText field=fields[n];String op=intent.getStringExtra("op");
         if("reset".equals(op)) {
             resetting=true;for(EditText f:fields)f.setText("");while(events.length()>0)events.remove(0);resetting=false;
         } else if("focus".equals(op)) {
