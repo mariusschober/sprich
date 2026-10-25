@@ -100,6 +100,10 @@ object RefinementValidator {
         if (candidate == original) return Result.Accept
         if (candidate.contains("```") && !original.contains("```")) return Result.Reject("added_markup")
         if (assistantPrefix.containsMatchIn(candidate) && !assistantPrefix.containsMatchIn(original)) return Result.Reject("added_commentary")
+        // Invisible/control characters can spoof direction, line breaks or numbers in the
+        // receiving editor. The deterministic transcript never contains them, so a candidate
+        // that introduces them is rejected instead of inserted verbatim.
+        if (hasUnsafeInvisibleCharacter(candidate)) return Result.Reject("invisible_characters")
         // Explicitly stated numeric self-corrections resolve first ("50 Euro, nein, 15 Euro"
         // means 15 Euro): the superseded value and its cue word carry no further meaning, so
         // the resolved text — not the raw transcript — is the baseline for length bounds.
@@ -214,6 +218,24 @@ object RefinementValidator {
     }
 
     private val wordToken = Regex("[\\p{L}\\p{N}_]+")
+
+    /**
+     * Format/control/separator characters that carry no visible glyph. Newline and tab are
+     * legitimate paragraph/whitespace cleanup and stay allowed; everything else is rejected.
+     */
+    private fun hasUnsafeInvisibleCharacter(text: String): Boolean = text.any { c ->
+        if (c == '\n' || c == '\t' || c == '\r') {
+            false
+        } else {
+            when (Character.getType(c).toInt()) {
+                Character.CONTROL.toInt() -> true
+                Character.FORMAT.toInt() -> true
+                Character.LINE_SEPARATOR.toInt() -> true
+                Character.PARAGRAPH_SEPARATOR.toInt() -> true
+                else -> false
+            }
+        }
+    }
 
     private fun wordTokens(text: String): List<String> {
         val norm = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
