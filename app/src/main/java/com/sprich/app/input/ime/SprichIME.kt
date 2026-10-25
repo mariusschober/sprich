@@ -1034,6 +1034,7 @@ class SprichIME : InputMethodService() {
     @Volatile private var editorAuthority: EditorSnapshot? = null
     @Volatile private var fieldAllowsContext = false
     private val ownSelections = OwnSelectionRegistry()
+    private val oneShotVoice = OneShotVoiceSubtypePolicy()
 
     private fun editorStillOwned(): Boolean = editorAuthority != null && EditorSnapshot.read(currentInputConnection) == editorAuthority
 
@@ -1089,6 +1090,7 @@ class SprichIME : InputMethodService() {
             editorActionController.clearHistory()
             editorActionController.clearSprichInsertion()
             ownSelections.clear()
+            oneShotVoice.reset()
             fieldAllowsContext = info != null && !isPassword(info) && (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) == 0
             editorAuthority = if (isPassword(info)) null else EditorSnapshot.read(currentInputConnection)
             currentFieldTokenIcHash = currentInputConnection?.hashCode() ?: 0
@@ -1124,6 +1126,15 @@ class SprichIME : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        // T2: remember whether this input view was entered through the one-shot voice subtype.
+        oneShotVoice.onInputViewStarted(
+            try {
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                    .currentInputMethodSubtype?.mode
+            } catch (_: Exception) {
+                null
+            },
+        )
         cancelBarGesture()
         resetBarMotion()
         updateImeUi(isDictationRunning())
@@ -1159,6 +1170,7 @@ class SprichIME : InputMethodService() {
         resetBarMotion()
         try { stopVisualLane() } catch (_: Exception) {}
         try { stopDictation(StopReason.WINDOW_HIDDEN) } catch (_: Exception) {}
+        returnToPreviousKeyboardIfOneShot()
     }
 
     override fun onFinishInput() {
@@ -2415,6 +2427,7 @@ class SprichIME : InputMethodService() {
                 resultNotice?.let { micContainer?.announceForAccessibility(uiString(it)) }
                 latency.mark("textCommitted")
                 celebrateCommit()
+                returnToPreviousKeyboardIfOneShot()
             }
 
             // Post-commit housekeeping moved after prepared handling
@@ -2812,6 +2825,29 @@ class SprichIME : InputMethodService() {
             "audioActive=${audio.isActive()} vad=${vad.currentState()} engineLoaded=${engine.isLoaded()} fastLoaded=${fastConformerEngine.isLoaded()} lidLoaded=${lidEngine.isLoaded()} sessionId=${session.sessionId}\n"
         scope.launch(Dispatchers.IO) {
             try { Diagnostics.write(this@SprichIME, text) } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * T2: after a one-shot voice-subtype session (final insertion, cancel or hide), hand control
+     * back to the previous typing keyboard. API 28+ has switchToPreviousInputMethod(); on API
+     * 26-27 the deprecated switchToLastInputMethod(token) is used when a window token exists,
+     * and otherwise the platform's own keyboard switcher remains the manual path.
+     */
+    private fun returnToPreviousKeyboardIfOneShot() {
+        if (!oneShotVoice.consumeReturn()) return
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                switchToPreviousInputMethod()
+            } else {
+                @Suppress("DEPRECATION")
+                val token = window?.window?.attributes?.token
+                if (token != null) {
+                    (getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                        .switchToLastInputMethod(token)
+                }
+            }
+        } catch (_: Exception) {
         }
     }
 

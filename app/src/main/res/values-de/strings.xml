@@ -2,6 +2,7 @@
     <string name="ime_audio_error">Ich konnte dich nicht hören</string>
     <string name="app_name">Sprich</string>
     <string name="ime_label">Sprich</string>
+    <string name="ime_subtype_voice">Spracheingabe</string>
     <string name="ime_subtype_en">Englisch</string>
     <string name="ime_subtype_de">Deutsch</string>
     <string name="ime_subtype_es">Spanisch</string>

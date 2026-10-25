@@ -2,6 +2,7 @@
     <string name="ime_audio_error">No he podido oírte</string>
     <string name="app_name">Sprich</string>
     <string name="ime_label">Sprich</string>
+    <string name="ime_subtype_voice">Voz</string>
     <string name="ime_subtype_en">Inglés</string>
     <string name="ime_subtype_de">Alemán</string>
     <string name="ime_subtype_es">Español</string>
