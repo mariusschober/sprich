@@ -27,7 +27,7 @@ The PCM collector is bounded to 30 seconds. Snapshot jobs are queued in order wi
 
 `FieldSessionController`, `UtteranceToken` and `EditorSnapshot` tie a result to its field, generation, selection and exact surrounding context. Only callbacks matching Sprich's own successful mutation preserve authority. Manual cursor/selection changes stop listening and clear pending text and edit history.
 
-Partials stay inside the IME. A final result uses one `commitText`; an editor returning false or throwing after mutation never causes a retry. Delete and undo require exact unchanged spans with complete Unicode boundaries. Ambiguous/truncated context fails closed. Password/PIN fields prohibit recording and editor mutations.
+Partials stay inside the IME. A final result uses one `commitText`; an editor returning false or throwing after mutation never causes a retry. Delete and undo require exact unchanged spans with complete Unicode boundaries. Ambiguous/truncated context fails closed. Password/PIN fields prohibit recording and editor mutations. Fields that the host marks no-personalized-learning receive no automatic capture and no saved-vocabulary hints; an explicit microphone tap is required there. Optional cleanup output is rejected if it introduces invisible or direction-changing characters. `IME_FLAG`-driven instant start and hint policy lives in `FieldLearningPolicy`.
 
 ## Files, credentials and removal
 

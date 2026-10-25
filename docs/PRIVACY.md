@@ -8,9 +8,9 @@ Speech recognition runs on your phone by default. Automatic and Accurate remain 
 
 You can separately enable an API for voice recognition or writing cleanup using your own provider account and key. A voice API receives the utterance as a recording, or as audio chunks while you speak if you select Meta streaming. A writing API receives the transcript, its language and relevant vocabulary terms. Requests go directly from the phone to the selected provider over HTTPS or a secure WebSocket. Sprich does not receive them. Provider prices and data policies apply, including any retention, monitoring or training terms associated with your plan. A paid account and a free account may have different terms.
 
-Selecting a provider or saving/checking a key does not enable dictation through that API. A writing connection check sends a built-in sample sentence. A voice connection check records and sends four seconds of your voice. Each action identifies what it sends before you start it; API charges can apply.
+Selecting a provider or saving/checking a key does not enable dictation through that API. A writing connection check sends a built-in sample sentence. A voice connection check records and sends four seconds of your voice (and up to 100 saved vocabulary terms when vocabulary sharing is enabled). Each action identifies what it sends before you start it; API charges can apply.
 
-“Start when the keyboard opens” is enabled during first setup. In ordinary text fields, Sprich therefore begins microphone capture when its keyboard appears; you can turn this off during setup or later in Settings. Microphone audio is held in bounded memory while Sprich listens and processes an utterance. Normal dictation does not write audio or transcripts to files. Listening stops when you hide the keyboard, leave the field, move the cursor or change the selection. Password and PIN fields cannot start dictation. Cancelling a request cannot undo data that the selected provider has already received.
+“Start when the keyboard opens” is enabled during first setup. In ordinary text fields, Sprich therefore begins microphone capture when its keyboard appears; you can turn this off during setup or later in Settings. Fields that the receiving app marks as no-personalized-learning do not start listening automatically: tap the microphone to dictate there, and saved vocabulary is not attached in such fields. Microphone audio is held in bounded memory while Sprich listens and processes an utterance. Normal dictation does not write audio or transcripts to files. Listening stops when you hide the keyboard, leave the field, move the cursor or change the selection. Password and PIN fields cannot start dictation. Cancelling a request cannot undo data that the selected provider has already received.
 
 ## Editor text and vocabulary
 
@@ -26,7 +26,7 @@ Writing cleanup sends only saved vocabulary terms already present in the transcr
 
 The optional **Use nearby text** setting lets the writing provider receive up to 512 Unicode code points before the cursor for spelling and continuity. It is initially off, and does not apply to password/PIN fields or fields marked private by the receiving app. Changing writing providers resets this permission. Turning it off cancels pending work that had the previous permission.
 
-OpenAI and Gemini requests set `store=false`. Meta streaming sets `zdrOverride=true`, which its documentation describes as requesting metadata-only session logging. These controls do not override account-level data policies or establish zero retention. Custom APIs have their own behavior and policies.
+OpenAI writing requests and Gemini requests set `store=false`; OpenAI's transcription endpoint has no such parameter. Meta streaming sets `zdrOverride=true`, which its documentation describes as requesting metadata-only session logging. These controls do not override account-level data policies or establish zero retention. Custom APIs have their own behavior and policies.
 
 ## Downloads
 

@@ -5,7 +5,7 @@ Local dictation remains the default. Automatic and Accurate work without a key. 
 - **Clean up my words** sends the local transcript to a writing API. This is the smallest change to the local experience: natural punctuation, fewer fillers and explicit self-corrections, without changing the speaker's voice.
 - **Voice typing → Personal API** sends the audio to a recognition API. This can be used with or without writing cleanup.
 
-Select a provider, paste your own key on the phone, and check the connection. Writing checks send one built-in sentence. Voice checks record and send four seconds of audio. Provider charges may apply. Review the result, then explicitly choose **Use for cleanup** or **Use for voice typing**. Saving or checking a key does not enable either option. A failed or cancelled check of another mode keeps the working configuration intact.
+Select a provider, paste your own key on the phone, and check the connection. Writing checks send one built-in sentence. Voice checks record and send four seconds of audio, plus up to 100 saved vocabulary terms when **Help recognize my vocabulary** is already enabled. Provider charges may apply. Review the result, then explicitly choose **Use for cleanup** or **Use for voice typing**. Saving or checking a key does not enable either option. A failed or cancelled check of another mode keeps the working configuration intact.
 
 **One key can serve both uses.** After checking a preset, choose **Set up cleanup with this key** or **Set up voice typing with this key**. The second use reuses the encrypted key for that provider and endpoint, but needs its own successful check and explicit permission. Disconnecting one use preserves a shared key until the other use is also disconnected. A key for another provider or custom endpoint is never reused.
 
@@ -47,7 +47,7 @@ Voice APIs receive the utterance as a WAV recording, or raw 16 kHz PCM during Me
 
 Writing APIs receive the transcript, its language and up to 20 vocabulary terms already present in the transcript. **Use nearby text** is initially off. If enabled, at most 512 Unicode code points before the cursor can be included for spelling and continuity. Password/PIN fields and fields marked `IME_FLAG_NO_PERSONALIZED_LEARNING` supply no such context. Nearby text comes from the existing editor-authority snapshot; the audio callback does not query the editor.
 
-OpenAI and Gemini requests explicitly set `store=false`. Meta streaming sets `zdrOverride=true`, documented as requesting metadata-only session logging. These controls do not establish zero provider retention or override account policies. Read the provider's terms for your account and plan. Custom providers define their own behavior.
+OpenAI writing requests and Gemini requests explicitly set `store=false`; OpenAI's transcription endpoint has no such parameter. Meta streaming sets `zdrOverride=true`, documented as requesting metadata-only session logging. These controls do not establish zero provider retention or override account policies. Read the provider's terms for your account and plan. Custom providers define their own behavior.
 
 ## Latency and failure behavior
 

@@ -40,7 +40,7 @@ The release build uses R8 and resource shrinking. Large recognition models are d
 - [API implementation and current focused evidence](docs/PERSONAL_APIS.md), [earlier core qualification](release/REVIEW.md), [known limitations](docs/KNOWN_LIMITATIONS.md), [measurement method](docs/LATENCY.md)
 - [Zapstore preparation](release/SUBMISSION.md), [listing configuration](zapstore.yaml), [screenshots and artwork](release/store/README.md)
 
-The opt-in [QA editor](qa-editor/README.md) exercises real Android editors and installed release native code. Debug fixtures, mock providers, experiments and developer screens are excluded from release artifacts. Dated sprint documents and old handovers are historical records, not current acceptance evidence.
+The opt-in [QA editor](qa-editor/README.md) exercises real Android editors and installed release native code. Debug fixtures, mock providers, experiments and developer screens are excluded from release artifacts. Dated sprint documents and old handovers are historical records, not current acceptance evidence; they live under [docs/archive/](docs/archive/README.md) with a one-line index.
 
 The current release target is Zapstore. Play and F-Droid publishing are deferred. No public release has been published by this review; signing and publisher identity setup remain in the handoff.
 
