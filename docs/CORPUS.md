@@ -1,5 +1,10 @@
 # CORPUS — Decision-grade real speech for Sprich Auto (2026-09-02)
 
+> **Recording workflow (2026-10-25):** the maintainer procedure, exact commands, resume-safe
+> recorder and scoring tool are in [CORPUS_RECORDING.md](CORPUS_RECORDING.md), with the
+> [manifest template](corpus-manifest-template.csv). The status counts below are from
+> 2026-09-02 and remain NOT MEASURED for 1.0 until that run completes.
+
 This corpus is the **same verified real-speech frozen PCM** used for all 4 architectures. Private recordings are **not committed** — only metadata/schema/scripts are committed. Audio stored in app-private debug storage (`filesDir/debug_corpus/`) and workstation `local_benchmark/` ignored by git.
 
 ## Required counts (per mission)
