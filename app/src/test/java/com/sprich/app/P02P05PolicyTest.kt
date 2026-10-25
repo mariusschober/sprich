@@ -1,8 +1,6 @@
 package com.sprich.app
 
-import com.sprich.app.core.audio.CaptureReadiness
 import com.sprich.app.core.audio.ContinuousSpeechPolicy
-import com.sprich.app.core.audio.StartupAudioBuffer
 import com.sprich.app.core.vad.EndpointConfig
 import com.sprich.app.core.vad.EndpointSignals
 import com.sprich.app.core.vad.SpeechEndpoint
@@ -11,63 +9,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Host tests for the P01/P02/P05 policy layer (plan §§5.1–5.3):
- * bounded startup buffer + readiness split, route-independent VAD endpoint
- * policy, and bounded continuous-speech caps with verified reconciliation.
- * Android wiring (AudioCapture feed, Silero detector, endpoint-driven splits)
- * needs Gradle + device and stays BLOCKED.
+ * Host tests for the P02/P05 policy layer (plan §§5.2–5.3): route-independent VAD endpoint
+ * policy and bounded continuous-speech caps with verified reconciliation. The old P01 startup
+ * buffer was never drained by production and has been removed (T1/E5).
  */
-class P01P02P05PolicyTest {
-
-    // P01: 8 s of 16 kHz mono PCM16 = 128,000 samples = 256,000 bytes.
-
-    @Test
-    fun startupBufferCapsAtEightSeconds() {
-        assertEquals(128_000, StartupAudioBuffer.STARTUP_BUFFER_MAX_SAMPLES)
-        assertEquals(256_000, StartupAudioBuffer.STARTUP_BUFFER_MAX_BYTES)
-        val b = StartupAudioBuffer()
-        b.begin(1L)
-        b.append(ShortArray(200_000) { 7 }, 1L)
-        assertEquals(128_000, b.sizeSamples())
-        assertEquals(256_000, b.sizeBytes())
-    }
-
-    @Test
-    fun startupBufferDropsStaleGenerationsAndDrainsOnce() {
-        val b = StartupAudioBuffer()
-        b.begin(1L)
-        b.append(ShortArray(1000) { 3 }, 2L) // wrong generation: ignored
-        assertEquals(0, b.sizeSamples())
-        b.append(ShortArray(1000) { 3 }, 1L)
-        assertEquals(1000, b.drainOnce(1L).size)
-        assertEquals(0, b.drainOnce(1L).size) // exactly once
-        b.begin(2L)
-        b.append(ShortArray(500) { 4 }, 2L)
-        b.invalidate() // cancelled load continuation must not feed or drain old capture
-        assertFalse(b.isArmed())
-        assertEquals(0, b.drainOnce(2L).size)
-        b.append(ShortArray(500) { 4 }, 2L)
-        assertEquals(0, b.sizeSamples())
-    }
-
-    @Test
-    fun captureReadinessIsIndependentOfRecognizerReadiness() {
-        val r = CaptureReadiness()
-        r.onFirstPcm(0L)
-        assertTrue(r.captureReady)
-        assertFalse(r.recognizerReady) // warming cue, not a recording claim
-        r.onRecognizerLoaded(0L)
-        assertTrue(r.recognizerReady)
-        r.invalidate() // generation bump retires stale continuations
-        assertFalse(r.captureReady)
-        assertFalse(r.recognizerReady)
-        r.onFirstPcm(0L) // stale generation ignored
-        assertFalse(r.captureReady)
-        r.onFirstPcm(1L)
-        assertTrue(r.captureReady)
-    }
-
-    // P02: neural presence usable in every route; attempt count never decides.
+class P02P05PolicyTest {
 
     @Test
     fun neuralSpeechIsNeverCutByProviderCompletion() {

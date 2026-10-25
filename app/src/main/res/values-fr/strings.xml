@@ -167,7 +167,6 @@
     <string name="correction_remember">Retenir l’orthographe</string>
     <string name="correction_remembered">Orthographe retenue</string>
     <string name="correction_close">Fermer</string>
-    <string name="ime_retry_insert">Réessayer l’insertion</string>
     <string name="ime_kept_retry">Non inséré — conservé. Retrouvez-le sur l’accueil de Sprich.</string>
     <string name="recovery_title">Dictée conservée</string>
     <string name="recovery_hint">Retournez au champ et touchez réessayer pour insérer, ou ignorez-la ici.</string>

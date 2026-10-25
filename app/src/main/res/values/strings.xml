@@ -167,7 +167,6 @@
     <string name="correction_remember">Remember spelling</string>
     <string name="correction_remembered">Spelling remembered</string>
     <string name="correction_close">Close</string>
-    <string name="ime_retry_insert">Retry insert</string>
     <string name="ime_kept_retry">Not inserted — kept. Find it on Sprich Home.</string>
     <string name="recovery_title">Dictation kept</string>
     <string name="recovery_hint">Return to the field and tap retry to insert, or discard here.</string>
