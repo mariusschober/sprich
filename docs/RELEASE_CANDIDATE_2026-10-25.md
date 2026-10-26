@@ -49,10 +49,10 @@
 
 ## Not measured / blocked
 
-- Acoustic 20-clip-per-language subset (Mac speaker -> device microphone -> real editor) for the
-  bake-off: **NOT MEASURED** (not run; T4 frozen-PCM measurement completed first and the device was
-  being detached). The debug-only Parakeet engine has no editor routing, so a like-for-like
-  acoustic comparison is additionally BLOCKED; no acoustic claim is made.
+- Acoustic 20-clip-per-language subset: **MEASURED for the production baseline** (80/80 insertions,
+  overall WER 0.096; see docs/bakeoff/ACOUSTIC_RESULTS.md and BAKEOFF_2026-10-25.md). The
+  debug-only Parakeet engine has no editor routing, so its acoustic row remains BLOCKED; the
+  decision is unaffected because independent gates already failed on frozen PCM.
 - 16 KB-page runtime behavior on a 16 KB emulator: NOT MEASURED in this cycle (host alignment
   checks passed).
 - Public distribution, production signing, Zapstore/Nostr publishing: out of scope / maintainer.

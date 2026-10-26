@@ -51,31 +51,58 @@ def main():
     parser.add_argument("--manifest", type=pathlib.Path, required=True)
     parser.add_argument("--wavs", type=pathlib.Path, required=True, help="local directory with the same clip files")
     parser.add_argument("--out", type=pathlib.Path, required=True)
-    parser.add_argument("--wait-seconds", type=float, default=20.0)
+    parser.add_argument("--wait-seconds", type=float, default=25.0)
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
     clips = [c for c in manifest["clips"] if c.get("acousticSubset")]
     previous_ime = adb(args.serial, "shell", "settings", "get", "secure", "default_input_method")
     volume = adb(args.serial, "shell", "settings", "get", "system", "volume_music_speaker") if False else None
     adb(args.serial, "shell", "ime", "set", IME)
-    subprocess.check_call(["osascript", "-e", "set volume output volume 75"])
+    subprocess.check_call(["osascript", "-e", "set volume output volume 100"])
     results = []
     try:
         adb(args.serial, "shell", "am", "start", "-n", f"{QA}/.EditorActivity")
         time.sleep(2)
+        # One discarded warm-up capture: the first IME session after activation loads the
+        # recognizer and can lose the cold start; measurement begins once it is warm.
+        if clips:
+            warm = clips[0]
+            broadcast(args.serial, "--es", "op", "reset")
+            focus(args.serial)
+            time.sleep(2.5)
+            subprocess.check_call(["afplay", "-v", "3", str(args.wavs / warm["audio"])])
+            deadline = time.monotonic() + 40
+            while time.monotonic() < deadline:
+                time.sleep(0.5)
+                if field_text(args.serial):
+                    time.sleep(2.0)
+                    break
+            print("[warm-up discarded]", flush=True)
         for index, clip in enumerate(clips):
+            # Wait for the field to be empty (a previous late insertion must not be misattributed).
+            broadcast(args.serial, "--es", "op", "reset")
+            empty_deadline = time.monotonic() + 3
+            while time.monotonic() < empty_deadline and field_text(args.serial):
+                time.sleep(0.3)
             path = args.wavs / clip["audio"]
             focus(args.serial)
-            time.sleep(1.0)
-            subprocess.check_call(["afplay", "-v", "1.5", str(path)])
+            time.sleep(2.0)
+            subprocess.check_call(["afplay", "-v", "3", str(path)])
             deadline = time.monotonic() + args.wait_seconds
             text = ""
+            stable_since = None
             while time.monotonic() < deadline:
                 time.sleep(0.5)
                 current = field_text(args.serial)
-                if current and current == text:
-                    break
-                text = current
+                if current:
+                    if current != text:
+                        text = current
+                        stable_since = time.monotonic()
+                    elif stable_since is not None and time.monotonic() - stable_since >= 2.0:
+                        break
+                else:
+                    text = ""
+            text = field_text(args.serial)
             results.append({"id": clip["id"], "language": clip["language"], "reference": clip["reference"],
                             "inserted": text, "durationMs": clip["durationMs"]})
             print(f"[{index+1}/{len(clips)}] {clip['id']} {clip['language']} -> {text!r}", flush=True)
