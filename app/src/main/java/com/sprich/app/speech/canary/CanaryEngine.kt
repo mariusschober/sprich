@@ -112,15 +112,7 @@ class CanaryEngine(
         }
     }
 
-    private fun isSilence(pcm: ShortArray): Boolean {
-        if (pcm.isEmpty()) return true
-        var sum = 0.0
-        for (s in pcm) { val f = s / 32768.0; sum += f * f }
-        // Trust VAD for whisper: only reject true digital silence, not quiet speech.
-        // Previous 0.004 threshold discarded whisper that VAD correctly detected (VAD ~0.0012).
-        // Keep only extremely low defensive gate for digital zero.
-        return kotlin.math.sqrt(sum / pcm.size) < 0.0005
-    }
+    private fun isSilence(pcm: ShortArray): Boolean = CanarySpeechGate.isEffectivelySilent(pcm)
 
     /** Legacy threshold for tests that want to simulate old behavior. */
     private fun isSilenceLegacy(pcm: ShortArray): Boolean {
@@ -381,7 +373,9 @@ class CanaryEngine(
             val rec = recognizer ?: return ""
             var stream: Any? = null
             try {
-                val floats = FloatArray(pcm.size){ pcm[it] / 32768f }
+                // R1: quiet-speech conditioning (see CanaryInputGain). Decode-only; no authority.
+                val conditioned = CanaryInputGain.normalize(pcm)
+                val floats = FloatArray(conditioned.size){ conditioned[it] / 32768f }
                 val streamClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineStream")
                 stream = rec.javaClass.getMethod("createStream").invoke(rec)
                 stream.javaClass.getMethod("acceptWaveform", FloatArray::class.java, Int::class.java).invoke(stream, floats, 16000)

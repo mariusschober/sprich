@@ -111,22 +111,35 @@ open class LocalTranscriptionCoordinator(
                 return LocalTranscriptionResult("", ResolvedUtteranceLanguage.Known(language), effectiveConfig, canary.engineId, lidLatency, lidRaw)
             }
         }
-        val ft: FinalTranscript = try {
-            canary.transcribeSnapshot(pcm, effectiveConfig)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w("Coordinator", "Canary transcribeSnapshot failed", e)
-            FinalTranscript("")
-        }
+        val text = decodeCanarySegmented(pcm, effectiveConfig)
         return LocalTranscriptionResult(
-            text = ft.text,
+            text = text,
             resolvedLanguage = ResolvedUtteranceLanguage.Known(language),
             effectiveConfig = effectiveConfig,
             engineId = canary.engineId,
             lidLatencyMs = lidLatency,
             lidRaw = lidRaw,
         )
+    }
+
+    /**
+     * R1: long utterances are decoded in bounded, lowest-energy segments and joined with
+     * typography rules. The IME still performs exactly one editor mutation for the utterance.
+     */
+    private suspend fun decodeCanarySegmented(pcm: ShortArray, config: SpeechSessionConfig): String {
+        val language = (config.speechLanguage as? SpeechLanguage.Fixed)?.toLegacyLanguage()
+            ?: config.language ?: Language.AUTO
+        val ranges = LongUtteranceSegmenter.plan(pcm)
+        if (ranges.size <= 1) {
+            return canary.transcribeSnapshot(pcm, config).text.trim()
+        }
+        val parts = ArrayList<String>(ranges.size)
+        for (range in ranges) {
+            val segment = pcm.copyOfRange(range.start, range.start + range.length)
+            parts += canary.transcribeSnapshot(segment, config).text.trim()
+        }
+        Log.i("Coordinator", "segmented utterance samples=${pcm.size} segments=${ranges.size} decoded=${parts.count { it.isNotEmpty() }}")
+        return LongUtteranceSegmenter.join(parts, language)
     }
 
     private suspend fun transcribeAccurate(
@@ -144,17 +157,10 @@ open class LocalTranscriptionCoordinator(
             language = explicitLang,
             speechLanguage = SpeechLanguage.Fixed(explicitLang.code),
         )
-        val ft = try {
-            canary.transcribeSnapshot(pcm, accurateConfig)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w("Coordinator", "Canary transcribeSnapshot failed", e)
-            FinalTranscript("")
-        }
+        val text = decodeCanarySegmented(pcm, accurateConfig)
         val resolved: ResolvedUtteranceLanguage = ResolvedUtteranceLanguage.Known(explicitLang)
         return LocalTranscriptionResult(
-            text = ft.text,
+            text = text,
             resolvedLanguage = resolved,
             effectiveConfig = accurateConfig,
             engineId = canary.engineId,
