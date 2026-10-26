@@ -44,8 +44,12 @@ class CorrectionDictationRoutingTest {
     fun realMonotonicClockOrdersArmThenEndpoint() {
         val armedAt = System.nanoTime()
         val endpoint = System.nanoTime()
+        // The clock is monotonic, so a later read is never earlier. It may be equal on a
+        // low-resolution scheduler tick; only assert a strict ordering when one exists.
         assertTrue(correctionDictationEndedAfterArm(endpoint, armedAt))
-        assertFalse(correctionDictationEndedAfterArm(armedAt, endpoint))
+        if (endpoint > armedAt) {
+            assertFalse(correctionDictationEndedAfterArm(armedAt, endpoint))
+        }
     }
 
     @Test
