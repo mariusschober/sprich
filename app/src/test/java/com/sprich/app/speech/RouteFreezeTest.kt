@@ -20,18 +20,18 @@ class RouteFreezeTest {
         // Simulate SprichIME behavior: capture route at onset, chunks continue, endpoint still uses frozen route
         var speechLang: SpeechLanguage = SpeechLanguage.Auto
         fun determineRoute(lang: SpeechLanguage): LocalAsrRoute = when (lang) {
-            is SpeechLanguage.Auto -> LocalAsrRoute.AutomaticFastConformer
+            is SpeechLanguage.Auto -> LocalAsrRoute.AutomaticCanary
             is SpeechLanguage.Fixed -> LocalAsrRoute.AccurateCanary(lang.toLegacyLanguage())
         }
         // Onset
         val routeAtOnset = determineRoute(speechLang)
-        assertTrue(routeAtOnset is LocalAsrRoute.AutomaticFastConformer)
+        assertTrue(routeAtOnset is LocalAsrRoute.AutomaticCanary)
         // Simulate Settings change to DE Accurate mid-utterance
         speechLang = SpeechLanguage.Fixed("de")
         val routeMidChunk = routeAtOnset // should remain frozen, not re-read
-        assertTrue(routeMidChunk is LocalAsrRoute.AutomaticFastConformer)
+        assertTrue(routeMidChunk is LocalAsrRoute.AutomaticCanary)
         val routeAtEndpoint = routeAtOnset // endpoint must still be Automatic
-        assertTrue(routeAtEndpoint is LocalAsrRoute.AutomaticFastConformer)
+        assertTrue(routeAtEndpoint is LocalAsrRoute.AutomaticCanary)
         // Next utterance should use new DE Accurate
         val routeNextOnset = determineRoute(speechLang)
         assertTrue(routeNextOnset is LocalAsrRoute.AccurateCanary)

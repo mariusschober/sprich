@@ -58,7 +58,6 @@ private val NOTICE_DESCRIPTIONS: Map<String, Int> = mapOf(
     "kissfft" to R.string.notice_description_kissfft,
     "llvm" to R.string.notice_description_llvm,
     "whisper" to R.string.notice_description_whisper,
-    "fastconformer" to R.string.notice_description_fastconformer,
     "canary" to R.string.notice_description_canary,
     "silero" to R.string.notice_description_silero,
 )

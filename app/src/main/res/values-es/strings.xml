@@ -2,6 +2,7 @@
     <string name="ime_audio_error">No he podido oírte</string>
     <string name="app_name">Sprich</string>
     <string name="ime_label">Sprich</string>
+    <string name="ime_subtype_voice">Voz</string>
     <string name="ime_subtype_en">Inglés</string>
     <string name="ime_subtype_de">Alemán</string>
     <string name="ime_subtype_es">Español</string>
@@ -101,7 +102,7 @@
     <string name="privacy">Privacidad</string>
     <string name="advanced">Avanzado</string>
     <string name="hide_advanced">Ocultar opciones avanzadas</string>
-    <string name="model_details">Automático: detección de idioma Whisper Tiny y FastConformer CTC. Preciso: Canary 180M Flash. Todo funciona en tu teléfono.</string>
+    <string name="model_details">Automático: detección de idioma Whisper Tiny y Canary 180M Flash (licencia limpia). Preciso: Canary 180M Flash con idioma seleccionado. Todo funciona en tu teléfono.</string>
     <string name="licenses">Licencias y avisos</string>
     <string name="clear_data">Borrar datos de Sprich</string>
     <string name="clear_data_question">¿Borrar los datos de Sprich?</string>
@@ -156,6 +157,22 @@
     <string name="ime_undo_action">Deshacer borrado</string>
     <string name="ime_finishing">Escribiendo tus últimas palabras</string>
     <string name="ime_insert_retry">Toca el campo e inténtalo de nuevo</string>
+    <string name="correction_conflict">Ya aprendido con otra ortografía</string>
+    <string name="ime_correct_word">Corregir palabra</string>
+    <string name="correction_title">Corregir «%1$s»</string>
+    <string name="correction_replace_label">Reemplazo</string>
+    <string name="correction_apply">Aplicar</string>
+    <string name="correction_undo">Deshacer</string>
+    <string name="correction_dictate">Dictar reemplazo</string>
+    <string name="correction_listening">Escuchando … dicta el reemplazo</string>
+    <string name="correction_remember">Recordar ortografía</string>
+    <string name="correction_remembered">Ortografía recordada</string>
+    <string name="correction_close">Cerrar</string>
+    <string name="ime_kept_retry">No insertado — guardado. Lo encontrarás en la pantalla de inicio de Sprich.</string>
+    <string name="recovery_title">Dictado guardado</string>
+    <string name="recovery_hint">Vuelve al campo y toca reintentar para insertar, o descártalo aquí.</string>
+    <string name="recovery_insert">Insertar aquí</string>
+    <string name="recovery_discard">Descartar</string>
     <string name="download_failed">La descarga ha fallado. Comprueba la conexión e inténtalo de nuevo.</string>
     <string name="download_storage">No hay espacio suficiente. Libera espacio e inténtalo de nuevo.</string>
     <string name="download_invalid">No se pudo verificar la descarga. Inténtalo de nuevo.</string>
@@ -358,7 +375,6 @@
     <string name="notice_description_kissfft">Análisis de frecuencia dentro del entorno de voz.</string>
     <string name="notice_description_llvm">Compatibilidad nativa con C++ para Sprich y sus dependencias. Se incluye el aviso completo distribuido con la versión exacta del NDK de Android.</string>
     <string name="notice_description_whisper">Identifica el idioma del modo Automático. Se descarga por separado y no está incluido en el APK.</string>
-    <string name="notice_description_fastconformer">Modelo de reconocimiento del modo Automático. Se descarga por separado y no está incluido en el APK. Su ficha indica las condiciones NGC, no la licencia Apache del código de entrenamiento o conversión.</string>
-    <string name="notice_description_canary">Modelo de reconocimiento del modo Preciso. Se descarga por separado y no está incluido en el APK.</string>
+    <string name="notice_description_canary">Modelo de reconocimiento de los modos Automático y Preciso. Se descarga por separado y no está incluido en el APK.</string>
     <string name="notice_description_silero">Detecta cuándo empieza y termina el habla. Este pequeño modelo está incluido en Sprich y funciona de forma local. El archivo exacto está fijado en docs/MODELS.md del repositorio de Sprich.</string>
 </resources>

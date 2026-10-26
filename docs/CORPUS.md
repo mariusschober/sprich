@@ -1,5 +1,10 @@
 # CORPUS — Decision-grade real speech for Sprich Auto (2026-09-02)
 
+> **Recording workflow (2026-10-25):** the maintainer procedure, exact commands, resume-safe
+> recorder and scoring tool are in [CORPUS_RECORDING.md](CORPUS_RECORDING.md), with the
+> [manifest template](corpus-manifest-template.csv). The status counts below are from
+> 2026-09-02 and remain NOT MEASURED for 1.0 until that run completes.
+
 This corpus is the **same verified real-speech frozen PCM** used for all 4 architectures. Private recordings are **not committed** — only metadata/schema/scripts are committed. Audio stored in app-private debug storage (`filesDir/debug_corpus/`) and workstation `local_benchmark/` ignored by git.
 
 ## Required counts (per mission)
@@ -53,4 +58,4 @@ Every golden transcript manually verified, not from model output. WER scoring us
 - ES normal: 1 measured, 14 remaining; FR normal: 1 measured, 14 remaining
 - Total measured: 25/75 via 5-entry +20 continuous (all same frozen PCM slices, real speech, not synthetic). Continuous 20 were same wavs sliced, so not independent human utterances, but prove pipeline order/no lost for winner. True 30 independent human utterances per language still need real mic collection (app-private debug storage, local_benchmark ignored).
 
-All decision table cells for those 25 are MEASURED where applicable; rest are NOT MEASURED. Decision still based on same frozen PCM per absolute rule, but now with 25 slices showing FastConformer stable. Full 30 independent human 30+30+10+10+15+15 with manual gold transcripts still required before release.
+All decision table cells for those 25 are MEASURED where applicable; rest are NOT MEASURED. Decision still based on the same frozen PCM per absolute rule, but now with 25 slices from the earlier FastConformer-era configuration. That model was removed from production in 1.0 (see MODELS.md); the 2026-10-25 public-corpus bake-off is the current evidence (BAKEOFF_2026-10-25.md). Full 30 independent human 30+30+10+10+15+15 with manual gold transcripts still required before release.

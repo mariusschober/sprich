@@ -6,14 +6,16 @@ import com.sprich.app.speech.api.Language
 import com.sprich.app.speech.api.SpeechLanguage
 import com.sprich.app.speech.api.SpeechSessionConfig
 import com.sprich.app.speech.canary.CanaryEngine
-import com.sprich.app.speech.fastconformer.FastConformerEngine
 import com.sprich.app.speech.lid.WhisperLidEngine
 
 /**
  * Minimal production coordinator — extracts transcription routing from SprichIME.
  *
- * Benefits: easier Auto-without-Canary test, API sprint can compose another TranscriptionSource,
- * service stays focused on IME lifecycle, engine selection testable.
+ * T3: Automatic is Whisper Tiny language ID followed by Canary 180M Flash with the detected
+ * language. FastConformer (NVIDIA NGC terms, no redistribution right) is no longer part of the
+ * production configuration. If language detection fails or returns an unsupported language the
+ * utterance is discarded without decoding (fail-closed, no guessed language), so Automatic never
+ * silently transcribes in the wrong language.
  *
  * Does NOT over-engineer: single suspend transcribe(), no fake confidence.
  */
@@ -28,7 +30,6 @@ data class LocalTranscriptionResult(
 
 open class LocalTranscriptionCoordinator(
     private val lid: WhisperLidEngine,
-    private val fast: FastConformerEngine,
     private val canary: CanaryEngine,
 ) {
     /**
@@ -41,7 +42,7 @@ open class LocalTranscriptionCoordinator(
         baseConfig: SpeechSessionConfig,
     ): LocalTranscriptionResult {
         return when (route) {
-            is LocalAsrRoute.AutomaticFastConformer -> transcribeAutomatic(pcm, baseConfig)
+            is LocalAsrRoute.AutomaticCanary -> transcribeAutomatic(pcm, baseConfig)
             is LocalAsrRoute.AccurateCanary -> transcribeAccurate(pcm, baseConfig, route.language)
         }
     }
@@ -50,10 +51,9 @@ open class LocalTranscriptionCoordinator(
         pcm: ShortArray,
         baseConfig: SpeechSessionConfig,
     ): LocalTranscriptionResult {
-        var effectiveConfig = baseConfig
-        var resolved: ResolvedUtteranceLanguage = ResolvedUtteranceLanguage.Unknown
         var lidLatency: Long = 0
         var lidRaw = baseConfig.resolvedLanguageTag()
+        var detected: Language? = null
 
         // Per-utterance LID — production-safe, no mock, fail-closed.
         try {
@@ -61,67 +61,85 @@ open class LocalTranscriptionCoordinator(
                 val lr = lid.load()
                 Log.i("Coordinator", "LID auto-load success=${lr.isSuccess} err=${lr.exceptionOrNull()?.message}")
             }
-            val outcome = lid.identify(pcm)
-            when (outcome) {
+            when (val outcome = lid.identify(pcm)) {
                 is WhisperLidEngine.LidOutcome.Detected -> {
                     lidLatency = outcome.latencyMs
                     lidRaw = outcome.rawCode
-                    effectiveConfig = baseConfig.copy(
-                        language = outcome.language,
-                        speechLanguage = SpeechLanguage.Fixed(outcome.language.code)
-                    )
-                    resolved = ResolvedUtteranceLanguage.Known(outcome.language)
+                    detected = outcome.language
                     Log.i("Coordinator", "LID Detected raw=${outcome.rawCode} lang=${outcome.language} latencyMs=${outcome.latencyMs} pcm=${pcm.size}")
                 }
                 is WhisperLidEngine.LidOutcome.Unsupported -> {
                     lidLatency = outcome.latencyMs
                     lidRaw = outcome.rawCode
-                    resolved = ResolvedUtteranceLanguage.Unknown
-                    Log.w("Coordinator", "LID unsupported raw=${outcome.rawCode} — Unknown, FastConformer will decode language-neutrally")
+                    Log.w("Coordinator", "LID unsupported raw=${outcome.rawCode} — fail-closed, no Automatic decode")
                 }
                 is WhisperLidEngine.LidOutcome.Failed -> {
                     lidLatency = outcome.latencyMs
                     lidRaw = "failed:${outcome.reason}"
-                    resolved = ResolvedUtteranceLanguage.Unknown
-                    Log.w("Coordinator", "LID failed reason=${outcome.reason} — Unknown")
+                    Log.w("Coordinator", "LID failed reason=${outcome.reason} — fail-closed, no Automatic decode")
                 }
                 is WhisperLidEngine.LidOutcome.Unavailable -> {
                     lidRaw = "unavailable:${outcome.reason}"
-                    resolved = ResolvedUtteranceLanguage.Unknown
-                    Log.w("Coordinator", "LID unavailable reason=${outcome.reason} — Unknown")
+                    Log.w("Coordinator", "LID unavailable reason=${outcome.reason} — fail-closed, no Automatic decode")
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w("Coordinator", "LID exception", e)
-            resolved = ResolvedUtteranceLanguage.Unknown
+            Log.w("Coordinator", "LID exception — fail-closed, no Automatic decode", e)
             lidRaw = "exception"
         }
 
-        // FastConformer is primary for Automatic — sequential after LID to bound peak heap (lid 98M + fast 126M).
-        // Parallel would spike PSS (3 threads + 224M mmap). Keep sequential unless device proves >100ms median win.
-        if (!fast.isLoaded()) {
-            val fLoad = fast.load()
-            Log.i("Coordinator", "FastConformer load success=${fLoad.isSuccess} pcm=${pcm.size}")
+        val language = detected
+            ?: return LocalTranscriptionResult(
+                text = "",
+                resolvedLanguage = ResolvedUtteranceLanguage.Unknown,
+                effectiveConfig = baseConfig,
+                engineId = canary.engineId,
+                lidLatencyMs = lidLatency,
+                lidRaw = lidRaw,
+            )
+
+        val effectiveConfig = baseConfig.copy(
+            language = language,
+            speechLanguage = SpeechLanguage.Fixed(language.code),
+        )
+        if (!canary.isLoaded()) {
+            val cLoad = canary.load()
+            Log.i("Coordinator", "Canary load for Automatic success=${cLoad.isSuccess} lang=$language pcm=${pcm.size}")
+            if (cLoad.isFailure) {
+                return LocalTranscriptionResult("", ResolvedUtteranceLanguage.Known(language), effectiveConfig, canary.engineId, lidLatency, lidRaw)
+            }
         }
-        // Sequential heap-safe path (parallel gated off until device proves >100ms median win)
-        val ft: FinalTranscript = try {
-            fast.transcribeSnapshot(pcm, effectiveConfig)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w("Coordinator", "FastConformer transcribeSnapshot failed", e)
-            FinalTranscript("")
-        }
+        val text = decodeCanarySegmented(pcm, effectiveConfig)
         return LocalTranscriptionResult(
-            text = ft.text,
-            resolvedLanguage = resolved,
+            text = text,
+            resolvedLanguage = ResolvedUtteranceLanguage.Known(language),
             effectiveConfig = effectiveConfig,
-            engineId = fast.engineId,
+            engineId = canary.engineId,
             lidLatencyMs = lidLatency,
             lidRaw = lidRaw,
         )
+    }
+
+    /**
+     * R1: long utterances are decoded in bounded, lowest-energy segments and joined with
+     * typography rules. The IME still performs exactly one editor mutation for the utterance.
+     */
+    private suspend fun decodeCanarySegmented(pcm: ShortArray, config: SpeechSessionConfig): String {
+        val language = (config.speechLanguage as? SpeechLanguage.Fixed)?.toLegacyLanguage()
+            ?: config.language ?: Language.AUTO
+        val ranges = LongUtteranceSegmenter.plan(pcm)
+        if (ranges.size <= 1) {
+            return canary.transcribeSnapshot(pcm, config).text.trim()
+        }
+        val parts = ArrayList<String>(ranges.size)
+        for (range in ranges) {
+            val segment = pcm.copyOfRange(range.start, range.start + range.length)
+            parts += canary.transcribeSnapshot(segment, config).text.trim()
+        }
+        Log.i("Coordinator", "segmented utterance samples=${pcm.size} segments=${ranges.size} decoded=${parts.count { it.isNotEmpty() }}")
+        return LongUtteranceSegmenter.join(parts, language)
     }
 
     private suspend fun transcribeAccurate(
@@ -137,19 +155,12 @@ open class LocalTranscriptionCoordinator(
         // Accurate uses explicit language — no Auto.
         val accurateConfig = baseConfig.copy(
             language = explicitLang,
-            speechLanguage = SpeechLanguage.Fixed(explicitLang.code)
+            speechLanguage = SpeechLanguage.Fixed(explicitLang.code),
         )
-        val ft = try {
-            canary.transcribeSnapshot(pcm, accurateConfig)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w("Coordinator", "Canary transcribeSnapshot failed", e)
-            FinalTranscript("")
-        }
+        val text = decodeCanarySegmented(pcm, accurateConfig)
         val resolved: ResolvedUtteranceLanguage = ResolvedUtteranceLanguage.Known(explicitLang)
         return LocalTranscriptionResult(
-            text = ft.text,
+            text = text,
             resolvedLanguage = resolved,
             effectiveConfig = accurateConfig,
             engineId = canary.engineId,

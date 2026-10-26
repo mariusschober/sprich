@@ -15,6 +15,15 @@ class SprichApp : Application() {
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     // Benchmark-only owner. Production IMEs own and retire their own recognizers.
     val fastEngine: CanaryEngine by lazy { CanaryEngine(this, ModelManager(this)) }
+    /**
+     * U03: process-wide recovery draft (in-memory, 16,384 chars, 120 s TTL —
+     * see RecoveryDraftStore). Owned here so the IME (saves on failed commit)
+     * and Home (review/discard card) share it; cleared on screen lock.
+     * [recoveryRevision] bumps on every save/consume/discard for Compose.
+     */
+    val recoveryDrafts = com.sprich.app.storage.RecoveryDraftStore()
+    val recoveryRevision = kotlinx.coroutines.flow.MutableStateFlow(0L)
+    fun noteRecoveryChanged() { recoveryRevision.value++ }
 
     override fun onCreate() {
         super.onCreate()

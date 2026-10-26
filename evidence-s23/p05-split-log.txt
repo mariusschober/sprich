@@ -1,0 +1,18 @@
+## P05 split proof — S23 SM-S918B, dense 66.4s JFK speech, Mac-speaker acoustic
+
+I/SprichIME(26173): split continuation overlapSamples=16000 atSafePause=false
+I/SprichIME(26173): endpoint detected token=UtteranceToken(sessionId=1, generation=7, utteranceId=1, fieldId=field_10, fieldGeneration=10, capturedIc=RemoteInputConnection{idHash=#5a53115}) pushedSamp
+I/SprichIME(26173): split continuation seed overlapSamples=16000 preRoll=1024
+D/SprichIME(26173): tel utt=1 PROVIDER_FINAL outcome=SUCCESS
+I/SprichIME(26173): final token=UtteranceToken(sessionId=1, generation=7, utteranceId=1, fieldId=field_10, fieldGeneration=10, capturedIc=RemoteInputConnection{idHash=#5a53115}) chars=435 applied=true
+D/SprichIME(26173): tel utt=1 COMMIT_RESULT outcome=SUCCESS
+I/SprichIME(26173): split continuation overlapSamples=16000 atSafePause=false
+I/SprichIME(26173): endpoint detected token=UtteranceToken(sessionId=1, generation=7, utteranceId=2, fieldId=field_10, fieldGeneration=10, capturedIc=RemoteInputConnection{idHash=#5a53115}) pushedSamp
+I/SprichIME(26173): split continuation seed overlapSamples=16000 preRoll=1024
+D/SprichIME(26173): tel utt=2 PROVIDER_FINAL outcome=SUCCESS
+I/SprichIME(26173): final token=UtteranceToken(sessionId=1, generation=7, utteranceId=2, fieldId=field_10, fieldGeneration=10, capturedIc=RemoteInputConnection{idHash=#5a53115}) chars=503 applied=true
+D/SprichIME(26173): tel utt=2 COMMIT_RESULT outcome=SUCCESS
+I/SprichIME(26173): endpoint detected token=UtteranceToken(sessionId=1, generation=7, utteranceId=3, fieldId=field_10, fieldGeneration=10, capturedIc=RemoteInputConnection{idHash=#5a53115}) pushedSamp
+D/SprichIME(26173): tel utt=3 PROVIDER_FINAL outcome=SUCCESS
+I/SprichIME(26173): final token=UtteranceToken(sessionId=1, generation=7, utteranceId=3, fieldId=field_10, fieldGeneration=10, capturedIc=RemoteInputConnection{idHash=#5a53115}) chars=135 applied=true
+D/SprichIME(26173): tel utt=3 COMMIT_RESULT outcome=SUCCESS

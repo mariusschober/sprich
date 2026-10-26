@@ -2,11 +2,27 @@
 <input-method xmlns:android="http://schemas.android.com/apk/res/android"
     android:settingsActivity="com.sprich.app.ui.MainActivity"
     android:supportsSwitchingToNextInputMethod="true">
-    <!-- Single generic subtype: language is internal to Sprich (Automatic/EN/DE/ES/FR), not an IME subtype -->
+    <!-- Single generic typing subtype: language is internal to Sprich (Automatic/EN/DE/ES/FR),
+         not an IME subtype. It carries overridesImplicitlyEnabledSubtype so the IME always has
+         exactly one typing subtype enabled even on locales without a matching en/de/es/fr
+         subtype; the implicit-enable map keeps one subtype per mode, so this stays the default
+         selection while the voice subtype is discoverable. -->
     <subtype
         android:imeSubtypeLocale="en"
         android:imeSubtypeMode="keyboard"
+        android:overridesImplicitlyEnabledSubtype="true"
         android:label="@string/ime_subtype_en" />
+    <!-- T2: one-shot voice subtype. Android's shortcut-voice lookup (used by AOSP-lineage
+         keyboards such as HeliBoard and FlorisBoard) indexes the original subtype array with the
+         position of the enabled subtype, so the voice subtype must directly follow the typing
+         subtype that precedes it in the enabled list. auxiliary=true marks it one-shot; the IME
+         returns to the previous writing keyboard after insertion or cancellation. -->
+    <subtype
+        android:imeSubtypeMode="voice"
+        android:imeSubtypeLocale="en"
+        android:isAuxiliary="true"
+        android:overridesImplicitlyEnabledSubtype="true"
+        android:label="@string/ime_subtype_voice" />
     <subtype
         android:imeSubtypeLocale="de"
         android:imeSubtypeMode="keyboard"

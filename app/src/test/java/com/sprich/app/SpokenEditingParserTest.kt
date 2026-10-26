@@ -24,8 +24,13 @@ class SpokenEditingParserTest {
 
     @Test
     fun englishPunctuationInline() {
-        val r = SpokenEditingParser.parse("hello comma world", Language.EN, true)
-        assertTrue(r.text.contains(","))
+        // S06: ambiguous single-word inline punctuation stays literal by default —
+        // "comma" here is ordinary-prose shaped, so it must NOT become a comma.
+        val literal = SpokenEditingParser.parse("hello comma world", Language.EN, true)
+        assertEquals("hello comma world", literal.text)
+        // Unambiguous multiword commands still apply inline.
+        val r = SpokenEditingParser.parse("hello question mark world", Language.EN, true)
+        assertTrue(r.text.contains("?"))
     }
 
     @Test
@@ -65,7 +70,12 @@ class SpokenEditingParserTest {
 
     @Test
     fun spanishPunctuation() {
-        val r = SpokenEditingParser.parse("hola coma mundo", Language.ES, true)
-        assertTrue(r.text.contains(","))
+        // S06: single-word "coma" stays literal by default; multiword applies inline.
+        assertEquals(
+            "hola coma mundo",
+            SpokenEditingParser.parse("hola coma mundo", Language.ES, true).text,
+        )
+        val r = SpokenEditingParser.parse("hola signo de interrogación mundo", Language.ES, true)
+        assertTrue(r.text.contains("?"))
     }
 }

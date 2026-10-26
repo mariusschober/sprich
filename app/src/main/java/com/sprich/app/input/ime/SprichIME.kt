@@ -21,14 +21,24 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import com.sprich.app.core.audio.AudioCapture
 import com.sprich.app.diagnostics.Diagnostics
+import com.sprich.app.diagnostics.TelemetryEventType
+import com.sprich.app.diagnostics.UtteranceOutcome
+import com.sprich.app.diagnostics.UtteranceTelemetry
 import com.sprich.app.core.perf.LatencyTracker
 import com.sprich.app.core.vad.Vad
+import com.sprich.app.input.commands.AcousticBasis
+import com.sprich.app.input.commands.CommandPolicy
+import com.sprich.app.input.commands.ParsedDictation
 import com.sprich.app.input.commands.SpokenEditingParser
+import com.sprich.app.input.commands.TranscriptOrigin
 import com.sprich.app.input.composition.CompositionManager
 import com.sprich.app.input.lifecycle.DictationSession
 import com.sprich.app.input.lifecycle.FieldSessionController
+import com.sprich.app.input.lifecycle.QueueAdmission
+import com.sprich.app.input.lifecycle.QueuedUtterance
 import com.sprich.app.input.lifecycle.SessionState
 import com.sprich.app.input.lifecycle.StopReason
+import com.sprich.app.input.lifecycle.UtteranceQueue
 import com.sprich.app.input.lifecycle.UtteranceToken
 import com.sprich.app.speech.api.EngineType
 import com.sprich.app.speech.api.Language
@@ -49,6 +59,9 @@ import com.sprich.app.speech.LanguagePolicy
 import com.sprich.app.speech.TranscriptionResult
 import com.sprich.app.speech.TranscriptionSourceId
 import com.sprich.app.speech.TranscriptionCoordinator
+import com.sprich.app.speech.CoordinatorOutcome
+import com.sprich.app.speech.remoteFailureOutcome
+import com.sprich.app.speech.remote.ApiFailure
 import com.sprich.app.speech.remote.RemoteSttConfig
 import com.sprich.app.speech.remote.RemoteSttProvider
 import com.sprich.app.speech.remote.OpenAiCompatibleSttProvider
@@ -131,10 +144,34 @@ class SprichIME : InputMethodService() {
     private lateinit var engine: CanaryEngine
     // Neutral authoritative PCM collector — single canonical source, independent of ASR engine.
     private val utteranceAudio = UtteranceAudioCollector(maxSamples = 16000 * 120)
+    /**
+     * P05 §5.3 split-continuation state. lastVadSilenceSample is in
+     * utterance-domain samples (utteranceAudio.size() at silence time, -1 =
+     * none this utterance). pendingSplitSeed carries the previous split's
+     * overlap tail into the next utterance seed. lastSplitCommit holds the
+     * last applied split-chain text for commit-time reconciliation; cleared
+     * on fresh (non-split, non-reconciled) commits and session stop/fail.
+     */
+    private var lastVadSilenceSample: Int = -1
+    private var pendingSplitSeed: ShortArray? = null
+    private var lastSplitCommit: Pair<Long, String>? = null
+    /**
+     * P05 §5.3: session hard cap (120 s) fires once per capture session.
+     * stopDictation(SESSION_LIMIT) reuses the USER_STOP drain path, so all
+     * captured text is preserved; the soft-cap wrap-up stays a tested policy
+     * hook (sessionSoftCapReached) without its own mic state.
+     */
+    private val sessionHardStopFired = AtomicBoolean(false)
+
+    /** P05 §5.3: split-continuation state never survives session boundaries. */
+    private fun clearSplitContinuationState() {
+        try { pendingSplitSeed = null } catch (_: Exception) {}
+        try { lastSplitCommit = null } catch (_: Exception) {}
+        lastVadSilenceSample = -1
+    }
     private var localCoordinator: LocalTranscriptionCoordinator? = null
     // Diagnostics for Auto-without-Canary gate
     private val canaryLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
-    private val fastLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
     private val lidLoadAttempts = java.util.concurrent.atomic.AtomicLong(0)
     private var startJob: Job? = null
     private var engineJob: Job? = null
@@ -153,18 +190,10 @@ class SprichIME : InputMethodService() {
     private val fieldGeneration = AtomicLong(0L)
     private val utteranceIdCounter = AtomicLong(0L)
     @Volatile private var currentUtteranceToken: UtteranceToken? = null
-    // Bounded exactly-once history: keep last 128 utterance IDs to prevent unbounded growth while retaining safety for recent duplicates
-    private val finalizedUtterances: MutableSet<Long> = java.util.Collections.synchronizedSet(object : LinkedHashSet<Long>() {
-        override fun add(element: Long): Boolean {
-            val added = super.add(element)
-            // Evict oldest if over bound (128)
-            if (size > 128) {
-                val it = iterator()
-                if (it.hasNext()) { it.next(); it.remove() }
-            }
-            return added
-        }
-    })
+    // Bounded exactly-once history (plan §6.5, Gate C): pure-JVM claim set,
+    // host-tested in P03P07QueueDeadlineTelemetryTest. First claim wins;
+    // history holds the last 128 utterance IDs.
+    private val finalizedUtterances = com.sprich.app.input.lifecycle.FinalizationClaims()
     @Volatile private var currentFieldTokenIcHash: Int = 0
 
     // --- Phase 0A+2: immutable active utterance descriptor — frozen at onset, Settings changes apply to NEXT utterance only.
@@ -178,11 +207,22 @@ class SprichIME : InputMethodService() {
     )
     @Volatile private var activeUtterance: ActiveUtterance? = null
 
-    // Prepared final action — command vs text separation (P0-7: refinement must never gain command authority)
+    // Prepared final action — command vs text separation (S01: switch on the parsed type,
+    // never reinterpret text; refinement receives/returns text only and can never gain
+    // command authority). Sentence deletion has no variant: the editor authority cannot prove
+    // an exact owned sentence span, so the spoken grammar does not offer it (S06).
     sealed interface PreparedFinalAction {
         data class Text(val text: String, val resolved: ResolvedUtteranceLanguage) : PreparedFinalAction
         data class DeleteLast(val token: UtteranceToken) : PreparedFinalAction
-        data class DeleteSentence(val token: UtteranceToken) : PreparedFinalAction
+
+        companion object {
+            /**
+             * Zero-mutation text for rejected parses: commits nothing (consumed via
+             * `isBlank` below). A named constant — never a display string — so the
+             * locale gate does not mistake it for a hard-coded UI label.
+             */
+            const val REJECTED_PARSE_TEXT = ""
+        }
     }
 
     // Overlapping utterance queue — immutable per-utterance snapshots, serialized finalization actor
@@ -198,13 +238,58 @@ class SprichIME : InputMethodService() {
         val reason: StopReason,
         val endpointTimestampNanos: Long,
         val live: LiveRemoteUtterance? = null,
+        /**
+         * P02: VAD speech-episode flag snapshotted at endpoint/freeze time, while the Vad
+         * still holds this utterance's state (the finalization actor runs later, after a
+         * possible reset). Session-latched hasSpeechEver: true means speech occurred during
+         * this capture session. Default false = legacy behavior (UNKNOWN basis).
+         */
+        val hadSpeech: Boolean = false,
+        /**
+         * P05 §5.3: non-null when this endpoint is a cap split. The overlap
+         * audio is carried into the next utterance seed; at commit, the text
+         * reconciles against the previous split commit (verified dedupe only).
+         */
+        val splitOverlap: com.sprich.app.core.audio.ContinuousSpeechPolicy.AudioSpan? = null,
     )
     // Single authoritative long-lived finalization actor — exactly one consumer, FIFO, no worker start/stop race, genuinely bounded.
     // Bounded capacity 4 ensures PCM retention bounded (max ~4 utterances). Overload is explicit via rejected/suppressed counters, not silent loss.
     private val maxPendingQueueDepth = 4
     private val pendingChannel = Channel<PendingUtterance>(capacity = maxPendingQueueDepth)
+    /**
+     * P03 §6.2 admission + ordered-commit-lane authority. The serial
+     * finalization actor below already commits FIFO; the queue adds the byte
+     * ceiling (24 MiB retained PCM — the channel bounds count only), shed
+     * accounting, lane-advance on drops, and finish/cancel session semantics.
+     * Observed, never gating: drops advance the lane as failed so no text is
+     * fabricated and the lane cannot stall behind an entry that will never
+     * produce a result. All calls are try/catch-guarded: the queue refines
+     * telemetry, it must never break finalization.
+     */
+    private val utteranceQueue = UtteranceQueue()
     private val queueDepth = AtomicInteger(0)
     private val pendingQueuePeak = AtomicLong(0)
+    // P07: per-utterance attempt telemetry — ids and timing only, never transcripts.
+    private val utteranceTelemetry = UtteranceTelemetry()
+    /** P07 §6.4: once-per-(utterance, type) guard for repeatable emissions. */
+    private val telemetryStageGuard = com.sprich.app.diagnostics.TelemetryStageGuard()
+    private val telemetrySeq = AtomicLong(0)
+    /** Records telemetry; observability must never break dictation. */
+    private fun tel(utteranceId: Long, type: TelemetryEventType, outcome: UtteranceOutcome? = null, code: Int = 0) {
+        try {
+            utteranceTelemetry.record(utteranceId, telemetrySeq.incrementAndGet(), type, outcome, 0, code)
+            // P07 §6.4 trace verification: DEBUG-only per-event line so a
+            // device run can prove boundary coverage from logcat.
+            if (com.sprich.app.BuildConfig.DEBUG) {
+                Log.d(
+                    "SprichIME",
+                    "tel utt=$utteranceId $type" +
+                        (if (outcome != null) " outcome=$outcome" else "") +
+                        (if (code != 0) " code=$code" else ""),
+                )
+            }
+        } catch (_: Exception) { }
+    }
     private val finalizationQueueOverflows = AtomicLong(0)
     private val catchingUpSuppressedOnsets = AtomicLong(0)
     private val catchingUpRejectedOnsets = AtomicLong(0)
@@ -277,6 +362,34 @@ class SprichIME : InputMethodService() {
     private var pillViewRef: VoiceGestureBar? = null
     private var whisperBadge: TextView? = null
     private var undoButton: View? = null
+    /**
+     * U03 recovery (plan §9.6). The app-scoped [SprichApp.recoveryDrafts] store backs the Home
+     * review/discard card; it is bounded (one draft, 16k chars, 120 s) and cleared on lock.
+     * The old in-memory same-field retry copy was unreachable by construction and has been
+     * removed (see KNOWN_LIMITATIONS: recovery text retention).
+     */
+    private var screenOffReceiver: android.content.BroadcastReceiver? = null
+    /**
+     * U02 correction sheet (§9.5). [correctionTarget] is the exact-span target
+     * captured at sheet open; [correctionUndo] the one-step undo proof after
+     * Apply; [correctionDictationTarget] arms dictated-replacement routing
+     * (next post-arm utterance delivers its text to the sheet instead of the
+     * field). The controller is Compose-observed state owned here.
+     */
+    private val correctionController = com.sprich.app.ui.correction.CorrectionSheetController()
+    private var correctionTarget: com.sprich.app.input.correction.CorrectionTarget? = null
+    private var correctionUndo: com.sprich.app.input.correction.UndoEdit? = null
+    private var correctionDictationTarget: com.sprich.app.input.correction.CorrectionTarget? = null
+    private var correctionArmedAtNanos: Long = 0L
+    private var correctionDialog: android.app.Dialog? = null
+    private var correctButton: View? = null
+    private var lastAppliedReplacement: String? = null
+    /**
+     * Compose has no Activity here (IME service + Dialog window), so the
+     * sheet's ComposeView gets explicit view-tree owners driven by this
+     * registry (RESUMED while shown, DESTROYED on dismiss).
+     */
+    private var correctionSheetView: com.sprich.app.ui.correction.CorrectionSheetView? = null
     private var dismissalGeneration = 0L
     private var dismissing = false
     private var whisperChangeJob: Job? = null
@@ -290,14 +403,14 @@ class SprichIME : InputMethodService() {
     private var glowBg: android.graphics.drawable.GradientDrawable? = null
     private var auraView: View? = null
     private var pillBgRef: android.graphics.drawable.GradientDrawable? = null
-    // Production Automatic: Tiny LID (Whisper Tiny 98M, per-utterance SLID) → FastConformer CTC 126M (implicit EN-DE-ES-FR)
-    // Accurate explicit: Canary 180M Flash INT8 (fixed EN/DE/ES/FR)
+    // ViewRootImpl rejects accessibility content changes off the UI thread
+    // (error today, fatal on future Android) — audio callbacks must hop here.
+    private val mainThreadHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    // Production Automatic: Whisper Tiny LID (98M, per-utterance) → Canary 180M Flash INT8 with the
+    // detected language (license-clean; FastConformer/NGC removed in T3).
+    // Accurate explicit: the same Canary 180M Flash INT8 (fixed EN/DE/ES/FR).
     private val lidEngine by lazy {
         com.sprich.app.speech.lid.WhisperLidEngine(this, (application as SprichApp).let { com.sprich.app.models.manager.ModelManager(it) })
-    }
-    // FastConformer CTC EN-DE-ES-FR 14288 INT8 — primary for Automatic, not fallback
-    private val fastConformerEngine by lazy {
-        com.sprich.app.speech.fastconformer.FastConformerEngine(this)
     }
 
     // Views — native View IME, full-bar tappable magical
@@ -324,6 +437,24 @@ class SprichIME : InputMethodService() {
             composition = CompositionManager()
             fieldController = FieldSessionController(session, composition)
             audio = AudioCapture(ringSeconds = 1)
+            // U03: screen lock clears recovery state (store contract) + hides retry.
+            try {
+                screenOffReceiver = object : android.content.BroadcastReceiver() {
+                    override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+                        try {
+                            (application as? SprichApp)?.let { it.recoveryDrafts.onLock(); it.noteRecoveryChanged() }
+                        } catch (_: Exception) {}
+                    }
+                }
+                androidx.core.content.ContextCompat.registerReceiver(
+                    this,
+                    screenOffReceiver,
+                    android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF),
+                    androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+            } catch (_: Exception) {
+                screenOffReceiver = null
+            }
             vad = Vad()
             speechPresence = com.sprich.app.core.vad.SpeechPresence(assets)
             engine = CanaryEngine(this, com.sprich.app.models.manager.ModelManager(this))
@@ -603,7 +734,21 @@ class SprichIME : InputMethodService() {
                 setOnClickListener { undoLastDelete() }
             }
             undoButton = undo
-            pill.tapTargets = listOf(undo, switchButton)
+            // U02: cursor-word correction entry. Visible only when a correctable
+            // word sits under the cursor (never in password fields).
+            val correct = android.widget.ImageButton(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+                setImageResource(com.sprich.app.R.drawable.ic_correct)
+                imageTintList = android.content.res.ColorStateList.valueOf(statusColor)
+                val backgroundAttr = android.util.TypedValue()
+                theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, backgroundAttr, true)
+                setBackgroundResource(backgroundAttr.resourceId)
+                contentDescription = uiString(com.sprich.app.R.string.ime_correct_word)
+                visibility = View.GONE
+                setOnClickListener { openCorrectionSheet() }
+            }
+            correctButton = correct
+            pill.tapTargets = listOf(undo, switchButton, correct)
 
             pillBgRef = pillBg
             // Allow glow/aura to draw beyond bounds
@@ -615,6 +760,7 @@ class SprichIME : InputMethodService() {
             textBlock.clipToPadding = false
             pill.addView(textBlock)
             pill.addView(undo)
+            pill.addView(correct)
             pill.addView(switchButton)
             outer.addView(aura)   // behind the pill
             outer.addView(pill)
@@ -661,6 +807,33 @@ class SprichIME : InputMethodService() {
     }
 
     private fun updateRemoteProgress(token: UtteranceToken, progress: RemoteTranscriptUpdate) {
+        // P07 §6.4: utterance-scoped remote boundaries, once each. Recorded
+        // regardless of field ownership — the provider event happened for
+        // this utterance even if the field moved on.
+        try {
+            val id = token.utteranceId
+            if (progress.stage == VoiceApiStage.CONNECTING &&
+                telemetryStageGuard.shouldEmit(id, TelemetryEventType.REMOTE_CONNECT)
+            ) {
+                tel(id, TelemetryEventType.REMOTE_CONNECT)
+            }
+            if (progress.preview.isNotBlank() &&
+                telemetryStageGuard.shouldEmit(id, TelemetryEventType.FIRST_PREVIEW)
+            ) {
+                tel(id, TelemetryEventType.FIRST_PREVIEW)
+            }
+            val backlog = progress.totalUploadBytes - progress.uploadedBytes
+            if (progress.stage == VoiceApiStage.UPLOADING && backlog > 0 &&
+                telemetryStageGuard.shouldEmit(id, TelemetryEventType.UPLOAD_BACKLOG)
+            ) {
+                tel(id, TelemetryEventType.UPLOAD_BACKLOG)
+            }
+            if (progress.stage == VoiceApiStage.COMPLETE &&
+                telemetryStageGuard.shouldEmit(id, TelemetryEventType.PROVIDER_FINAL)
+            ) {
+                tel(id, TelemetryEventType.PROVIDER_FINAL)
+            }
+        } catch (_: Exception) {}
         scope.launch(Dispatchers.Main) {
             if (tokenOwnsCurrentField(token) && currentUtteranceToken?.utteranceId == token.utteranceId) {
                 remotePreview = progress; remotePreviewId = token.utteranceId
@@ -723,6 +896,8 @@ class SprichIME : InputMethodService() {
         val state = session.state.value
         if (state is SessionState.Error) return
         updateImeUi(isDictationRunning())
+        // Affordances (undo/retry/correction) follow session + editor state.
+        try { updateEditingControls() } catch (_: Exception) {}
         if (state is SessionState.Preparing) {
             showStaticMessage(com.sprich.app.R.string.ime_preparing, com.sprich.app.R.string.ime_loading_hint)
         } else if (state is SessionState.Finalizing && !utteranceActive.get()) {
@@ -854,15 +1029,27 @@ class SprichIME : InputMethodService() {
 
     @Volatile private var editorAuthority: EditorSnapshot? = null
     @Volatile private var fieldAllowsContext = false
-    private val ownedSelections = ArrayDeque<Pair<Int, Int>>()
+    private val ownSelections = OwnSelectionRegistry()
+    private val oneShotVoice = OneShotVoiceSubtypePolicy()
 
     private fun editorStillOwned(): Boolean = editorAuthority != null && EditorSnapshot.read(currentInputConnection) == editorAuthority
 
     private fun noteOwnEditorChange(success: Boolean) {
         if (!success) { cancelForEditorChange(); return }
         editorAuthority = EditorSnapshot.read(currentInputConnection)
-        editorAuthority?.let { ownedSelections.addLast(it.selectionStart to it.selectionEnd) }
-        while (ownedSelections.size > 16) ownedSelections.removeFirst()
+        editorAuthority?.let { ownSelections.note(it.selectionStart, it.selectionEnd) }
+    }
+
+    /**
+     * E3: the correction sheet mutates the field while the IME owns the session. Register the
+     * expected post-edit cursor as Sprich-owned so the framework's ensuing onUpdateSelection
+     * callback is not mistaken for an external cursor move (which would cancel the session and
+     * clear the insertion record that was just written).
+     */
+    private fun noteOwnCorrectionSelection(cursorAfter: Int) {
+        editorAuthority = EditorSnapshot.read(currentInputConnection)
+        editorAuthority?.let { ownSelections.note(it.selectionStart, it.selectionEnd) }
+        ownSelections.note(cursorAfter, cursorAfter)
     }
 
     private fun cancelForEditorChange() {
@@ -870,7 +1057,7 @@ class SprichIME : InputMethodService() {
         stopDictation(StopReason.CURSOR_MOVED)
         editorActionController.clearHistory()
         editorActionController.clearSprichInsertion()
-        ownedSelections.clear()
+        ownSelections.clear()
         editorAuthority = null
         updateEditingControls()
     }
@@ -879,11 +1066,7 @@ class SprichIME : InputMethodService() {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
         if (!::session.isInitialized || isPasswordField) return
         val selection = newSelStart to newSelEnd
-        val ownIndex = ownedSelections.indexOfLast { it == selection }
-        if (ownIndex >= 0 && editorStillOwned()) {
-            repeat(ownIndex + 1) { ownedSelections.removeFirst() }
-            return
-        }
+        if (ownSelections.consumeIfOwned(newSelStart, newSelEnd) && editorStillOwned()) return
         val authority = editorAuthority
         if (authority != null && selection == (authority.selectionStart to authority.selectionEnd) && editorStillOwned()) return
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd || authority != null) cancelForEditorChange()
@@ -902,7 +1085,8 @@ class SprichIME : InputMethodService() {
             // The capture session is created by startDictationIfNeeded after a tap/instant start.
             editorActionController.clearHistory()
             editorActionController.clearSprichInsertion()
-            ownedSelections.clear()
+            ownSelections.clear()
+            oneShotVoice.reset()
             fieldAllowsContext = info != null && !isPassword(info) && (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) == 0
             editorAuthority = if (isPassword(info)) null else EditorSnapshot.read(currentInputConnection)
             currentFieldTokenIcHash = currentInputConnection?.hashCode() ?: 0
@@ -922,12 +1106,13 @@ class SprichIME : InputMethodService() {
             try { utteranceAudio.clear() } catch (_: Exception) {}
             try { engine.clearUtteranceCapture() } catch (_: Exception) {}
             // Keep engine ring clear for partials when in Accurate mode, but collector is authoritative
-            try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
             currentUtteranceToken = null
             activeUtterance = null
             utteranceActive.set(false)
             endpointPending.set(false)
             try { editorActionController.clearHistory() } catch (_: Exception) {}
+            // New field: refresh affordances (correction entry needs the fresh IC).
+            try { updateEditingControls() } catch (_: Exception) {}
 
         } catch (e: Exception) {
             Log.e("SprichIME", "onStartInput failed", e)
@@ -936,6 +1121,15 @@ class SprichIME : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        // T2: remember whether this input view was entered through the one-shot voice subtype.
+        oneShotVoice.onInputViewStarted(
+            try {
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                    .currentInputMethodSubtype?.mode
+            } catch (_: Exception) {
+                null
+            },
+        )
         cancelBarGesture()
         resetBarMotion()
         updateImeUi(isDictationRunning())
@@ -945,6 +1139,10 @@ class SprichIME : InputMethodService() {
             if (isInputViewShown) refreshLocalizedMessage()
         }, 300L)
         if (isPassword(info)) return
+        if (!FieldLearningPolicy.allowsInstantStart(info?.imeOptions ?: 0)) {
+            Log.i("SprichIME", "instant start skipped: field opted out of personalized learning")
+            return
+        }
         if (info?.packageName == packageName && info.privateImeOptions == com.sprich.app.ui.vocab.TYPED_SPELLING_IME_OPTION) {
             switchToTypingKeyboard()
             return
@@ -967,6 +1165,7 @@ class SprichIME : InputMethodService() {
         resetBarMotion()
         try { stopVisualLane() } catch (_: Exception) {}
         try { stopDictation(StopReason.WINDOW_HIDDEN) } catch (_: Exception) {}
+        returnToPreviousKeyboardIfOneShot()
     }
 
     override fun onFinishInput() {
@@ -986,6 +1185,8 @@ class SprichIME : InputMethodService() {
 
     override fun onFinishInputView(finishingInput: Boolean) {
         cancelBarGesture()
+        // U02: the sheet is window-bound; never leak it past the input view.
+        try { closeCorrectionSheet() } catch (_: Exception) {}
         stopDictation(StopReason.WINDOW_HIDDEN)
         try { stopVisualLane() } catch (_: Exception) {}
         super.onFinishInputView(finishingInput)
@@ -1007,6 +1208,14 @@ class SprichIME : InputMethodService() {
         try { fieldGeneration.incrementAndGet() } catch (_: Exception) {}
         // Stop accepting new finalizations
         try { pendingChannel.close() } catch (_: Exception) {}
+        // P03: invalidate and discard all lane state.
+        try { utteranceQueue.cancel() } catch (_: Exception) {}
+        try {
+            screenOffReceiver?.let { unregisterReceiver(it) }
+        } catch (_: Exception) {
+        }
+        screenOffReceiver = null
+        try { closeCorrectionSheet() } catch (_: Exception) {}
         // Signal audio stop synchronously without join (join moved off-main)
         val retiredCapture = try { audio.requestStop() } catch (_: Exception) { null }
         // Cancel network/work without blocking
@@ -1021,7 +1230,6 @@ class SprichIME : InputMethodService() {
             try { retiredCapture?.awaitStop() } catch (_: Exception) {}
             try { speechPresence.release() } catch (_: Exception) {}
             try { lidEngine.unload() } catch (_: Exception) {}
-            try { fastConformerEngine.unload() } catch (_: Exception) {}
             try { engine.unload() } catch (_: Exception) {}
             try { utteranceAudio.clear() } catch (_: Exception) {}
             try { composition.discardPartial(null) } catch (_: Exception) {}
@@ -1049,6 +1257,7 @@ class SprichIME : InputMethodService() {
 
     private fun toggleDictation() {
         try {
+            Log.i("SprichIME", "toggle running=${isDictationRunning()} sessionState=${session.state.value} utterActive=${utteranceActive.get()}")
             if (isDictationRunning()) {
                 stopDictation(if (tapCancelsWork()) StopReason.CURSOR_MOVED else StopReason.USER_STOP)
             } else {
@@ -1092,37 +1301,32 @@ class SprichIME : InputMethodService() {
                 showStaticMessage(com.sprich.app.R.string.ime_no_cursor, com.sprich.app.R.string.ime_no_cursor_hint)
                 return
             }
-            // Language handling: Automatic = Tiny LID + FastConformer (no Canary), Accurate = Canary explicit
-            // Automatic requires BOTH Tiny LID and FastConformer (isAutomaticReady) when ON_DEVICE or LOCAL_API_FALLBACK.
-            // API_PRIMARY must NOT require local models when provider supports Automatic (phase 4).
+            // Language handling: Automatic = Tiny LID + Canary with detected language, Accurate = Canary explicit
+            // Automatic requires BOTH Whisper Tiny LID and Canary (isAutomaticReady) when ON_DEVICE
+            // or LOCAL_API_FALLBACK. API_PRIMARY must NOT require local models (phase 4).
             val requiresLocalForAuto = transcriptionMode == TranscriptionMode.ON_DEVICE || transcriptionMode == TranscriptionMode.LOCAL_API_FALLBACK
             if (speechLanguage is SpeechLanguage.Auto && requiresLocalForAuto) {
-                // Winner 2026-09-02: Automatic = Tiny LID (98M) + FastConformer 126M (Architecture B). Both required.
+                // T3: Automatic = Whisper Tiny LID (98M) + Canary 180M Flash (198M). Both required.
                 val mmForCheck = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
                 val lidReady = try { mmForCheck?.isWhisperTinyReady() == true } catch (_: Exception) { false }
-                val fastReady = try { mmForCheck?.isFastConformerReady() == true } catch (_: Exception) { false }
-                if (!lidReady) {
-                    Log.w("SprichIME", "Auto language requested but Tiny LID not downloaded — explicit selection required.")
+                val canaryReady = try { mmForCheck?.isCanaryReady() == true } catch (_: Exception) { false }
+                if (!lidReady || !canaryReady) {
+                    Log.w("SprichIME", "Auto language requested but Tiny LID/Canary not downloaded — explicit selection required (lid=$lidReady canary=$canaryReady)")
                     try { session.error("language auto not supported without LID") } catch (_: Exception) {}
                     showStaticMessage(com.sprich.app.R.string.ime_setup, com.sprich.app.R.string.ime_setup_hint)
                     try { vibrateTick() } catch (_: Exception) {}
                     writeDiagnostics("blocked Auto (no LID) resolved=${activeConfig.resolvedLanguageTag()} speechLanguage=$speechLanguage")
                     return
                 }
-                if (!fastReady) {
-                    Log.w("SprichIME", "Auto (winner FastConformer) requested but FastConformer 126M not downloaded — download required.")
-                    try { session.error("auto not supported without FastConformer") } catch (_: Exception) {}
-                    showStaticMessage(com.sprich.app.R.string.ime_setup, com.sprich.app.R.string.ime_setup_hint)
-                    try { vibrateTick() } catch (_: Exception) {}
-                    writeDiagnostics("blocked Auto (no FastConformer) speechLanguage=$speechLanguage")
-                    return
-                }
-                Log.i("SprichIME", "Auto via Tiny LID per-utterance + FastConformer 126M (winner) — proceeding, LID will detect EN/DE/ES/FR, FastConformer will transcribe (RTF 0.038)")
+                Log.i("SprichIME", "Auto via Whisper Tiny LID + Canary 180M Flash — proceeding; LID detects EN/DE/ES/FR and Canary transcribes with the detected language")
             } else if (speechLanguage is SpeechLanguage.Auto && transcriptionMode == TranscriptionMode.API_PRIMARY) {
-                Log.i("SprichIME", "API_PRIMARY with Auto — skipping local LID/FastConformer gate, provider handles language (Phase 4 independence)")
+                Log.i("SprichIME", "API_PRIMARY with Auto — skipping local LID/Canary gate, provider handles language (Phase 4 independence)")
                 // Local fallback will be loaded lazily on remote failure if available
             }
-            if (session.state.value is SessionState.Listening || session.state.value is SessionState.Speech) return
+            if (session.state.value is SessionState.Listening || session.state.value is SessionState.Speech) {
+                Log.i("SprichIME", "start skipped already ${session.state.value} gen=${sessionGeneration.get()}")
+                return
+            }
             val permissionGranted = ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
             Log.i("SprichIME", "permission RECORD_AUDIO granted=$permissionGranted inputType=${currentInputConnection?.let { try { currentInputInfo()?.inputType } catch (_: Exception) { -1 } } ?: -1}")
             if (!permissionGranted) {
@@ -1134,6 +1338,11 @@ class SprichIME : InputMethodService() {
                 return
             }
             val generation = sessionGeneration.incrementAndGet()
+            // P03: new capture session reopens lane intake (finish/cancel closed it).
+            try { utteranceQueue.reset() } catch (_: Exception) {}
+            // P05 §5.3: fresh session, fresh split state and session cap.
+            try { clearSplitContinuationState() } catch (_: Exception) {}
+            sessionHardStopFired.set(false)
             // The retired reader must finish before we reset shared endpoint/PCM state.
             val previousReaderStopped = withContext(Dispatchers.IO) { audio.requestStop()?.awaitStop(2000) != false }
             if (generation != sessionGeneration.get()) return
@@ -1161,7 +1370,6 @@ class SprichIME : InputMethodService() {
             // Route-aware loading — only load required engines, do NOT load Canary for Automatic. For API_PRIMARY, local not required.
             val routeForSession = determineRoute(snapAtStart.speechLanguage)
             val requiresLocalLoad = snapAtStart.transcriptionMode != TranscriptionMode.API_PRIMARY
-            val mmForLoad = try { com.sprich.app.models.manager.ModelManager(this) } catch (_: Exception) { null }
             val loadResult: Result<Unit> = if (!requiresLocalLoad && transcriptionMode == TranscriptionMode.API_PRIMARY) {
                 // API primary: no local model required for successful remote path; fallback loaded lazily on failure
                 val remoteCfg = buildRemoteSttConfig(snapAtStart)
@@ -1175,11 +1383,15 @@ class SprichIME : InputMethodService() {
                     } else Result.success(Unit)
                 }
             } else when (routeForSession) {
-                is LocalAsrRoute.AutomaticFastConformer -> {
-                    // Automatic already validated LID+Fast ready above; now load them, never Canary
+                is LocalAsrRoute.AutomaticCanary -> {
+                    // Automatic already validated LID+Canary readiness above; load language detection
+                    // first, then the Canary recognizer used with the detected language.
                     val lidR = try { lidEngine.load().also { lidLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
-                    val fastR = try { fastConformerEngine.load().also { fastLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
-                    if (lidR.isFailure) lidR else fastR
+                    if (lidR.isFailure) {
+                        lidR
+                    } else {
+                        try { engine.load().also { canaryLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
+                    }
                 }
                 is LocalAsrRoute.AccurateCanary -> {
                     try { engine.load().also { canaryLoadAttempts.incrementAndGet() } } catch (e: Exception) { Result.failure(e) }
@@ -1199,7 +1411,7 @@ class SprichIME : InputMethodService() {
             if (requiresLocalLoad) speechPresence.prepare(snapAtStart.whisperMode)
             if (generation != sessionGeneration.get()) return
             // Ensure coordinator exists
-            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, engine)
             // Housekeeping: unload unused resident engines if queue drained
             maybeUnloadUnused(routeForSession)
 
@@ -1214,7 +1426,6 @@ class SprichIME : InputMethodService() {
             lastPartialText = ""
             try { utteranceAudio.clear() } catch (_: Exception) {}
             try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-            try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
             currentUtteranceToken = null
             activeUtterance = null
             Log.i("SprichIME", "vad reset ${vad.calibrationInfo()} activeConfig=$activeConfig prefsLang=$language speechLang=$speechLanguage")
@@ -1232,7 +1443,6 @@ class SprichIME : InputMethodService() {
             // All production routes transcribe the immutable final PCM snapshot once.
             // Avoid speculative Canary decoding and its second live PCM buffer.
             engine.cancelSession()
-            fastConformerEngine.cancelSession()
 
             val started = try {
                 audio.startWithOffset(
@@ -1287,6 +1497,20 @@ class SprichIME : InputMethodService() {
         try {
             pipelineChunkCount++
             pipelineSampleCount += length
+            // P05 §5.3: 120 s session safety ceiling — SESSION_LIMIT reuses
+            // the USER_STOP drain path so all captured text is preserved.
+            // Fires once per capture session; utterance caps bound segments.
+            if (!sessionHardStopFired.get()) {
+                try {
+                    val sessionSamples = pipelineSampleCount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    if (com.sprich.app.core.audio.ContinuousSpeechPolicy.sessionLimitReached(sessionSamples) &&
+                        sessionHardStopFired.compareAndSet(false, true)
+                    ) {
+                        Log.i("SprichIME", "session hard cap reached samples=$pipelineSampleCount — stopping with drain")
+                        scope.launch { stopDictation(StopReason.SESSION_LIMIT) }
+                    }
+                } catch (_: Exception) {}
+            }
             val durationMs = ((length * 1000L) / SAMPLE_RATE).coerceAtLeast(1L)
             val remoteOnly = when (activeUtterance?.plan?.transcription) {
                 is TranscriptionPlan.ApiPrimary -> true
@@ -1314,6 +1538,14 @@ class SprichIME : InputMethodService() {
                     )
                 }
                 lastVadState = result.state
+            }
+            // P05 §5.3: remember the latest silence position (utterance-domain
+            // samples) while an utterance is active — a future soft-cap split
+            // prefers endpointing here over chopping mid-word.
+            if (utteranceActive.get() &&
+                (result.state == Vad.State.SILENCE || result.state == Vad.State.LONG_SILENCE)
+            ) {
+                try { lastVadSilenceSample = utteranceAudio.size() } catch (_: Exception) {}
             } else if (pipelineChunkCount % 16L == 0L) {
                 if (android.util.Log.isLoggable("SprichIME", android.util.Log.DEBUG)) {
                     android.util.Log.d("SprichIME", "vad alive state=${result.state.name} rms=${String.format(java.util.Locale.US,"%.5f", result.rms)} chunks=$pipelineChunkCount pushed=$pipelinePushedSampleCount")
@@ -1357,7 +1589,18 @@ class SprichIME : InputMethodService() {
                     return
                 }
                 // AUTHORITATIVE: UtteranceAudioCollector owns seeding preRoll exactly once — engine-independent.
-                try { utteranceAudio.begin(preRoll) } catch (_: Exception) {}
+                // P05 §5.3: a split continuation prepends the previous split's
+                // overlap tail so no audio is lost at the split boundary.
+                lastVadSilenceSample = -1
+                val seed = try {
+                    val tail = pendingSplitSeed
+                    pendingSplitSeed = null
+                    if (tail != null && tail.isNotEmpty()) {
+                        Log.i("SprichIME", "split continuation seed overlapSamples=${tail.size} preRoll=${preRoll.size}")
+                        tail + preRoll
+                    } else preRoll
+                } catch (_: Exception) { preRoll }
+                try { utteranceAudio.begin(seed) } catch (_: Exception) {}
                 // Freeze full utterance plan at onset from ONE atomic snapshot — Settings changes apply to NEXT utterance only.
                 val snapAtOnset = runtimeConfig ?: run {
                     utteranceActive.set(false)
@@ -1390,6 +1633,11 @@ class SprichIME : InputMethodService() {
                 activeUtterance = ActiveUtterance(token, routeAtOnset, planAtOnset.speechConfig, planAtOnset, live)
                 live?.offerAudio(preRoll)
                 Log.i("SprichIME", "utterance onset id=${token.utteranceId} preRollSamples=${preRoll.size}")
+                // P07 §6.4: utterance identity starts here — onset + first audio.
+                try {
+                    tel(token.utteranceId, TelemetryEventType.SPEECH_ONSET)
+                    tel(token.utteranceId, TelemetryEventType.FIRST_PCM)
+                } catch (_: Exception) {}
                 scope.launch {
                     if (generation == sessionGeneration.get() && session.state.value is SessionState.Listening) {
                         session.onSpeechOnset()
@@ -1422,8 +1670,19 @@ class SprichIME : InputMethodService() {
 
             val liveEndpoint = activeUtterance?.live?.shouldFinish(result.state == Vad.State.SPEECH, result.state == Vad.State.UTTERANCE_END, durationMs)
                 ?: (result.state == Vad.State.UTTERANCE_END)
+            // P05 §5.3: soft-cap split prefers a safe pause over chopping
+            // mid-word. Only when a VAD silence within the overlap window
+            // exists; the hard ceiling below stays the emergency mechanism.
+            val audioSizeNow = try { utteranceAudio.size() } catch (_: Exception) { 0 }
+            val softPauseSplit = if (!remoteOnly && audioSizeNow >= com.sprich.app.core.audio.ContinuousSpeechPolicy.SEGMENT_SOFT_CAP_SAMPLES) {
+                try {
+                    val silence = lastVadSilenceSample.takeIf { it >= 0 }
+                    com.sprich.app.core.audio.ContinuousSpeechPolicy.planSegmentSplit(audioSizeNow, silence)
+                        ?.takeIf { it.atSafePause }
+                } catch (_: Exception) { null }
+            } else null
             if (
-                (liveEndpoint || utteranceAudio.size() >= 16000 * (if (remoteOnly) 119 else 29)) &&
+                (liveEndpoint || utteranceAudio.size() >= 16000 * (if (remoteOnly) 119 else 29) || softPauseSplit != null) &&
                 utteranceActive.compareAndSet(true, false)
             ) {
                 latency.mark("endpointDetected")
@@ -1433,6 +1692,29 @@ class SprichIME : InputMethodService() {
                 // CRITICAL: captured synchronously before next onset can reuse live buffer.
                 val frozenSnap: ShortArray = try { utteranceAudio.freeze() } catch (_: Exception) { ShortArray(0) }
                 lastUtteranceEndSample = pipelineSampleCount
+                // P05 §5.3: cap splits carry the overlap tail into the next
+                // utterance seed so no audio is lost at the boundary. Exact
+                // plan from the frozen size (soft pause preferred, hard cap
+                // forced) — null for ordinary endpoints.
+                var splitOverlap: com.sprich.app.core.audio.ContinuousSpeechPolicy.AudioSpan? = null
+                try {
+                    if (!remoteOnly && frozenSnap.size >= com.sprich.app.core.audio.ContinuousSpeechPolicy.SEGMENT_SOFT_CAP_SAMPLES) {
+                        val silence = lastVadSilenceSample.takeIf { it in 0..frozenSnap.size }
+                        val plan = com.sprich.app.core.audio.ContinuousSpeechPolicy.planSegmentSplit(frozenSnap.size, silence)
+                        if (plan != null) {
+                            splitOverlap = plan.overlap
+                            val from = plan.overlap.startSampleInclusive.coerceIn(0, frozenSnap.size)
+                            val to = plan.overlap.endSampleExclusive.coerceIn(from, frozenSnap.size)
+                            if (to > from) {
+                                pendingSplitSeed = frozenSnap.copyOfRange(from, to)
+                                Log.i("SprichIME", "split continuation overlapSamples=${to - from} atSafePause=${plan.atSafePause}")
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    splitOverlap = null
+                    try { pendingSplitSeed = null } catch (_: Exception) {}
+                }
                 // P1-25: single isolated copy already from freeze(), no second copyOf needed
                 val token = currentUtteranceToken ?: run {
                     Log.w("SprichIME", "endpoint without token — discarding (fail closed, zero decode/network/mutation)")
@@ -1461,6 +1743,8 @@ class SprichIME : InputMethodService() {
                     reason = StopReason.ENDPOINT,
                     endpointTimestampNanos = System.nanoTime(),
                     live = captured.live,
+                    hadSpeech = try { vad.hasSpeech() } catch (_: Exception) { false },
+                    splitOverlap = splitOverlap,
                 )
                 captured.live?.sealInput(frozenSnap)
                 // Active utterance completed — clear descriptor so next onset creates fresh one; but retain until next onset for overlapping queue isolation.
@@ -1566,23 +1850,33 @@ class SprichIME : InputMethodService() {
         }
     }
 
+    /**
+     * Explicit newest-rejection shared by every admission authority (channel
+     * count bound, utterance-queue count+byte bound). Bounded memory, counted.
+     * Do not pretend speech was captured.
+     */
+    private fun rejectEnqueuedPending(pending: PendingUtterance, cause: String, depthBefore: Int) {
+        finalizationQueueOverflows.incrementAndGet()
+        catchingUpRejectedOnsets.incrementAndGet()
+        if (!catchingUp) {
+            catchingUp = true
+            Log.w("SprichIME", "finalization queue at capacity depth=$depthBefore pending=${pending.token.utteranceId} cause=$cause peak=${pendingQueuePeak.get()} overflows=${finalizationQueueOverflows.get()} rejected=${catchingUpRejectedOnsets.get()} — entering CatchingUp, rejecting new utterance (bounded)")
+            updateCatchUpUi(true)
+        } else {
+            Log.w("SprichIME", "queue at capacity depth=$depthBefore pending=${pending.token.utteranceId} cause=$cause overflows=${finalizationQueueOverflows.get()} rejected=${catchingUpRejectedOnsets.get()} — rejecting (bounded)")
+            updateCatchUpUi(true)
+        }
+        liveUtterances.remove(pending.token.utteranceId)?.cancel()
+        pending.pcm.fill(0)
+        // P07 §6.4: retained audio released on bounded reject.
+        try { tel(pending.token.utteranceId, TelemetryEventType.RELEASE) } catch (_: Exception) {}
+    }
+
     private fun enqueuePending(pending: PendingUtterance) {
         val depthBefore = queueDepth.get()
         if (depthBefore >= maxPendingQueueDepth) {
             // Genuinely bounded: reject new frozen utterance rather than growing memory unbounded. Preserve already queued FIFO, reject newest, count explicitly.
-            finalizationQueueOverflows.incrementAndGet()
-            catchingUpRejectedOnsets.incrementAndGet()
-            if (!catchingUp) {
-                catchingUp = true
-                Log.w("SprichIME", "finalization queue at capacity depth=$depthBefore pending=${pending.token.utteranceId} peak=${pendingQueuePeak.get()} overflows=${finalizationQueueOverflows.get()} rejected=${catchingUpRejectedOnsets.get()} — entering CatchingUp, rejecting new utterance (bounded)")
-                updateCatchUpUi(true)
-            } else {
-                Log.w("SprichIME", "queue at capacity depth=$depthBefore pending=${pending.token.utteranceId} overflows=${finalizationQueueOverflows.get()} rejected=${catchingUpRejectedOnsets.get()} — rejecting (bounded)")
-                updateCatchUpUi(true)
-            }
-            // Bounded memory, explicit rejection counted. Do not pretend speech was captured.
-            liveUtterances.remove(pending.token.utteranceId)?.cancel()
-            pending.pcm.fill(0)
+            rejectEnqueuedPending(pending, "channel-capacity", depthBefore)
             return
         }
         // Proactive backpressure one before capacity: enter CatchingUp early to degrade partials and prevent new onset
@@ -1591,10 +1885,39 @@ class SprichIME : InputMethodService() {
             Log.w("SprichIME", "finalization queue near capacity depth=$depthBefore pending=${pending.token.utteranceId} — entering CatchingUp early, degrading partials")
             updateCatchUpUi(true)
         }
+        // P03 §6.2: admit to the ordered commit lane (count AND 24 MiB byte
+        // ceiling; the channel above bounds count only). Shed converts a
+        // pending-cleanup entry to faithful-ready — the deterministic text the
+        // actor commits when cleanup is unavailable, so shedding needs no
+        // extra handling here beyond the record.
+        val queueSeq = pending.token.utteranceId
+        val admission = try {
+            utteranceQueue.admit(
+                QueuedUtterance(
+                    seq = queueSeq,
+                    utteranceId = queueSeq,
+                    byteSize = pending.pcm.size * 2,
+                    endpointMonoMs = pending.endpointTimestampNanos / 1_000_000L,
+                ),
+            )
+        } catch (_: Exception) {
+            QueueAdmission.Admitted()
+        }
+        when (admission) {
+            is QueueAdmission.Rejected -> {
+                rejectEnqueuedPending(pending, "utterance-queue-${admission.reason.name}", queueDepth.get())
+                return
+            }
+            is QueueAdmission.Admitted -> if (admission.shedCleanupForSeq != null) {
+                Log.i("SprichIME", "utterance-queue shed cleanup for seq=${admission.shedCleanupForSeq} to admit utt=$queueSeq (faithful-ready)")
+            }
+        }
         val newDepth = queueDepth.incrementAndGet()
         lastQueueDepth = newDepth
         if (newDepth.toLong() > pendingQueuePeak.get()) pendingQueuePeak.set(newDepth.toLong())
         Log.i("SprichIME", "enqueuePending token=${pending.token} pcm=${pending.pcm.size} queueDepth=$newDepth peak=${pendingQueuePeak.get()} reason=${pending.reason} catchingUp=$catchingUp")
+        tel(pending.token.utteranceId, TelemetryEventType.QUEUE_ADMISSION)
+        if (pending.reason == StopReason.ENDPOINT) tel(pending.token.utteranceId, TelemetryEventType.ENDPOINT)
         // Bounded channel (capacity=4) — trySend without suspension avoids unbounded PCM retention via parked coroutines
         val result = pendingChannel.trySend(pending)
         if (!result.isSuccess) {
@@ -1606,6 +1929,8 @@ class SprichIME : InputMethodService() {
             updateCatchUpUi(true)
             liveUtterances.remove(pending.token.utteranceId)?.cancel()
             pending.pcm.fill(0)
+            // P07 §6.4: retained audio released on bounded-race reject.
+            try { tel(pending.token.utteranceId, TelemetryEventType.RELEASE) } catch (_: Exception) {}
             return
         }
         endpointPending.set(true)
@@ -1642,6 +1967,33 @@ class SprichIME : InputMethodService() {
     }
 
     /**
+     * P03 lane bookkeeping. Marks the entry done/failed, then pops every
+     * committable head. The serial actor commits FIFO, so a popped head that
+     * is not the just-completed entry means overlapping finalization
+     * completed out of order — observed in logs, never gating commits.
+     * Drops (stale/cancelled, no result will ever commit) advance the lane
+     * as failed: no text is fabricated and the lane cannot stall behind them.
+     */
+    private fun markQueueDone(queueSeq: Long, failed: Boolean) {
+        try {
+            if (failed) utteranceQueue.markFailed(queueSeq) else utteranceQueue.markRecognitionDone(queueSeq)
+            drainQueueLane(queueSeq)
+        } catch (_: Exception) {}
+    }
+
+    private fun drainQueueLane(queueSeq: Long) {
+        try {
+            while (true) {
+                val head = utteranceQueue.pollCommittable() ?: break
+                if (head.seq != queueSeq) {
+                    Log.w("SprichIME", "commit-lane order: head seq=${head.seq} completed before seq=$queueSeq")
+                }
+                if (head.seq == queueSeq) break
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
      * Serialized finalization for one immutable PendingUtterance.
      * Does NOT mutate active capture B while decoding A.
      * Uses transcribeSnapshot (side-effect-bounded) and only clears active flags if token still owns active capture.
@@ -1653,9 +2005,7 @@ class SprichIME : InputMethodService() {
         try {
             if (pending.plan.apiPermissionEpoch != ApiHttp.currentEpoch) return
             // Atomically claim — second caller for same utteranceId drops silently (exactly-once)
-            val claimed = synchronized(finalizedUtterances) {
-                if (finalizedUtterances.contains(token.utteranceId)) false else { finalizedUtterances.add(token.utteranceId); true }
-            }
+            val claimed = finalizedUtterances.claim(token.utteranceId)
             if (!claimed) {
                 Log.w("SprichIME", "finalizePending duplicate claim dropped token=$token reason=$reason")
                 staleCallbackDrops++
@@ -1668,6 +2018,7 @@ class SprichIME : InputMethodService() {
             if (token.generation != sessionGeneration.get() || !session.requireActive()) {
                 Log.w("SprichIME", "finalizePending abandoned pre-decode stale generation token=$token current=${sessionGeneration.get()}")
                 staleCallbackDrops++
+                markQueueDone(token.utteranceId, failed = true)
                 // Do NOT clear utteranceActive/endpointPending if B is active with different token
                 maybeClearActiveStateForToken(token)
                 return
@@ -1675,12 +2026,14 @@ class SprichIME : InputMethodService() {
             if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) {
                 Log.w("SprichIME", "finalizePending abandoned pre-decode invalid session token=$token sessionId=${session.sessionId}")
                 staleCallbackDrops++
+                markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
             }
             if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) {
                 Log.w("SprichIME", "finalizePending abandoned pre-decode field mismatch token=$token currentField=$currentFieldId fg=${fieldGeneration.get()}")
                 staleCallbackDrops++
+                markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
             }
@@ -1705,22 +2058,73 @@ class SprichIME : InputMethodService() {
                 }
             } catch (_: Exception) {}
             // NEW: Unified transcription via UtterancePlan (Phase 2-5). One immutable plan per utterance, remote-first with safe fallback.
-            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+            if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, engine)
             // Ensure coordinator exists with shared HttpClient (connection pooling, keep-alive, HTTP/2)
             val plan = pending.plan
             val t0 = android.os.SystemClock.elapsedRealtime()
             // P0-12: truthful metrics — increment path-specific counters after transcribe, not blindly
-            val transcriptionResult: TranscriptionResult = try {
-                ensureTranscriptionCoordinator().transcribe(pending.pcm, plan, pending.token.utteranceId, pending.live) {
+            tel(token.utteranceId, TelemetryEventType.RECOGNITION_START)
+            var recognitionFailed = false
+            // P07: per-utterance outcome (remote attempt record included) instead
+            // of the coarse local-only mapping. The AttemptBox rule stays in the
+            // coordinator; this layer only maps it to telemetry truthfully.
+            val coordinatorOutcome: CoordinatorOutcome = try {
+                ensureTranscriptionCoordinator().transcribeWithOutcome(pending.pcm, plan, pending.token.utteranceId, pending.live) {
                     updateRemoteProgress(pending.token, it)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w("SprichIME", "transcriptionCoordinator failed utt=${token.utteranceId}", e)
-                TranscriptionResult("", ResolvedUtteranceLanguage.Unknown, plan.speechConfig, TranscriptionSourceId.LOCAL_FAST)
+                recognitionFailed = true
+                tel(token.utteranceId, TelemetryEventType.RECOGNITION_END, UtteranceOutcome.INFERENCE_FAILURE)
+                markQueueDone(token.utteranceId, failed = true)
+                CoordinatorOutcome(
+                    result = TranscriptionResult("", ResolvedUtteranceLanguage.Unknown, plan.speechConfig, TranscriptionSourceId.LOCAL_FAST),
+                    remoteFailure = null,
+                    remoteAttempted = false,
+                    fellBackToLocal = false,
+                )
             }
+            val transcriptionResult: TranscriptionResult = coordinatorOutcome.result
             val elapsed = android.os.SystemClock.elapsedRealtime() - t0
+            if (!recognitionFailed) {
+                // Blank with a remote failure means the failure explains the
+                // blank (not proven silence); blank without one is NO_SPEECH.
+                // Non-blank after a failed remote attempt is SUCCESS via local
+                // fallback (fellBackToLocal), with the attempt kept in logs.
+                val remoteOutcome = coordinatorOutcome.remoteFailure?.let { remoteFailureOutcome(it) }
+                if (remoteOutcome != null) {
+                    val code = (coordinatorOutcome.remoteFailure as? ApiFailure.Http)?.status ?: 0
+                    Log.i("SprichIME", "remote attempt utt=${token.utteranceId} failure=${coordinatorOutcome.remoteFailure} fallback=${coordinatorOutcome.fellBackToLocal} blank=${transcriptionResult.text.isBlank()}")
+                    tel(token.utteranceId, TelemetryEventType.RECOGNITION_END, remoteOutcome, code)
+                } else {
+                    val outcome =
+                        if (transcriptionResult.text.isBlank()) UtteranceOutcome.NO_SPEECH else UtteranceOutcome.SUCCESS
+                    tel(token.utteranceId, TelemetryEventType.RECOGNITION_END, outcome)
+                    // P07 §6.4: local provider produced its final transcript.
+                    // Remote finals arrive via updateRemoteProgress COMPLETE.
+                    if (!coordinatorOutcome.remoteAttempted) {
+                        tel(token.utteranceId, TelemetryEventType.PROVIDER_FINAL, outcome)
+                    }
+                }
+                markQueueDone(token.utteranceId, failed = false)
+            }
+            // U02 dictated replacement: an utterance endpointed after arming
+            // delivers its text to the open sheet instead of the field. The
+            // user reviews before Apply (which revalidates the exact span),
+            // so no field mutation happens here; the lane entry resolves done
+            // with no cleanup attempted.
+            val armedCorrection = correctionDictationTarget
+            if (!recognitionFailed && armedCorrection != null && transcriptionResult.text.isNotBlank() &&
+                correctionDictationEndedAfterArm(pending.endpointTimestampNanos, correctionArmedAtNanos)
+            ) {
+                deliverCorrectionDictation(transcriptionResult.text)
+                try { utteranceQueue.markCleanupDone(token.utteranceId) } catch (_: Exception) {}
+                drainQueueLane(token.utteranceId)
+                try { maybeClearActiveStateForToken(token) } catch (_: Exception) {}
+                return
+            }
             // P0-12: increment truthful path counters
             when (transcriptionResult.source) {
                 TranscriptionSourceId.LOCAL_FAST, TranscriptionSourceId.LOCAL_CANARY -> { localNativeDecodeStarts++; nativeDecodeStarts++ }
@@ -1752,18 +2156,24 @@ class SprichIME : InputMethodService() {
             if (token.generation != sessionGeneration.get() || !session.requireActive()) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode stale generation token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(transcriptionResult.text)
+                markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
             }
             if (token.sessionId != session.sessionId || !session.isSessionValid(token.sessionId)) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode invalid session token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(transcriptionResult.text)
+                markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
             }
             if (token.fieldId != currentFieldId || token.fieldGeneration != fieldGeneration.get()) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode field mismatch token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(transcriptionResult.text)
+                markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
             }
@@ -1771,51 +2181,80 @@ class SprichIME : InputMethodService() {
             if (currentIc == null) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode no InputConnection token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(transcriptionResult.text)
+                markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
             }
             if (!fieldController.isCurrentSession(token.sessionId)) {
                 Log.w("SprichIME", "finalizePending abandoned post-decode fieldController stale token=$token")
                 staleCallbackDrops++
+                saveRecoveryDraft(transcriptionResult.text)
+                markQueueDone(token.utteranceId, failed = true)
                 maybeClearActiveStateForToken(token)
                 return
             }
 
-            // P0-7: Single-parse command isolation — parse exactly once, refinement never gains command authority
-            // P1-17: Apply personal vocabulary before refinement, send only relevant terms
+            // S01: typed command authority — parse exactly once via the trusted parser and
+            // switch on the result type; never reinterpret text. Refinement receives/returns
+            // text only. Remote-origin destructive phrases arrive as Text (confirmation-only).
+            // P1-17: Apply personal vocabulary before refinement, send only relevant terms.
             val raw = transcriptionResult.text.trim()
             // A labeled conversation keeps the provider's final spans intact; commands and cleanup
             // must not turn one speaker's words into an edit or move text between speakers.
             val speakerDictation = transcriptionResult.source == TranscriptionSourceId.API_META_MUSE &&
                 (plan.transcription as? TranscriptionPlan.ApiPrimary)?.remote?.options?.speakerLabels == true
             var cleanupNotice: Int? = null
-            val localFallbackUsed = plan.transcription is TranscriptionPlan.ApiPrimary &&
-                transcriptionResult.source in setOf(TranscriptionSourceId.LOCAL_FAST, TranscriptionSourceId.LOCAL_CANARY)
+            // P07: authoritative per-utterance fallback record (replaces the plan+source derivation).
+            val localFallbackUsed = coordinatorOutcome.fellBackToLocal
             Log.i("SprichIME", "pipeline: token=${token.utteranceId} source=${transcriptionResult.source} mode=${plan.transcription::class.simpleName} rawLen=${raw.length} lang=${effectiveConfig.resolvedLanguageTag()} refinement=${plan.refinement::class.simpleName}")
-            // Parse exactly once on raw transcription
-            val preRefineParsed = try {
-                if (speakerDictation) SpokenEditingParser.EditResult(raw, false)
-                else SpokenEditingParser.parse(raw, postProcessResolved, plan.speechConfig.enableCommands)
+            val origin = if (transcriptionResult.source == TranscriptionSourceId.LOCAL_FAST ||
+                transcriptionResult.source == TranscriptionSourceId.LOCAL_CANARY
+            ) TranscriptOrigin.LOCAL else TranscriptOrigin.REMOTE
+            // P02: per-utterance VAD speech-episode flag snapshotted at endpoint time
+            // (pending.hadSpeech). Fail-safe mapping: speech present enables legitimate
+            // symbol output; otherwise legacy UNKNOWN (symbol-only stays suppressed).
+            // The flag is session-latched, so this never drops genuine dictation.
+            val commandPolicy = CommandPolicy(
+                commandsEnabled = plan.speechConfig.enableCommands,
+                origin = origin,
+                speakerLabelsPresent = speakerDictation,
+            )
+            val parsed: ParsedDictation = try {
+                if (speakerDictation) ParsedDictation.Text(raw)
+                else SpokenEditingParser.parseTyped(raw, postProcessResolved, commandPolicy, AcousticBasis.fromHadSpeech(pending.hadSpeech))
             } catch (_: Exception) {
-                SpokenEditingParser.EditResult(raw, false)
+                ParsedDictation.Text(raw)
             }
-            val isDeleteCmd = SpokenEditingParser.isDeleteCommand(preRefineParsed.text)
-            val prepared: PreparedFinalAction = if (isDeleteCmd) {
-                Log.i("SprichIME", "spoken editing command detected")
-                if (preRefineParsed.text == "__DELETE_SENTENCE__") PreparedFinalAction.DeleteSentence(token) else PreparedFinalAction.DeleteLast(token)
-            } else {
+            // P03: set inside the Text branch when optional cleanup is attempted
+            // and exhausted (timeout/discard/reject); read at commit time.
+            var cleanupExhausted = false
+            val prepared: PreparedFinalAction = when (parsed) {
+                is ParsedDictation.Editing -> {
+                    // Only local-origin destructive commands reach here, and only for an exact
+                    // whole-utterance phrase in a Known language with commands enabled.
+                    // Mutation still requires fresh owned-span proof in executeSpokenDeleteLast.
+                    Log.i("SprichIME", "spoken editing command action=${parsed.action} origin=$origin")
+                    PreparedFinalAction.DeleteLast(token)
+                }
+                is ParsedDictation.Formatting -> {
+                    // Whole-utterance formatting command: deterministic, no cleanup round-trip.
+                    Log.i("SprichIME", "spoken formatting command action=${parsed.action}")
+                    PreparedFinalAction.Text(parsed.rendered, postProcessResolved)
+                }
+                is ParsedDictation.Rejected -> {
+                    Log.i("SprichIME", "parse rejected reason=${parsed.reason} — zero mutation token=$token")
+                    PreparedFinalAction.Text(PreparedFinalAction.REJECTED_PARSE_TEXT, postProcessResolved)
+                }
+                is ParsedDictation.Text -> {
                 // Non-command: deterministic text with vocab applied before refinement (P1-17 step 2)
-                var deterministic = preRefineParsed.text
+                var deterministic = parsed.value
                 val vocabularyProfile = com.sprich.app.vocab.RecognitionProfile.result(plan, transcriptionResult.source)?.key
                 if (!speakerDictation) deterministic = try { plan.vocabulary.apply(deterministic, vocabularyProfile) } catch (_: Exception) { deterministic }
-                // For irrelevant vocab protection, compute relevant terms only (present in current transcript)
+                // S04: relevant-term discovery uses the same canonical comparison as enforcement,
+                // so discovery and the validator can never disagree about a term's presence.
                 val relevantTerms: List<String> = try {
-                    val allEntries = plan.vocabulary.terms().filter { it.isNotBlank() }
-                    if (allEntries.isEmpty()) emptyList()
-                    else {
-                        val lower = deterministic.lowercase()
-                        allEntries.filter { lower.contains(it.lowercase()) }.take(20)
-                    }
+                    com.sprich.app.speech.refinement.TermCanonical.relevantTerms(deterministic, plan.vocabulary.terms())
                 } catch (_: Exception) { emptyList<String>() }
                 val refinedText: String = when (val rp = plan.refinement) {
                     is RefinementPlan.Off -> deterministic
@@ -1840,6 +2279,10 @@ class SprichIME : InputMethodService() {
                                     whisperMode = plan.whisperMode,
                                 )
                                 val deadlineMs = rp.config.deadlineMs
+                                // P03/P07: optional cleanup is the queue's sheddable unit with
+                                // a hard deadline; expiry falls back to faithful deterministic.
+                                try { utteranceQueue.markCleanupPending(token.utteranceId) } catch (_: Exception) {}
+                                tel(token.utteranceId, TelemetryEventType.CLEANUP_START)
                                 val refinedResult = try {
                                     kotlinx.coroutines.withTimeoutOrNull(deadlineMs) { provider.refine(req) }
                                 } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
@@ -1850,6 +2293,8 @@ class SprichIME : InputMethodService() {
                                 if (refinedResult == null) {
                                     if (cleanupNotice == null) cleanupNotice = com.sprich.app.R.string.ime_cleanup_timed_out
                                     Log.w("SprichIME", "refinement timeout/discard after ${deadlineMs}ms, using deterministic")
+                                    cleanupExhausted = true
+                                    tel(token.utteranceId, TelemetryEventType.CLEANUP_END)
                                     deterministic
                                 } else {
                                     val candidate = refinedResult.text.trim()
@@ -1857,11 +2302,15 @@ class SprichIME : InputMethodService() {
                                     when (validation) {
                                         is RefinementValidator.Result.Accept -> {
                                             Log.i("SprichIME", "refinement accepted mode=${rp.mode} inLen=${deterministic.length} outLen=${candidate.length} latency=${refinedResult.latencyMs}")
+                                            tel(token.utteranceId, TelemetryEventType.CLEANUP_END)
+                                            tel(token.utteranceId, TelemetryEventType.CLEANUP_VALIDATED)
                                             candidate
                                         }
                                         is RefinementValidator.Result.Reject -> {
                                             cleanupNotice = com.sprich.app.R.string.ime_cleanup_kept_original
                                             Log.w("SprichIME", "refinement rejected reason=${validation.reason}, using deterministic")
+                                            cleanupExhausted = true
+                                            tel(token.utteranceId, TelemetryEventType.CLEANUP_END)
                                             deterministic
                                         }
                                     }
@@ -1871,43 +2320,92 @@ class SprichIME : InputMethodService() {
                     }
                 }
                 PreparedFinalAction.Text(refinedText, postProcessResolved)
+                }
             }
 
-            // P0-7: Refined text must NEVER be reinterpreted as command — commit prepared action directly
-            // Spoken delete: only delete exact owned insertion if proof holds, else zero mutation (no 40/120 guess)
+            // S01: the prepared action commits directly — refined text is NEVER reinterpreted
+            // as a command, and no late cleanup/provider response may rewrite committed text.
+            // Spoken delete: only delete exact owned insertion if proof holds, else zero mutation.
             currentCoroutineContext().ensureActive()
             if (plan.apiPermissionEpoch != ApiHttp.currentEpoch) return
+            // P03: resolve the lane entry — expired cleanup commits faithful
+            // deterministic, otherwise the (possibly unrefined) result is ready.
+            try {
+                if (cleanupExhausted) utteranceQueue.expireCleanup(token.utteranceId)
+                else utteranceQueue.markCleanupDone(token.utteranceId)
+            } catch (_: Exception) {}
+            tel(token.utteranceId, TelemetryEventType.COMMIT_ATTEMPT)
             val applied: Boolean = when (prepared) {
                 is PreparedFinalAction.DeleteLast -> {
                     val ok = executeSpokenDeleteLast(token)
                     if (ok) finalCommitCount++
                     ok
                 }
-                is PreparedFinalAction.DeleteSentence -> {
-                    // For this release: sentence delete disabled unless exact span can be safely established — zero mutation
-                    Log.i("SprichIME", "spoken deleteSentence requested but disabled for release — zero mutation token=$token")
-                    false
-                }
                 is PreparedFinalAction.Text -> {
-                    val finalText = (prepared as PreparedFinalAction.Text).text
-                    if (finalText.isEmpty()) {
+                    // P05 §5.3: split continuations reconcile against the
+                    // previous split commit — verified dedupe only, never
+                    // blind concatenation. Non-split commits clear the chain.
+                    var commitText = (prepared as PreparedFinalAction.Text).text
+                    var wasReconciled = false
+                    try {
+                        val prev = lastSplitCommit
+                        if (pending.splitOverlap != null && prev != null) {
+                            val reconciled = com.sprich.app.core.audio.ContinuousSpeechPolicy.reconcileWithOverlapSearch(
+                                prev.second,
+                                commitText,
+                                overlapSpan = pending.splitOverlap,
+                            )
+                            if (reconciled.overlapDeduped) {
+                                Log.i("SprichIME", "split reconcile deduped token=$token prev=${prev.first} chars=${commitText.length}->${reconciled.text.length}")
+                                commitText = reconciled.text
+                                wasReconciled = true
+                            }
+                        }
+                    } catch (_: Exception) {}
+                    if (commitText.isEmpty()) {
                         Log.w("SprichIME", "final transcript empty token=$token")
+                        try { lastSplitCommit = null } catch (_: Exception) {}
                         false
                     } else {
-                        val ok = commitFinalText(token, finalText, prepared.resolved)
-                        Log.i("SprichIME", "final token=$token chars=${finalText.length} applied=$ok elapsedMs=$elapsed lang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected resolved=$postProcessResolved")
+                        val ok = commitFinalText(token, commitText, prepared.resolved)
+                        Log.i("SprichIME", "final token=$token chars=${commitText.length} applied=$ok elapsedMs=$elapsed lang=${effectiveConfig.resolvedLanguageTag()} lid=$lidDetected resolved=$postProcessResolved")
                         if (ok) finalCommitCount++
+                        try {
+                            lastSplitCommit =
+                                if (ok && (pending.splitOverlap != null || wasReconciled)) token.utteranceId to commitText
+                                else null
+                        } catch (_: Exception) {}
                         ok
                     }
                 }
             }
+            tel(
+                token.utteranceId,
+                TelemetryEventType.COMMIT_RESULT,
+                if (applied) UtteranceOutcome.SUCCESS else UtteranceOutcome.CANCELLED,
+            )
+            drainQueueLane(token.utteranceId)
+            // P07 §6.4: lane exit — the entry is popped above, retained
+            // audio eligible for release. Guard dedups against the
+            // maybeClearActiveStateForToken path below.
+            try {
+                if (telemetryStageGuard.shouldEmit(token.utteranceId, TelemetryEventType.RELEASE)) {
+                    tel(token.utteranceId, TelemetryEventType.RELEASE)
+                }
+            } catch (_: Exception) {}
             if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isNotEmpty() && !applied) {
                 // UTTERANCE-SCOPED: editor ambiguous must NOT destroy active B
                 failUtteranceScoped(token, "final text insertion ambiguous token=$token", null)
                 return
             }
             if (prepared is PreparedFinalAction.Text && (prepared as PreparedFinalAction.Text).text.isBlank() && !applied) {
-                resultNotice = if (plan.transcription is TranscriptionPlan.ApiPrimary && transcriptionCoordinator?.lastRemoteFailure != null) com.sprich.app.R.string.ime_api_failure else com.sprich.app.R.string.ime_no_speech
+                // P07: per-utterance remote failure (never the legacy global) decides the notice.
+                resultNotice = if (plan.transcription is TranscriptionPlan.ApiPrimary && coordinatorOutcome.remoteFailure != null) com.sprich.app.R.string.ime_api_failure else com.sprich.app.R.string.ime_no_speech
+            } else if (prepared is PreparedFinalAction.Text && !applied) {
+                // U03: recognized text, nothing committed — keep for explicit retry + Home review.
+                saveRecoveryDraft(prepared.text)
+                resultNotice = com.sprich.app.R.string.ime_kept_retry
+                try { micContainer?.announceForAccessibility(uiString(resultNotice!!)) } catch (_: Exception) {}
             } else if (applied) {
                 resultNotice = when {
                     cleanupNotice != null -> cleanupNotice
@@ -1917,6 +2415,7 @@ class SprichIME : InputMethodService() {
                 resultNotice?.let { micContainer?.announceForAccessibility(uiString(it)) }
                 latency.mark("textCommitted")
                 celebrateCommit()
+                returnToPreviousKeyboardIfOneShot()
             }
 
             // Post-commit housekeeping moved after prepared handling
@@ -1951,6 +2450,12 @@ class SprichIME : InputMethodService() {
         // Clear frozen descriptor if it belongs to this token (phase 0A)
         if (activeUtterance?.token?.utteranceId == token.utteranceId) {
             activeUtterance = null
+            // P07 §6.4: this token's active capture ownership is released.
+            try {
+                if (telemetryStageGuard.shouldEmit(token.utteranceId, TelemetryEventType.RELEASE)) {
+                    tel(token.utteranceId, TelemetryEventType.RELEASE)
+                }
+            } catch (_: Exception) {}
         }
         // Collector may be cleared for next utterance only when no B active — handled by begin()
         
@@ -1998,6 +2503,7 @@ class SprichIME : InputMethodService() {
             reason = reason,
             endpointTimestampNanos = System.nanoTime(),
             live = captured.live,
+            hadSpeech = try { vad.hasSpeech() } catch (_: Exception) { false },
         )
         captured.live?.sealInput(snap)
         // P0 item 3: all accepted final utterances enter same FIFO actor — ENDPOINT, USER_STOP, 30s cap, explicit finish
@@ -2096,10 +2602,15 @@ class SprichIME : InputMethodService() {
         sessionGeneration.incrementAndGet()
         fieldGeneration.incrementAndGet()
         cancelLiveUtterances()
+        // P03: session failed — pending lane work is stale, discard it.
+        try { utteranceQueue.cancel() } catch (_: Exception) {}
         currentFieldId = null
         currentUtteranceToken = null
         activeUtterance = null
-        synchronized(finalizedUtterances) { /* keep claimed ids to prevent reuse, but clear old if needed */ }
+        // Claimed ids are intentionally retained (bounded to 128 inside
+        // FinalizationClaims) to prevent utterance-id reuse after failure.
+        // P05 §5.3: split-continuation state never survives a failure.
+        try { clearSplitContinuationState() } catch (_: Exception) {}
         // Off-main audio teardown — Main does only cheap requestStop, join off-thread
         val retiredCapture = try { audio.requestStop() } catch (_: Exception) { null }
         scope.launch(kotlinx.coroutines.Dispatchers.IO) { try { retiredCapture?.awaitStop() } catch (_: Exception) {} }
@@ -2115,7 +2626,6 @@ class SprichIME : InputMethodService() {
         lastPartialText = ""
         try { utteranceAudio.clear() } catch (_: Exception) {}
         try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-        try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
         session.error(reason)
         showStaticMessage(userStatus, userHint)
         writeDiagnostics("error=$reason generation=$generation staleDrops=$staleCallbackDrops claims=$finalizationClaims commits=$finalCommitCount")
@@ -2129,6 +2639,9 @@ class SprichIME : InputMethodService() {
      */
     private fun failUtteranceScoped(token: UtteranceToken, reason: String, throwable: Throwable?) {
         if (throwable != null) Log.w("SprichIME", "utteranceScopedFailure token=$token reason=$reason", throwable) else Log.w("SprichIME", "utteranceScopedFailure token=$token reason=$reason")
+        tel(token.utteranceId, TelemetryEventType.CANCELLATION)
+        // P03: scoped failure advances the lane as failed — no result commits.
+        try { utteranceQueue.markFailed(token.utteranceId) } catch (_: Exception) {}
         // Do not increment global generation — preserve B's token validity
         // Only clear active capture state if this token still owns it
         maybeClearActiveStateForToken(token)
@@ -2160,13 +2673,14 @@ class SprichIME : InputMethodService() {
         val hasActiveUtterance = activeUtterance != null && utteranceActive.get() && currentUtteranceToken != null
         val notYetFinalized = currentUtteranceToken?.let { !finalizedUtterances.contains(it.utteranceId) } ?: true
         val shouldCommitAsFinalizing = when (reason) {
-            StopReason.USER_STOP -> wasActive && hasActiveUtterance && currentPcmSize > 0 && notYetFinalized
+            StopReason.USER_STOP, StopReason.SESSION_LIMIT -> wasActive && hasActiveUtterance && currentPcmSize > 0 && notYetFinalized
             StopReason.ENDPOINT -> false // endpoint path uses finalizeOnce directly, not stopDictation
             else -> false
         }
 
-        // USER_STOP must be FIFO-serialized with ENDPOINT via same finalization actor — no direct finalizePending call that bypasses queue
-        if (reason == StopReason.USER_STOP) {
+        // USER_STOP must be FIFO-serialized with ENDPOINT via same finalization actor — no direct finalizePending call that bypasses queue.
+        // P05 §5.3: SESSION_LIMIT shares the drain path so capped sessions preserve all captured text.
+        if (reason == StopReason.USER_STOP || reason == StopReason.SESSION_LIMIT) {
             // Stop accepting new mic input immediately, but do NOT invalidate already queued work
             val shouldEnqueueFinal = shouldCommitAsFinalizing
             if (shouldEnqueueFinal) {
@@ -2191,6 +2705,7 @@ class SprichIME : InputMethodService() {
                     reason = StopReason.USER_STOP,
                     endpointTimestampNanos = System.nanoTime(),
                     live = captured.live,
+                    hadSpeech = try { vad.hasSpeech() } catch (_: Exception) { false },
                 )
                 captured.live?.sealInput(snap)
                 enqueuePending(pending)
@@ -2204,9 +2719,7 @@ class SprichIME : InputMethodService() {
                 engineJob = null
                 endpointJob = null
                 try { engine.cancelSession() } catch (_: Exception) {}
-                try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
                 try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-                try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
                 utteranceActive.set(false)
                 endpointPending.set(false)
                 lastPartialText = ""
@@ -2215,17 +2728,27 @@ class SprichIME : InputMethodService() {
                 pipelineChunkCount = 0L; pipelineSampleCount = 0L; pipelinePushedSampleCount = 0L
                 vad.reset()
                 lastVadState = Vad.State.SILENCE
+                // P05 §5.3: split-continuation state never survives a stop.
+                try { clearSplitContinuationState() } catch (_: Exception) {}
                 try { composition.discardPartial(currentInputConnection) } catch (_: Exception) {}
                 try { if (session.state.value !is SessionState.Idle) session.end() } catch (_: Exception) { try { session.idle() } catch (_: Exception) {} }
+                // P03: intake closed, accepted work already drained via the actor (queue empty by branch condition).
+                try {
+                    val drained = utteranceQueue.finish()
+                    if (drained.isNotEmpty()) Log.w("SprichIME", "USER_STOP finish drained ${drained.size} unexpected entries")
+                } catch (_: Exception) {}
                 updateImeUi(false)
-                writeDiagnostics("stopped USER_STOP immediate (no queue) prevGen=$generationAtStop newGen=$newGen claims=$finalizationClaims")
+                writeDiagnostics("stopped $reason immediate (no queue) prevGen=$generationAtStop newGen=$newGen claims=$finalizationClaims")
             } else {
-                // Enqueued — mark stop after drain, preserve FIFO order, no generation bump yet
+                // Enqueued — mark stop after drain, preserve FIFO order, no generation bump yet.
+                // P05 §5.3: split chain cleared now — in-flight split items
+                // keep full text (safe fallback, no reconcile base).
+                try { clearSplitContinuationState() } catch (_: Exception) {}
                 stopRequested = true
                 stopRequestedGeneration = generationAtStop
                 showStaticMessage(com.sprich.app.R.string.ime_stopping, com.sprich.app.R.string.ime_finishing)
-                Log.i("SprichIME", "USER_STOP awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
-                writeDiagnostics("USER_STOP awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
+                Log.i("SprichIME", "$reason awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
+                writeDiagnostics("$reason awaiting drain queueDepth=${queueDepth.get()} generation=$generationAtStop enqueuedFinal=$shouldEnqueueFinal")
             }
             if (wasActive) vibrateStop()
             return
@@ -2235,9 +2758,14 @@ class SprichIME : InputMethodService() {
         val newGeneration = sessionGeneration.incrementAndGet()
         fieldGeneration.incrementAndGet()
         cancelLiveUtterances()
-        // Cancel any pending endpoint finalization immediately — never insert after cancellation
-        try { endpointJob?.cancel() } catch (_: Exception) {}
-        endpointJob = null
+        // U03: abandon-type stops must not kill an in-flight snapshot decode —
+        // post-decode validation still refuses insertion (stale generation) and
+        // preserves obtainable text as a recovery draft. Only user cancel,
+        // sensitive fields, and teardown cancel immediately.
+        if (reason.cancelsInflightDecode()) {
+            try { endpointJob?.cancel() } catch (_: Exception) {}
+            endpointJob = null
+        }
         // For FIELD_LOST etc., field is no longer owned
         currentFieldId = when (reason) {
             StopReason.FIELD_LOST, StopReason.INPUT_RESTARTED, StopReason.WINDOW_HIDDEN,
@@ -2249,9 +2777,7 @@ class SprichIME : InputMethodService() {
         try { engineJob?.cancel() } catch (_: Exception) {}
         engineJob = null
         try { engine.cancelSession() } catch (_: Exception) {}
-        try { fastConformerEngine.cancelSession() } catch (_: Exception) {}
         try { engine.clearUtteranceCapture() } catch (_: Exception) {}
-        try { fastConformerEngine.clearUtteranceCapture() } catch (_: Exception) {}
         try { utteranceAudio.clear() } catch (_: Exception) {}
         utteranceActive.set(false)
         endpointPending.set(false)
@@ -2264,22 +2790,47 @@ class SprichIME : InputMethodService() {
         try { if (session.state.value !is SessionState.Idle) session.end() } catch (_: Exception) { try { session.idle() } catch (_: Exception) {} }
         // Also inform fieldController for stale protection (uses discard)
         try { fieldController.cancelActive() } catch (_: Exception) {}
+        // P03: generation invalidated above — pending lane work is stale, discard it.
+        try { utteranceQueue.cancel() } catch (_: Exception) {}
         updateImeUi(false)
         if (wasActive) vibrateStop()
-        Log.i("SprichIME", "dictation stopped reason=$reason newGen=$newGeneration field=$currentFieldId")
+        Log.i("SprichIME", "dictation stopped reason=$reason newGen=$newGeneration field=$currentFieldId sessionState=${session.state.value}")
         writeDiagnostics("stopped reason=$reason newGen=$newGeneration fieldGen=${fieldGeneration.get()} claims=$finalizationClaims commits=$finalCommitCount drops=$staleCallbackDrops")
     }
 
     private fun writeDiagnostics(event: String) {
         if (!com.sprich.app.BuildConfig.DEBUG) return
         val routeStr = try { determineRoute(speechLanguage).toString() } catch (_: Exception) { "unknown" }
-        val collectorState = "collectorSamples=${utteranceAudio.size()} frozen=${utteranceAudio.isFrozen()} canaryLoads=${canaryLoadAttempts.get()} fastLoads=${fastLoadAttempts.get()}"
+        val collectorState = "collectorSamples=${utteranceAudio.size()} frozen=${utteranceAudio.isFrozen()} canaryLoads=${canaryLoadAttempts.get()} lidLoads=${lidLoadAttempts.get()}"
         val text = Diagnostics.collect(this, engine.engineId, languageTag = activeConfig.resolvedLanguageTag(), task = activeConfig.resolvedTask().name, sessionId = session.sessionId) +
             event + " route=$routeStr $collectorState\n" +
             latency.report() + "\n" +
-            "audioActive=${audio.isActive()} vad=${vad.currentState()} engineLoaded=${engine.isLoaded()} fastLoaded=${fastConformerEngine.isLoaded()} lidLoaded=${lidEngine.isLoaded()} sessionId=${session.sessionId}\n"
+            "audioActive=${audio.isActive()} vad=${vad.currentState()} engineLoaded=${engine.isLoaded()} lidLoaded=${lidEngine.isLoaded()} sessionId=${session.sessionId}\n"
         scope.launch(Dispatchers.IO) {
             try { Diagnostics.write(this@SprichIME, text) } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * T2: after a one-shot voice-subtype session (final insertion, cancel or hide), hand control
+     * back to the previous typing keyboard. API 28+ has switchToPreviousInputMethod(); on API
+     * 26-27 the deprecated switchToLastInputMethod(token) is used when a window token exists,
+     * and otherwise the platform's own keyboard switcher remains the manual path.
+     */
+    private fun returnToPreviousKeyboardIfOneShot() {
+        if (!oneShotVoice.consumeReturn()) return
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                switchToPreviousInputMethod()
+            } else {
+                @Suppress("DEPRECATION")
+                val token = window?.window?.attributes?.token
+                if (token != null) {
+                    (getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                        .switchToLastInputMethod(token)
+                }
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -2395,6 +2946,353 @@ class SprichIME : InputMethodService() {
     private fun updateEditingControls() {
         undoButton?.visibility = if (!isPasswordField && editorActionController.historySize() > 0) View.VISIBLE else View.GONE
         whisperBadge?.visibility = if (whisperMode && !isPasswordField) View.VISIBLE else View.GONE
+        correctButton?.visibility = if (correctionEntryVisible()) View.VISIBLE else View.GONE
+    }
+
+    /**
+     * U03: keep recognized-but-uncommitted text for explicit retry + Home
+     * review. Call with non-blank text only, on paths where recognition
+     * produced text but nothing was committed (failed insert, abandoned
+     * field) — never on user-cancelled or empty paths.
+     */
+    private fun saveRecoveryDraft(text: String) {
+        if (text.isBlank()) return
+        try {
+            val app = application as? SprichApp ?: return
+            if (app.recoveryDrafts.save(text)) app.noteRecoveryChanged()
+        } catch (_: Exception) {
+        }
+        try { updateEditingControls() } catch (_: Exception) {}
+    }
+
+    /**
+     * U02 editor snapshot for correction targeting. Prefers extracted text
+     * (absolute cursor known); falls back to capped before/after, in which
+     * case absolute offsets are known only when `before` reached field start.
+     */
+    private data class CorrectionEditorSnapshot(
+        val before: String,
+        val after: String,
+        val cursorAbsolute: Int,
+        val collapsed: Boolean,
+    )
+
+    private fun readEditorSnapshot(maxBefore: Int = 1000, maxAfter: Int = 256): CorrectionEditorSnapshot? {
+        val ic = try { currentInputConnection } catch (_: Exception) { null } ?: return null
+        return try {
+            val extracted = try {
+                ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
+            } catch (_: Exception) {
+                null
+            }
+            // Only a whole-field extraction has authoritative absolute offsets; a positive
+            // startOffset or non-negative partialStartOffset is a window and falls back to the
+            // capped before/after read, which refuses unknown absolute offsets (cursor -1).
+            val window = extracted?.text?.let { text ->
+                absoluteWindowFromExtracted(
+                    text.toString(),
+                    extracted.startOffset,
+                    extracted.partialStartOffset,
+                    extracted.selectionStart,
+                    extracted.selectionEnd,
+                )
+            }
+            if (window != null) {
+                CorrectionEditorSnapshot(window.before, window.after, window.cursorAbsolute, window.collapsed)
+            } else {
+                val before = try { ic.getTextBeforeCursor(maxBefore, 0)?.toString() } catch (_: Exception) { null } ?: return null
+                val after = try { ic.getTextAfterCursor(maxAfter, 0)?.toString() } catch (_: Exception) { null } ?: ""
+                val cursorAbs = if (before.length < maxBefore) before.length else -1
+                CorrectionEditorSnapshot(before, after, cursorAbs, true)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun correctionEntryVisible(): Boolean {
+        if (isPasswordField) return false
+        return try {
+            val ic = try { currentInputConnection } catch (_: Exception) { null } ?: return false
+            val before = try { ic.getTextBeforeCursor(64, 0)?.toString() } catch (_: Exception) { null } ?: return false
+            com.sprich.app.input.correction.CorrectionPlan.wordAtCursor(before, before.length) != null
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * U02: open the correction sheet on the cursor word. Captures the
+     * exact-span target (field + generation + offsets + surrounding snapshot);
+     * every later mutation revalidates against a FRESH snapshot, so a moved
+     * cursor or host edit can only refuse honestly, never mis-splice.
+     */
+    private fun openCorrectionSheet() {
+        try { closeCorrectionSheet() } catch (_: Exception) {}
+        if (isPasswordField) { Log.i("SprichIME", "correction sheet refused: password field"); return }
+        val fieldId = currentFieldId
+        if (fieldId == null) { Log.i("SprichIME", "correction sheet refused: no field"); return }
+        val snap = readEditorSnapshot()
+        if (snap == null) { Log.i("SprichIME", "correction sheet refused: no snapshot field=$fieldId"); return }
+        if (!snap.collapsed || snap.cursorAbsolute < 0) { Log.i("SprichIME", "correction sheet refused: selection collapsed=${snap.collapsed} cursor=${snap.cursorAbsolute}"); return }
+        val (start, len) = com.sprich.app.input.correction.CorrectionPlan.wordAtCursor(snap.before, snap.before.length)
+            ?: run { Log.i("SprichIME", "correction sheet refused: no word before=${snap.before.takeLast(16)}"); return }
+        val word = try { snap.before.substring(start, start + len) } catch (_: Exception) { return }
+        if (word.isBlank()) { Log.i("SprichIME", "correction sheet refused: blank word"); return }
+        Log.i("SprichIME", "correction sheet opening word=$word field=$fieldId")
+        correctionTarget = com.sprich.app.input.correction.CorrectionTarget(
+            fieldId = fieldId,
+            fieldGeneration = fieldGeneration.get(),
+            startOffset = start,
+            text = word,
+            beforeAtOpen = snap.before,
+            afterAtOpen = snap.after,
+        )
+        correctionUndo = null
+        lastAppliedReplacement = null
+        correctionController.targetWord = word
+        correctionController.replacement = word
+        correctionController.listening = false
+        correctionController.undoAvailable = false
+        correctionController.proposal = null
+        correctionController.rememberAvailable = false
+        correctionController.notice = null
+        // Classic Views: the IME service window has no Activity lifecycle,
+        // so Compose content would need hand-wired view-tree owners.
+        val dialog = android.app.Dialog(this, android.R.style.Theme_DeviceDefault_Dialog)
+        val sheet = com.sprich.app.ui.correction.buildCorrectionSheetView(
+            this,
+            correctionController,
+            com.sprich.app.ui.correction.CorrectionSheetActions(
+                onReplacementChange = { correctionController.replacement = it },
+                onProposalTap = {
+                    correctionController.proposal?.let { correctionController.replacement = it.newForm }
+                },
+                onDictate = { armCorrectionDictation() },
+                onApply = { applyCorrection() },
+                onUndo = { undoCorrection() },
+                onRemember = { rememberSpelling() },
+                onDismiss = { closeCorrectionSheet() },
+            ),
+        )
+        correctionSheetView = sheet
+        // Controller mutations can arrive off the UI thread (dictation /
+        // correction callbacks); always refresh via the attached view.
+        correctionController.onChange = {
+            try {
+                val root = sheet.root
+                root.post {
+                    try {
+                        if (correctionDialog === dialog) sheet.refresh(correctionController)
+                    } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+        }
+        dialog.setContentView(
+            sheet.root,
+            android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        try {
+            dialog.window?.let { w ->
+                w.attributes?.token = try { rootView?.windowToken } catch (_: Exception) { null }
+                w.setType(android.view.WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG)
+                // Transparent window decor: the rounded panel draws the sheet in both themes.
+                w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+            }
+        } catch (_: Exception) {}
+        correctionDialog = dialog
+        try {
+            dialog.show()
+            Log.i("SprichIME", "correction sheet shown")
+        } catch (e: Exception) {
+            Log.w("SprichIME", "correction sheet show failed", e)
+            correctionDialog = null
+        }
+    }
+
+    private fun closeCorrectionSheet() {
+        try { correctionController.onChange = null } catch (_: Exception) {}
+        correctionSheetView = null
+        try { correctionDialog?.dismiss() } catch (_: Exception) {}
+        correctionDialog = null
+        correctionTarget = null
+        correctionUndo = null
+        correctionDictationTarget = null
+        lastAppliedReplacement = null
+        try {
+            correctionController.listening = false
+            correctionController.undoAvailable = false
+            correctionController.proposal = null
+            correctionController.rememberAvailable = false
+            correctionController.notice = null
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * U02 dictated replacement: arm routing, then start dictation unless
+     * already running. Only an utterance endpointed AFTER arming delivers
+     * (guarded by [correctionArmedAtNanos] at the finalize site), so an
+     * in-flight unrelated utterance can never be hijacked into the sheet.
+     * Arming and the endpoint timestamp both use [System.nanoTime] so the
+     * guard survives deep sleep (see [correctionDictationEndedAfterArm]).
+     */
+    private fun armCorrectionDictation() {
+        correctionDictationTarget = correctionTarget ?: return
+        correctionArmedAtNanos = System.nanoTime()
+        correctionController.listening = true
+        correctionController.notice = null
+        try {
+            if (!isDictationRunning()) toggleDictation()
+        } catch (_: Exception) {}
+    }
+
+    private fun deliverCorrectionDictation(text: String) {
+        correctionDictationTarget = null
+        correctionController.replacement = text
+        correctionController.listening = false
+        correctionController.notice = null
+        Log.i("SprichIME", "correction dictated replacement chars=${text.length}")
+    }
+
+    /**
+     * U02 Apply: re-read a fresh snapshot and run the full CorrectionPlan
+     * revalidation (field, generation, span). The splice is one batch edit:
+     * select exact span, commit replacement, park cursor after it.
+     */
+    private fun applyCorrection() {
+        val target = correctionTarget ?: return
+        val replacement = correctionController.replacement
+        if (replacement.isBlank()) return
+        val snap = readEditorSnapshot() ?: run {
+            correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            return
+        }
+        if (!snap.collapsed || snap.cursorAbsolute < 0) {
+            correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            return
+        }
+        val current = com.sprich.app.input.correction.EditorText(snap.before, snap.after)
+        val fieldId = currentFieldId
+        when (val res = com.sprich.app.input.correction.CorrectionPlan.planCorrection(
+            target, current, fieldId, fieldGeneration.get(), replacement,
+        )) {
+            is com.sprich.app.input.correction.CorrectionResult.Rejected -> {
+                Log.w("SprichIME", "correction rejected reason=${res.reason}")
+                correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            }
+            is com.sprich.app.input.correction.CorrectionResult.Apply -> {
+                val absStart = snap.cursorAbsolute - snap.before.length + target.startOffset
+                val absEnd = absStart + target.text.length
+                val ic = try { currentInputConnection } catch (_: Exception) { null }
+                val ok = if (ic == null || absStart < 0 || absEnd < 0) {
+                    false
+                } else try {
+                    ic.beginBatchEdit()
+                    val selected = try { ic.setSelection(absStart, absEnd) } catch (_: Exception) { false }
+                    val committed = if (selected) {
+                        try { ic.commitText(replacement, 1) } catch (_: Exception) { false }
+                    } else false
+                    if (committed) {
+                        try { ic.setSelection(absStart + replacement.length, absStart + replacement.length) } catch (_: Exception) {}
+                    }
+                    try { ic.endBatchEdit() } catch (_: Exception) {}
+                    committed
+                } catch (_: Exception) {
+                    try { ic.endBatchEdit() } catch (_: Exception) {}
+                    false
+                }
+                if (ok) {
+                    noteOwnCorrectionSelection(absStart + replacement.length)
+                    try { editorActionController.recordSprichInsertion(currentFieldId, fieldGeneration.get(), replacement, ic!!) } catch (_: Exception) {}
+                    correctionUndo = res.undo
+                    lastAppliedReplacement = replacement
+                    correctionController.undoAvailable = true
+                    correctionController.proposal = res.spellingProposal
+                    correctionController.rememberAvailable =
+                        res.spellingProposal != null && replacement.trim() == res.spellingProposal.newForm
+                    correctionController.notice = null
+                    Log.i("SprichIME", "correction applied word='${target.text}' chars=${replacement.length}")
+                } else {
+                    correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+                }
+            }
+        }
+    }
+
+    private fun undoCorrection() {
+        val undo = correctionUndo ?: return
+        // Undo is a mutation like any other: revalidate field, generation and password state
+        // immediately before touching the editor, and fail closed if the sheet went stale.
+        val context = com.sprich.app.input.correction.UndoContext(
+            currentFieldId = currentFieldId,
+            currentFieldGeneration = fieldGeneration.get(),
+            isPasswordField = isPasswordField || isPassword(currentInputEditorInfo),
+        )
+        val snap = readEditorSnapshot()
+        if (snap == null || !snap.collapsed || snap.cursorAbsolute < 0 ||
+            !com.sprich.app.input.correction.CorrectionPlan.undoApplies(undo, snap.before, context)
+        ) {
+            correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            correctionUndo = null
+            correctionController.undoAvailable = false
+            Log.w("SprichIME", "correction undo refused: field/generation/password/span changed")
+            return
+        }
+        val absStart = snap.cursorAbsolute - snap.before.length + undo.startOffset
+        val absEnd = absStart + undo.expectedCurrent.length
+        val ic = try { currentInputConnection } catch (_: Exception) { null } ?: return
+        val ok = try {
+            ic.beginBatchEdit()
+            val selected = try { ic.setSelection(absStart, absEnd) } catch (_: Exception) { false }
+            val committed = if (selected) {
+                try { ic.commitText(undo.restore, 1) } catch (_: Exception) { false }
+            } else false
+            if (committed) {
+                try { ic.setSelection(absStart + undo.restore.length, absStart + undo.restore.length) } catch (_: Exception) {}
+            }
+            try { ic.endBatchEdit() } catch (_: Exception) {}
+            committed
+        } catch (_: Exception) {
+            try { ic.endBatchEdit() } catch (_: Exception) {}
+            false
+        }
+        if (ok) {
+            noteOwnCorrectionSelection(absStart + undo.restore.length)
+            correctionUndo = null
+            lastAppliedReplacement = null
+            correctionController.undoAvailable = false
+            correctionController.rememberAvailable = false
+            correctionController.notice = null
+            Log.i("SprichIME", "correction undone restore='${undo.restore}'")
+        } else {
+            correctionController.notice = uiString(com.sprich.app.R.string.ime_insert_failed)
+            Log.w("SprichIME", "correction undo failed")
+        }
+    }
+
+    private fun rememberSpelling() {
+        val proposal = correctionController.proposal ?: return
+        if (!correctionController.rememberAvailable) return
+        try {
+            // scope is Main: Compose state sets stay on Main, repo write on IO.
+            scope.launch {
+                val notice = try {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        vocabRepo.add(proposal.oldForm, proposal.newForm)
+                    }
+                    correctionController.rememberAvailable = false
+                    uiString(com.sprich.app.R.string.correction_remembered)
+                } catch (e: com.sprich.app.vocab.VocabularyConflictException) {
+                    uiString(com.sprich.app.R.string.correction_conflict)
+                } catch (_: Exception) {
+                    uiString(com.sprich.app.R.string.ime_insert_failed)
+                }
+                correctionController.notice = notice
+            }
+        } catch (_: Exception) {}
     }
 
     private fun performBarAction(action: BarGestureRecognizer.Action): Boolean = when (action) {
@@ -2572,6 +3470,10 @@ class SprichIME : InputMethodService() {
 
     /** Applies rms to bar, glow, aura and pill stroke on Main thread. Properties only — no requestLayout. */
     private fun updateLiquidVisual(rms: Float) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            mainThreadHandler.post { updateLiquidVisual(rms) }
+            return
+        }
         try {
             val isApi = isApiPalette()
             val colors = gradientForRms(rms, isApi)
@@ -2675,14 +3577,14 @@ class SprichIME : InputMethodService() {
         val context = if (fieldAllowsContext && (refinement as? RefinementPlan.Enabled)?.config?.contextEnabled == true) {
             com.sprich.app.speech.refinement.DictationContext.beforeCursor(editorAuthority?.before)
         } else null
-        val hints = if (s.personalVocabHintEnabled) vocabulary.terms().filter { it.length in 1..100 && it.none { c -> c.isISOControl() } }.take(100) else emptyList()
+        val hints = if (s.personalVocabHintEnabled && FieldLearningPolicy.allowsVocabularyHints(fieldAllowsContext)) vocabulary.terms().filter { it.length in 1..100 && it.none { c -> c.isISOControl() } }.take(100) else emptyList()
         return UtterancePlan(transcription, refinement, config, vocabulary, context, hints, whisperMode = s.whisperMode)
     }
 
     private fun localRouteReady(route: LocalAsrRoute): Boolean {
         val manager = com.sprich.app.models.manager.ModelManager(this)
         return when (route) {
-            is LocalAsrRoute.AutomaticFastConformer -> manager.isAutomaticReady()
+            is LocalAsrRoute.AutomaticCanary -> manager.isAutomaticReady()
             is LocalAsrRoute.AccurateCanary -> manager.canaryStatus.value is com.sprich.app.models.manager.ModelStatus.Ready
         }
     }
@@ -2700,7 +3602,7 @@ class SprichIME : InputMethodService() {
 
     private fun ensureTranscriptionCoordinator(): TranscriptionCoordinator {
         transcriptionCoordinator?.let { return it }
-        if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, fastConformerEngine, engine)
+        if (localCoordinator == null) localCoordinator = LocalTranscriptionCoordinator(lidEngine, engine)
         val coord = TranscriptionCoordinator(localCoordinator!!, emptyMap(), apiSecretStore, DeadlinePolicy.DEFAULT)
         transcriptionCoordinator = coord
         return coord
@@ -2720,19 +3622,13 @@ class SprichIME : InputMethodService() {
         // Avoid keeping both heavy stacks resident — unload unused when queue drained.
         if (queueDepth.get() != 0) return // pending work — do not unload while finalizing
         when (activeRoute) {
-            is LocalAsrRoute.AutomaticFastConformer -> {
-                // Automatic keeps LID+Fast, unload Canary if idle
-                if (engine.isLoaded()) {
-                    engine.unload()
-                    Log.i("SprichIME", "maybeUnload: Automatic active — unloading Canary to save memory")
-                }
-            }
+            // Both local routes keep the Canary recognizer warm while listening; LID can be
+            // released between utterances because it only runs once per Automatic utterance.
+            is LocalAsrRoute.AutomaticCanary -> Unit
             is LocalAsrRoute.AccurateCanary -> {
-                // Accurate keeps Canary, may unload LID/Fast after safe transition
-                if (lidEngine.isLoaded() || fastConformerEngine.isLoaded()) {
+                if (lidEngine.isLoaded()) {
                     lidEngine.unload()
-                    fastConformerEngine.unload()
-                    Log.i("SprichIME", "maybeUnload: Accurate active — unloading LID/Fast")
+                    Log.i("SprichIME", "maybeUnload: Accurate active — unloading LID")
                 }
             }
         }
@@ -2740,18 +3636,16 @@ class SprichIME : InputMethodService() {
 
     // Visibility for tests — gate assertions
     fun getCanaryLoadAttemptsForTest(): Long = canaryLoadAttempts.get()
-    fun getFastLoadAttemptsForTest(): Long = fastLoadAttempts.get()
     fun getLidLoadAttemptsForTest(): Long = lidLoadAttempts.get()
     fun getLocalNativeDecodeStartsForTest(): Long = localNativeDecodeStarts
     fun getRemoteTranscriptionStartsForTest(): Long = remoteTranscriptionStarts
     fun getRefinementStartsForTest(): Long = refinementStarts
     fun getNativeDecodeStartsForTest(): Long = nativeDecodeStarts
     fun getLastRemoteFailureForTest(): com.sprich.app.speech.remote.ApiFailure? = try { transcriptionCoordinator?.lastRemoteFailure } catch (_: Exception) { null }
-    fun isAutomaticRouteForTest(): Boolean = determineRoute(speechLanguage) is LocalAsrRoute.AutomaticFastConformer
+    fun isAutomaticRouteForTest(): Boolean = determineRoute(speechLanguage) is LocalAsrRoute.AutomaticCanary
     fun getCurrentRouteForTest(): String = determineRoute(speechLanguage).toString()
     fun getUtteranceAudioCollectorForTest(): UtteranceAudioCollector = utteranceAudio
     fun isCanaryLoadedForTest(): Boolean = try { engine.isLoaded() } catch (_: Exception) { false }
-    fun isFastLoadedForTest(): Boolean = try { fastConformerEngine.isLoaded() } catch (_: Exception) { false }
     fun isLidLoadedForTest(): Boolean = try { lidEngine.isLoaded() } catch (_: Exception) { false }
 
     // Retained for instrumentation callers; mutation still passes the production authority gate.

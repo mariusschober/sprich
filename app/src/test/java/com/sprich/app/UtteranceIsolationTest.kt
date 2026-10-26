@@ -62,7 +62,7 @@ class UtteranceIsolationTest {
         val remote = MockRemoteSttProvider(nextResult = Result.failure(com.sprich.app.speech.remote.RemoteSttException(com.sprich.app.speech.remote.ApiFailure.Timeout, "timeout")))
         val coord = TranscriptionCoordinator(local, mapOf("openai-compatible" to remote, "mock" to remote), secretStore)
         val planA = UtterancePlan(
-            transcription = TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticFastConformer, com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3000,"stt_default")),
+            transcription = TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticCanary, com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3000,"stt_default")),
             refinement = RefinementPlan.Off, speechConfig = SpeechSessionConfig()
         )
         // A fails via timeout -> fallback to local would normally happen, but we simulate isolated failure
@@ -72,7 +72,7 @@ class UtteranceIsolationTest {
         assertNotNull(resultA)
 
         // B immediately after — should succeed normally
-        val planB = UtterancePlan(TranscriptionPlan.Local(LocalAsrRoute.AutomaticFastConformer), RefinementPlan.Off, SpeechSessionConfig())
+        val planB = UtterancePlan(TranscriptionPlan.Local(LocalAsrRoute.AutomaticCanary), RefinementPlan.Off, SpeechSessionConfig())
         val resultB = coord.transcribe(pcm, planB, utteranceId = 2)
         assertNotNull(resultB)
         assertTrue(resultB.text.isNotEmpty() || resultB.text.isEmpty()) // at least not exception
@@ -109,7 +109,7 @@ class UtteranceIsolationTest {
     @Test fun aFailsViaLocalBlank_bContinues() = runBlocking {
         val localBlank = fakeLocal(shouldReturnBlank = true)
         val pcm = makePcm(2)
-        val result = localBlank.transcribe(pcm, LocalAsrRoute.AutomaticFastConformer, SpeechSessionConfig())
+        val result = localBlank.transcribe(pcm, LocalAsrRoute.AutomaticCanary, SpeechSessionConfig())
         assertTrue(result.text.isBlank())
         // Blank is utterance-scoped failure for fallback, not global teardown — next utterance should still work
         val next = fakeLocal(shouldReturnBlank = false)
@@ -122,13 +122,12 @@ class UtteranceIsolationTest {
         val ctx = org.robolectric.RuntimeEnvironment.getApplication()
         val mm = com.sprich.app.models.manager.ModelManager(ctx)
         val lid = com.sprich.app.speech.lid.WhisperLidEngine(ctx, mm)
-        val fast = com.sprich.app.speech.fastconformer.FastConformerEngine(ctx)
         val canary = com.sprich.app.speech.canary.CanaryEngine(ctx, mm)
-        return object : LocalTranscriptionCoordinator(lid, fast, canary) {
+        return object : LocalTranscriptionCoordinator(lid, canary) {
             override suspend fun transcribe(pcm: ShortArray, route: LocalAsrRoute, baseConfig: SpeechSessionConfig): LocalTranscriptionResult {
                 if (shouldFail) throw RuntimeException("simulated local failure")
-                if (shouldReturnBlank) return LocalTranscriptionResult("", ResolvedUtteranceLanguage.Unknown, baseConfig, "fastconformer-ctc-en-de-es-fr-14288-int8")
-                return LocalTranscriptionResult("hello world", ResolvedUtteranceLanguage.Unknown, baseConfig, "fastconformer-ctc-en-de-es-fr-14288-int8")
+                if (shouldReturnBlank) return LocalTranscriptionResult("", ResolvedUtteranceLanguage.Unknown, baseConfig, "canary-180m-flash-int8")
+                return LocalTranscriptionResult("hello world", ResolvedUtteranceLanguage.Unknown, baseConfig, "canary-180m-flash-int8")
             }
         }
     }

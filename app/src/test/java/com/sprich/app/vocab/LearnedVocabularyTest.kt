@@ -11,7 +11,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LearnedVocabularyTest {
-    private val local = RecognitionProfile.local(LocalAsrRoute.AutomaticFastConformer, false)
+    private val local = RecognitionProfile.local(LocalAsrRoute.AutomaticCanary, false)
     private fun word(form: String, target: String, profile: RecognitionProfile = local) =
         WordLesson.create(profile, target, List(3) { form }, setOf(VocabularyText.key(VocabularyText.heardForm(form))))
 
@@ -111,10 +111,11 @@ class LearnedVocabularyTest {
         assertNotEquals(expected.key, RecognitionProfile.remote(remote.copy(endpoint = "https://other.example"), false).key)
         assertNotEquals(expected.key, RecognitionProfile.remote(remote.copy(preferStreaming = false), false).key)
         assertNotEquals(expected.key, RecognitionProfile.remote(remote, true).key)
-        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(remote, LocalAsrRoute.AutomaticFastConformer), RefinementPlan.Off, SpeechSessionConfig())
+        val plan = UtterancePlan(TranscriptionPlan.ApiPrimary(remote, LocalAsrRoute.AutomaticCanary), RefinementPlan.Off, SpeechSessionConfig())
         assertEquals(expected, RecognitionProfile.result(plan, TranscriptionSourceId.API_META_MUSE))
-        assertEquals(local, RecognitionProfile.result(plan, TranscriptionSourceId.LOCAL_FAST))
-        assertNull(RecognitionProfile.result(plan, TranscriptionSourceId.LOCAL_CANARY))
+        // T3: Automatic now runs Canary, so the local fallback result is a LOCAL_CANARY source.
+        assertEquals(local, RecognitionProfile.result(plan, TranscriptionSourceId.LOCAL_CANARY))
+        assertNull(RecognitionProfile.result(plan, TranscriptionSourceId.LOCAL_FAST))
         assertNull(RecognitionProfile.result(plan, TranscriptionSourceId.API_GEMINI))
     }
 

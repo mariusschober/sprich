@@ -2,6 +2,7 @@
     <string name="ime_audio_error">Couldn’t hear you</string>
     <string name="app_name">Sprich</string>
     <string name="ime_label">Sprich</string>
+    <string name="ime_subtype_voice">Voice</string>
     <string name="ime_subtype_en">English</string>
     <string name="ime_subtype_de">Deutsch</string>
     <string name="ime_subtype_es">Español</string>
@@ -101,7 +102,7 @@
     <string name="privacy">Privacy</string>
     <string name="advanced">Advanced</string>
     <string name="hide_advanced">Hide advanced</string>
-    <string name="model_details">Automatic: Whisper Tiny language detection and FastConformer CTC. Accurate: Canary 180M Flash. All run on your phone.</string>
+    <string name="model_details">Automatic: Whisper Tiny language detection and Canary 180M Flash (license-clean). Accurate: Canary 180M Flash with a selected language. All run on your phone.</string>
     <string name="licenses">Licenses and notices</string>
     <string name="clear_data">Clear Sprich data</string>
     <string name="clear_data_question">Clear Sprich data?</string>
@@ -156,6 +157,22 @@
     <string name="ime_undo_action">Undo deletion</string>
     <string name="ime_finishing">Writing your last words</string>
     <string name="ime_insert_retry">Tap the field, then try again</string>
+    <string name="correction_conflict">Already learned with a different spelling</string>
+    <string name="ime_correct_word">Correct word</string>
+    <string name="correction_title">Correct “%1$s”</string>
+    <string name="correction_replace_label">Replacement</string>
+    <string name="correction_apply">Apply</string>
+    <string name="correction_undo">Undo</string>
+    <string name="correction_dictate">Dictate replacement</string>
+    <string name="correction_listening">Listening… speak the replacement</string>
+    <string name="correction_remember">Remember spelling</string>
+    <string name="correction_remembered">Spelling remembered</string>
+    <string name="correction_close">Close</string>
+    <string name="ime_kept_retry">Not inserted — kept. Find it on Sprich Home.</string>
+    <string name="recovery_title">Dictation kept</string>
+    <string name="recovery_hint">Return to the field and tap retry to insert, or discard here.</string>
+    <string name="recovery_insert">Insert here</string>
+    <string name="recovery_discard">Discard</string>
     <string name="download_failed">Download failed. Check your connection and try again.</string>
     <string name="download_storage">Not enough storage. Free some space and try again.</string>
     <string name="download_invalid">The download could not be verified. Please try again.</string>
@@ -359,7 +376,6 @@
     <string name="notice_description_kissfft">Frequency analysis inside the speech runtime.</string>
     <string name="notice_description_llvm">Native C++ support used by Sprich and its dependencies. The complete notice distributed with the exact Android NDK toolchain is included.</string>
     <string name="notice_description_whisper">Identifies the language for Automatic mode. Downloaded separately; not included in the APK.</string>
-    <string name="notice_description_fastconformer">Recognition model for Automatic mode. Downloaded separately; not included in the APK. Its model card specifies NGC terms, not the Apache license of the training or conversion code.</string>
-    <string name="notice_description_canary">Recognition model for Accurate mode. Downloaded separately; not included in the APK.</string>
+    <string name="notice_description_canary">Recognition model for Automatic and Accurate modes. Downloaded separately; not included in the APK.</string>
     <string name="notice_description_silero">Detects when speech begins and ends. This small model is included in Sprich and runs locally. The exact model asset is pinned in docs/MODELS.md in the Sprich repository.</string>
 </resources>

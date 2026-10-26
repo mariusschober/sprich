@@ -7,7 +7,7 @@ Voice dictation for Android. Speak English, German, Spanish or French into the a
 ## Use it
 
 1. Open Sprich, allow microphone access and enable its keyboard.
-2. Download Automatic (219 MB). Accurate is an optional 154 MB download in Settings.
+2. Download Automatic (270 MB; Whisper Tiny language detection + Canary). Accurate reuses the same Canary files and needs no extra download.
 3. Select Sprich in a text field and start speaking. It listens as soon as the keyboard opens. Pause to insert a sentence; tap the bar to finish.
 4. Use the keyboard button to return to your regular keyboard.
 
@@ -36,12 +36,12 @@ The release build uses R8 and resource shrinking. Large recognition models are d
 
 ## Review material
 
-- [Architecture](docs/ARCHITECTURE.md), [models and licenses](docs/MODELS.md), [privacy](docs/PRIVACY.md)
+- [Architecture](docs/ARCHITECTURE.md), [models and licenses](docs/MODELS.md), [privacy](docs/PRIVACY.md), [2026-10-25 recognition bake-off](docs/BAKEOFF_2026-10-25.md)
 - [API implementation and current focused evidence](docs/PERSONAL_APIS.md), [earlier core qualification](release/REVIEW.md), [known limitations](docs/KNOWN_LIMITATIONS.md), [measurement method](docs/LATENCY.md)
 - [Zapstore preparation](release/SUBMISSION.md), [listing configuration](zapstore.yaml), [screenshots and artwork](release/store/README.md)
 
-The opt-in [QA editor](qa-editor/README.md) exercises real Android editors and installed release native code. Debug fixtures, mock providers, experiments and developer screens are excluded from release artifacts. Dated sprint documents and old handovers are historical records, not current acceptance evidence.
+The opt-in [QA editor](qa-editor/README.md) exercises real Android editors and installed release native code. Debug fixtures, mock providers, experiments and developer screens are excluded from release artifacts. Dated sprint documents and old handovers are historical records, not current acceptance evidence; they live under [docs/archive/](docs/archive/README.md) with a one-line index.
 
-The current release target is Zapstore. Play and F-Droid publishing are deferred. No public release has been published by this review; signing and publisher identity setup remain in the handoff.
+Recognition accuracy and latency evidence comes from public read-speech corpora (FLEURS, CC-BY-4.0) and synthetic silence/noise, measured on the TCL T807D. It is **not** the maintainer’s voice, spontaneous conversation, or noisy real-world conditions; review inserted text. The current release target is Zapstore. Play and F-Droid publishing are deferred. No public release has been published by this review; signing and publisher identity setup remain in the handoff.
 
-App source is MIT. [Distribution requirements remain explicit](licenses/README.md), including the FastConformer model terms and corresponding-source delivery. Runtime and model terms differ; full notices are available in Settings → Licenses and notices and in [licenses/THIRD_PARTY_NOTICES.txt](licenses/THIRD_PARTY_NOTICES.txt).
+App source is MIT. [Distribution requirements remain explicit](licenses/README.md). The shipped configuration contains no NGC-licensed model: Automatic and Accurate use Canary 180M Flash (CC-BY-4.0) and Whisper Tiny (MIT) for language detection, all downloaded separately. Runtime and model terms differ; full notices are available in Settings → Licenses and notices and in [licenses/THIRD_PARTY_NOTICES.txt](licenses/THIRD_PARTY_NOTICES.txt).

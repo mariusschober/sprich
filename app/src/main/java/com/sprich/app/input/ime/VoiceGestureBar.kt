@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityManager
 import android.widget.LinearLayout
+import com.sprich.app.ui.theme.UiTokens
 
 /** Owns the whole touch sequence, including starts over a button and moves beyond the bar. */
 internal class VoiceGestureBar(context: Context) : LinearLayout(context) {
@@ -22,6 +23,11 @@ internal class VoiceGestureBar(context: Context) : LinearLayout(context) {
     private var tapTarget: View? = null
     private var previousPreview = BarGestureRecognizer.Preview.NONE
     private var touching = false
+
+    init {
+        // Plan §9.1: 72dp minimum content height, excluding navigation insets and outer spacing.
+        minimumHeight = (UiTokens.BAR_MIN_CONTENT_HEIGHT_DP * density).toInt()
+    }
     private val timer = object : Runnable {
         override fun run() { apply(recognizer.tick(SystemClock.uptimeMillis())); schedule() }
     }

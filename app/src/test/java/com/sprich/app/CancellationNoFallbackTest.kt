@@ -35,13 +35,12 @@ class CancellationNoFallbackTest {
         val ctx = org.robolectric.RuntimeEnvironment.getApplication()
         val mm = com.sprich.app.models.manager.ModelManager(ctx)
         val lid = com.sprich.app.speech.lid.WhisperLidEngine(ctx, mm)
-        val fast = com.sprich.app.speech.fastconformer.FastConformerEngine(ctx)
         val canary = com.sprich.app.speech.canary.CanaryEngine(ctx, mm)
-        return object : LocalTranscriptionCoordinator(lid, fast, canary) {
+        return object : LocalTranscriptionCoordinator(lid, canary) {
             override suspend fun transcribe(pcm: ShortArray, route: LocalAsrRoute, baseConfig: SpeechSessionConfig): LocalTranscriptionResult {
                 delay(delayMs)
                 if (!currentCoroutineContext().isActive) throw CancellationException("cancelled")
-                return LocalTranscriptionResult("local hello", ResolvedUtteranceLanguage.Unknown, baseConfig, "fastconformer-ctc-en-de-es-fr-14288-int8")
+                return LocalTranscriptionResult("local hello", ResolvedUtteranceLanguage.Unknown, baseConfig, "canary-180m-flash-int8")
             }
         }
     }
@@ -50,9 +49,8 @@ class CancellationNoFallbackTest {
         val ctx = org.robolectric.RuntimeEnvironment.getApplication()
         val mm = com.sprich.app.models.manager.ModelManager(ctx)
         val lid = com.sprich.app.speech.lid.WhisperLidEngine(ctx, mm)
-        val fast = com.sprich.app.speech.fastconformer.FastConformerEngine(ctx)
         val canary = com.sprich.app.speech.canary.CanaryEngine(ctx, mm)
-        return object : LocalTranscriptionCoordinator(lid, fast, canary) {
+        return object : LocalTranscriptionCoordinator(lid, canary) {
             override suspend fun transcribe(pcm: ShortArray, route: LocalAsrRoute, baseConfig: SpeechSessionConfig): LocalTranscriptionResult {
                 throw CancellationException(reason)
             }
@@ -69,7 +67,7 @@ class CancellationNoFallbackTest {
         val coord = TranscriptionCoordinator(local, mapOf("openai-compatible" to remote), secretStore)
         val plan = UtterancePlan(
             transcription = TranscriptionPlan.LocalApiFallback(
-                LocalAsrRoute.AutomaticFastConformer,
+                LocalAsrRoute.AutomaticCanary,
                 com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3500,"stt_default")
             ),
             refinement = RefinementPlan.Off,
@@ -104,7 +102,7 @@ class CancellationNoFallbackTest {
         val plan = UtterancePlan(
             transcription = TranscriptionPlan.ApiPrimary(
                 com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3500,"stt_default"),
-                LocalAsrRoute.AutomaticFastConformer
+                LocalAsrRoute.AutomaticCanary
             ),
             refinement = RefinementPlan.Off,
             speechConfig = SpeechSessionConfig()
@@ -126,7 +124,7 @@ class CancellationNoFallbackTest {
         val coord = TranscriptionCoordinator(local, mapOf("openai-compatible" to remote), secretStore)
         val plan = UtterancePlan(
             transcription = TranscriptionPlan.LocalApiFallback(
-                LocalAsrRoute.AutomaticFastConformer,
+                LocalAsrRoute.AutomaticCanary,
                 com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3500,"stt_default")
             ),
             refinement = RefinementPlan.Off, speechConfig = SpeechSessionConfig()
@@ -139,7 +137,7 @@ class CancellationNoFallbackTest {
         val remote = CountingRemote()
         val local = cancellingLocal("FIELD_LOST")
         val coord = TranscriptionCoordinator(local, mapOf("openai-compatible" to remote), object : ApiSecretStore(org.robolectric.RuntimeEnvironment.getApplication()) { override fun loadSecret(id: String): String? = "sk-test" })
-        val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticFastConformer, com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3500,"stt_default")), RefinementPlan.Off, SpeechSessionConfig())
+        val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticCanary, com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3500,"stt_default")), RefinementPlan.Off, SpeechSessionConfig())
         try { coord.transcribe(makePcm(), plan, 1); fail("") } catch (e: CancellationException) {}
         assertEquals(0, remote.calls.get())
     }
@@ -148,7 +146,7 @@ class CancellationNoFallbackTest {
         val remote = CountingRemote()
         val local = cancellingLocal("SERVICE_DESTROYED")
         val coord = TranscriptionCoordinator(local, mapOf("openai-compatible" to remote), object : ApiSecretStore(org.robolectric.RuntimeEnvironment.getApplication()) { override fun loadSecret(id: String): String? = "sk-test" })
-        val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticFastConformer, com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3500,"stt_default")), RefinementPlan.Off, SpeechSessionConfig())
+        val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticCanary, com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3500,"stt_default")), RefinementPlan.Off, SpeechSessionConfig())
         try { coord.transcribe(makePcm(), plan, 1); fail("") } catch (e: CancellationException) {}
         assertEquals(0, remote.calls.get())
     }
@@ -157,7 +155,7 @@ class CancellationNoFallbackTest {
         val remote = CountingRemote()
         val local = cancellingLocal("INPUT_RESTARTED")
         val coord = TranscriptionCoordinator(local, mapOf("openai-compatible" to remote), object : ApiSecretStore(org.robolectric.RuntimeEnvironment.getApplication()) { override fun loadSecret(id: String): String? = "sk-test" })
-        val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticFastConformer, com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3500,"stt_default")), RefinementPlan.Off, SpeechSessionConfig())
+        val plan = UtterancePlan(TranscriptionPlan.LocalApiFallback(LocalAsrRoute.AutomaticCanary, com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible","https://example.com","model", com.sprich.app.speech.LanguagePolicy.Automatic,3500,"stt_default")), RefinementPlan.Off, SpeechSessionConfig())
         try { coord.transcribe(makePcm(), plan, 1); fail("") } catch (e: CancellationException) {}
         assertEquals(0, remote.calls.get())
     }

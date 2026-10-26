@@ -9,7 +9,7 @@ import org.junit.Test
 
 /**
  * Phase 15-17 — Unknown-LID behavior.
- * When LID is unresolved but FastConformer produces text, we must use generic-only processing:
+ * When an unresolvable language reaches post-processing (e.g. explicit API text), we must use generic-only processing:
  * no English/German/Spanish command map, no English email ITN, only safe typography.
  */
 class UnknownLanguagePostProcessingTest {
@@ -38,9 +38,10 @@ class UnknownLanguagePostProcessingTest {
         assertFalse(rUnknown.text.contains(".")) // should stay literal "punkt"
         assertEquals("hallo punkt welt", rUnknown.text)
 
+        // S06: single-word inline punctuation is literal by default even when known —
+        // "punkt" inside prose must not become a period without explicit opt-in.
         val rKnownDE = SpokenEditingParser.parse("hallo punkt welt", knownDE, true)
-        // DE inline punctuation should map punkt -> .
-        assertTrue(rKnownDE.text.contains("."))
+        assertEquals("hallo punkt welt", rKnownDE.text)
     }
 
     @Test
@@ -56,8 +57,12 @@ class UnknownLanguagePostProcessingTest {
         // "comma" -> "," only for EN, not for Unknown
         val rUnknown = SpokenEditingParser.parse("hello comma world", unknown, true)
         assertEquals("hello comma world", rUnknown.text)
+        // S06: known-language single-word inline is literal by default too.
         val rKnownEN = SpokenEditingParser.parse("hello comma world", knownEN, true)
-        assertTrue(rKnownEN.text.contains(","))
+        assertEquals("hello comma world", rKnownEN.text)
+        // Unambiguous multiword commands still apply inline for a known language.
+        val rMulti = SpokenEditingParser.parse("hello question mark world", knownEN, true)
+        assertTrue(rMulti.text.contains("?"))
     }
 
     @Test

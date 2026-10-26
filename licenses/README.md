@@ -18,8 +18,20 @@ Standard license examples such as `[yyyy]` in Apache's appendix are part of the 
 
 ## Public distribution requirements
 
-**BLOCKED: FastConformer redistribution permission is not established.** The actual model card for `stt_multilingual_fastconformer_hybrid_large_pc_blend_eu` 1.21.0 points to [NGC terms](https://ngc.nvidia.com/legal/terms), not Apache 2.0. On 3 September 2026 the NGC page's public product metadata pointed to `consolidated-tou.json`, titled *NVIDIA Technology Access Terms of Use*, dated 7 April 2025. Its original JSON is preserved in `provenance/`; the complete visible wording is included offline. Sections 4 and 5 limit use and redistribution absent a separate Product Agreement. No separate model redistribution grant was found. A link to a sherpa-onnx converted archive does not itself establish those rights. Before public distribution, obtain the applicable permission or replace that model with one carrying a verified redistribution license. The application MIT license cannot resolve this.
+**FastConformer removed from the production configuration (T3, 2026-10-25).** The model card for `stt_multilingual_fastconformer_hybrid_large_pc_blend_eu` 1.21.0 points to [NGC terms](https://ngc.nvidia.com/legal/terms), not Apache 2.0, and those terms bar redistribution without a separate NVIDIA agreement. The original terms JSON is retained under `provenance/` as the record of why the model is excluded; the NGC license text is no longer part of the shipped notices. Automatic now uses Whisper Tiny (language ID, MIT) + Canary 180M Flash (CC-BY-4.0); Accurate uses the same Canary. No NGC-licensed bytes are downloaded, installed or redistributed by Sprich.
 
 **BLOCKED: corresponding-source delivery must accompany the first public binary release.** Desugared Java is derived from OpenJDK and includes GPL 2 code with the Classpath exception. This exception allows Sprich's independent application code to retain its MIT license; it does not remove the library's source-distribution obligations. Its exact source is [Google's 2.1.4 release commit](https://github.com/google/desugar_jdk_libs/tree/50d9c1fb3e85fa4c00161525a45484f712c1f003). Provide the complete source archive, its upstream build files and Sprich's build configuration alongside the binary, with matching release references. Do not substitute a vague written offer or assume a link will remain available indefinitely. Also preserve source availability for MPL-covered Eigen and Public Suffix List material.
 
 Human review of the final package remains separate from these engineering checks. This file records concrete unresolved distribution requirements; the app does not display a claim of legal certification.
+
+## Evaluation corpora (not redistributed)
+
+- FLEURS test split (`google/fleurs`, CC-BY-4.0): used for the 2026-10-25 recognition bake-off.
+  Only a clip manifest (ids, references, hashes) is committed under `docs/bakeoff/`; no audio is
+  redistributed.
+- Synthetic silence/noise clips: generated deterministically; not redistributed.
+- Mozilla Common Voice English (German-accented subset): intended, but BLOCKED because no
+  anonymous data files are available; nothing was fabricated or substituted.
+- NVIDIA Parakeet TDT 0.6B v3 (CC-BY-4.0): evaluated as a debug-only candidate, not shipped and
+  not included in the app notices. Its license and archive hash are recorded in
+  `docs/MODELS.md` and `docs/BAKEOFF_2026-10-25.md`.

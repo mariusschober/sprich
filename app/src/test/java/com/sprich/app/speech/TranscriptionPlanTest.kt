@@ -15,7 +15,7 @@ class TranscriptionPlanTest {
 
     @Test
     fun utterancePlanImmutable() {
-        val route = LocalAsrRoute.AutomaticFastConformer
+        val route = LocalAsrRoute.AutomaticCanary
         val plan = UtterancePlan(
             transcription = TranscriptionPlan.Local(route),
             refinement = RefinementPlan.Off,
@@ -27,7 +27,7 @@ class TranscriptionPlanTest {
 
     @Test
     fun apiPrimaryContainsFallback() {
-        val route = LocalAsrRoute.AutomaticFastConformer
+        val route = LocalAsrRoute.AutomaticCanary
         val remote = com.sprich.app.speech.remote.RemoteSttConfig("openai-compatible", "https://example.com", "whisper", LanguagePolicy.Automatic, 3500L, "ref")
         val plan = TranscriptionPlan.ApiPrimary(remote, route)
         assertNotNull(plan.localFallback)

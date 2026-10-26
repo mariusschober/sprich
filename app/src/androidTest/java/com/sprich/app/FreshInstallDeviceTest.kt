@@ -20,7 +20,7 @@ import java.io.File
  * REQUIRED FRESH-INSTALL TEST (Phase 11 gate)
  * Starting from device with Sprich app data cleared:
  * 1 install APK 2 no manually pushed files 3 complete onboarding 4 download required model(s) via app UI (DownloadManager) 5 enable Automatic 6 dictate EN 7 dictate DE 8 alternate EN/DE in same field 9 reboot/relaunch 10 verify models remain valid 11 delete model from Settings 12 verify Auto becomes unavailable cleanly 13 re-download and verify again
- * No adb copying of model files is allowed for this gate — this test simulates it via ModelManager/DownloadManager atomic flow.
+ * No adb copying of model files is allowed for this gate — downloads run through the real DownloadManager production flow (network required).
  * NOTE: Full UI onboarding not automated here; this validates ModelManager single source, atomic download/verify/extract, Fresh-install Auto enablement, and delete/re-download.
  */
 @RunWith(AndroidJUnit4::class)
@@ -35,7 +35,7 @@ class FreshInstallDeviceTest {
 
         Log.i("FreshInstall", "=== Fresh-install gate start ===")
         // 1-2: simulate cleared data — delete all models (no adb push allowed)
-        mm.deleteCanary(); mm.deleteLid(); mm.deleteFastConformer(); mm.deleteNemotron()
+        mm.deleteCanary(); mm.deleteLid(); mm.deleteCanary(); mm.deleteNemotron()
         Log.i("FreshInstall", "cleared all models, canaryReady=${mm.isCanaryReady()} lidReady=${mm.isWhisperTinyReady()}")
 
         // Verify Auto unavailable when LID not downloaded (single source)
@@ -56,50 +56,26 @@ class FreshInstallDeviceTest {
         // So we do: if /data/local/tmp has canary files, we simulate UI download by calling mm.setReady after atomic copy (mimicking DownloadManager's atomic rename), but we assert that production path does NOT require /data/local/tmp.
         // For this test, we will manually stage via atomic tmp dir rename (same as DownloadManager) to simulate successful UI download, then verify.
 
-        // Simulate UI download of Canary via atomic install (mimic DownloadManager without network)
-        val canaryTmp = File(app.cacheDir, "canary.tar.bz2")
-        // If we have real canary files on device, we can test delete/re-download cycle
-        // Instead, test the delete/re-download logic with FastConformer smaller model if possible
-        // For now, test that after deletion, re-creation via ModelManager works:
+        // Fresh-install download via the real production flow (DownloadManager:
+        // download, sha256 verify, atomic stage+promote, receipt). Copy+setReady
+        // simulation is deliberately NOT used: setReady cannot manufacture
+        // readiness by design, so simulation could only pass vacuously while
+        // leaving the device wiped. Requires device network; ~270 MB total.
+        dm.downloadCanary { p -> Log.i("FreshInstall", "canary download $p") }
+        assertTrue("canary should be Ready after production download", mm.verifyInstalled("accurate"))
+        assertTrue(mm.isCanaryReady())
+        assertTrue(mm.canaryStatus.value is ModelStatus.Ready)
+        Log.i("FreshInstall", "canary production download Ready")
 
-        // Re-create canary dir atomically like DownloadManager does (without network, we copy from backup if available for test)
-        val backupEnc = File("/data/local/tmp/encoder.int8.onnx")
-        if (backupEnc.exists()) {
-            Log.i("FreshInstall", "backup found, simulating UI download via atomic install (not adb push in production, but for this test we simulate DownloadManager extract)")
-            val destTmp = File(app.filesDir, "canary.tmp")
-            destTmp.deleteRecursively(); destTmp.mkdirs()
-            File("/data/local/tmp/encoder.int8.onnx").copyTo(File(destTmp, "encoder.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/decoder.int8.onnx").copyTo(File(destTmp, "decoder.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/tokens.txt").copyTo(File(destTmp, "tokens.txt"), overwrite = true)
-            val dest = File(app.filesDir, "canary")
-            dest.deleteRecursively()
-            destTmp.renameTo(dest)
-            mm.setReady("accurate")
-            assertTrue("canary should be Ready after simulated download", mm.isCanaryReady())
-            assertTrue(mm.canaryStatus.value is ModelStatus.Ready)
-            Log.i("FreshInstall", "canary re-download simulated, Ready")
-        } else {
-            Log.w("FreshInstall", "no backup canary files, cannot simulate download — mark NOT MEASURED for fresh-install download")
-        }
-
-        // Simulate LID download similarly
-        val lidBackupEnc = File("/data/local/tmp/tiny-encoder.int8.onnx")
-        if (lidBackupEnc.exists()) {
-            val lidTmp = File(app.filesDir, "whisper-tiny.tmp")
-            lidTmp.deleteRecursively(); lidTmp.mkdirs()
-            File("/data/local/tmp/tiny-encoder.int8.onnx").copyTo(File(lidTmp, "tiny-encoder.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/tiny-decoder.int8.onnx").copyTo(File(lidTmp, "tiny-decoder.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/tiny-tokens.txt").copyTo(File(lidTmp, "tiny-tokens.txt"), overwrite = true)
-            val lidDest = File(app.filesDir, "whisper-tiny")
-            lidDest.deleteRecursively()
-            lidTmp.renameTo(lidDest)
-            mm.setReady("lid")
-            assertTrue("lid should be Ready", mm.isWhisperTinyReady())
-            assertTrue(mm.lidStatus.value is ModelStatus.Ready)
-            Log.i("FreshInstall", "lid re-download simulated, Ready — Auto should now be enabled")
-            // Verify Settings would show Auto (lidStatus Ready)
-            assertTrue(mm.lidStatus.value is ModelStatus.Ready)
-            // Simulate enabling Auto and dictating EN/DE
+        dm.downloadLid { p -> Log.i("FreshInstall", "lid download $p") }
+        assertTrue("lid should be Ready after production download", mm.verifyInstalled("lid"))
+        assertTrue(mm.isWhisperTinyReady())
+        assertTrue(mm.lidStatus.value is ModelStatus.Ready)
+        Log.i("FreshInstall", "lid production download Ready — Auto should now be enabled")
+        // Verify Settings would show Auto (lidStatus Ready)
+        assertTrue(mm.lidStatus.value is ModelStatus.Ready)
+        run {
+            // Enabling Auto and dictating EN/DE after the production download
             prefs.setSpeechLanguage(SpeechLanguage.Auto)
             val lid = com.sprich.app.speech.lid.WhisperLidEngine(app, mm)
             val lidLoad = lid.load()
@@ -125,9 +101,19 @@ class FreshInstallDeviceTest {
             lid.unload()
         }
 
-        // 9: reboot/relaunch — verify models remain valid after process restart (we simulate by checking files still exist)
-        Log.i("FreshInstall", "relaunch check canaryReady=${mm.isCanaryReady()} lidReady=${mm.isWhisperTinyReady()}")
-        // In real fresh-install, after reboot files remain in filesDir
+        // T3: Automatic = Whisper Tiny LID + Canary 180M Flash. Provision Canary through the
+        // same production download flow so the device ends with a license-clean configuration.
+        dm.downloadCanary { p -> Log.i("FreshInstall", "canary download $p") }
+        assertTrue("canary Ready after production download", mm.verifyInstalled("accurate"))
+        Log.i("FreshInstall", "canary production download Ready (Automatic is now LID + Canary)")
+
+        // 9: reboot/relaunch — a FRESH manager (no in-memory state, like a new
+        // process) must re-verify from disk: receipts survive restarts.
+        val mm2 = ModelManager(app)
+        assertTrue("canary must survive relaunch", mm2.verifyInstalled("accurate"))
+        assertTrue("lid must survive relaunch", mm2.verifyInstalled("lid"))
+        assertTrue("canary must survive relaunch", mm2.verifyInstalled("accurate"))
+        Log.i("FreshInstall", "relaunch check canaryReady=${mm2.isCanaryReady()} lidReady=${mm2.isWhisperTinyReady()}")
 
         // 11-13: delete model from Settings and verify Auto becomes unavailable cleanly
         mm.deleteLid()
@@ -139,19 +125,11 @@ class FreshInstallDeviceTest {
         assertFalse(lidReadyAfterDelete)
         Log.i("FreshInstall", "Auto correctly unavailable after delete")
 
-        // Re-download again
-        if (lidBackupEnc.exists()) {
-            val lidTmp2 = File(app.filesDir, "whisper-tiny.tmp")
-            lidTmp2.deleteRecursively(); lidTmp2.mkdirs()
-            File("/data/local/tmp/tiny-encoder.int8.onnx").copyTo(File(lidTmp2, "tiny-encoder.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/tiny-decoder.int8.onnx").copyTo(File(lidTmp2, "tiny-decoder.int8.onnx"), overwrite = true)
-            File("/data/local/tmp/tiny-tokens.txt").copyTo(File(lidTmp2, "tiny-tokens.txt"), overwrite = true)
-            File(app.filesDir, "whisper-tiny").deleteRecursively()
-            lidTmp2.renameTo(File(app.filesDir, "whisper-tiny"))
-            mm.setReady("lid")
-            assertTrue(mm.isWhisperTinyReady())
-            Log.i("FreshInstall", "re-download after delete PASSED")
-        }
+        // Re-download again via the production flow; the device ends fully provisioned.
+        dm.downloadLid { p -> Log.i("FreshInstall", "lid re-download $p") }
+        assertTrue("lid should be Ready after re-download", mm.verifyInstalled("lid"))
+        assertTrue(mm.isWhisperTinyReady())
+        Log.i("FreshInstall", "re-download after delete PASSED")
 
         Log.i("FreshInstall", "=== Fresh-install gate DONE ===")
     }}

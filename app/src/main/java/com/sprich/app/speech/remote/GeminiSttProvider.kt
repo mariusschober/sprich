@@ -1,5 +1,6 @@
 package com.sprich.app.speech.remote
 
+import com.sprich.app.api.ApiException
 import com.sprich.app.api.ApiHttp
 import com.sprich.app.api.GeminiResponse
 import com.sprich.app.api.readApiBody
@@ -29,10 +30,15 @@ class GeminiSttProvider(
     companion object {
         const val MODEL_DEFAULT = "gemini-3.5-transcribe"
         const val BASE_URL_DEFAULT = "https://generativelanguage.googleapis.com"
+        /** [C-GEMINI-LIVE] Live transcription contract id. Revalidate vs official docs; live acceptance BLOCKED. */
+        const val LIVE_TRANSCRIBE_MODEL = "gemini-3.5-transcribe-live"
     }
 
     override suspend fun transcribe(request: RemoteSttRequest): RemoteSttResult = withContext(Dispatchers.IO) {
         require(EndpointValidator.isValidHttpsUrl(baseUrl) && request.credential.isNotBlank()) { "API is not configured" }
+        // [C-GEMINI-LIVE] This adapter is the batch Interactions verbatim contract only. The live model id
+        // needs the live-session contract (incl. smart-vs-verbatim benchmark) — never send it here. Thrown before any I/O.
+        if (model.trim() == LIVE_TRANSCRIBE_MODEL) throw ApiException(ApiFailure.ModelUnavailable, "Live-session model requires the live contract")
         require(request.pcm.isNotEmpty() && request.pcm.size <= 1_920_000 && request.sampleRate == 16_000) { "Invalid audio" }
         val language = (request.languagePolicy as? LanguagePolicy.Fixed)?.tag?.substringBefore('-')
         val languageTag = mapOf("en" to "en-US", "de" to "de-DE", "es" to "es-ES", "fr" to "fr-FR")[language]

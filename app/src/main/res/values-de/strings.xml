@@ -2,6 +2,7 @@
     <string name="ime_audio_error">Ich konnte dich nicht hören</string>
     <string name="app_name">Sprich</string>
     <string name="ime_label">Sprich</string>
+    <string name="ime_subtype_voice">Spracheingabe</string>
     <string name="ime_subtype_en">Englisch</string>
     <string name="ime_subtype_de">Deutsch</string>
     <string name="ime_subtype_es">Spanisch</string>
@@ -101,7 +102,7 @@
     <string name="privacy">Datenschutz</string>
     <string name="advanced">Erweitert</string>
     <string name="hide_advanced">Erweitertes ausblenden</string>
-    <string name="model_details">Automatisch: Spracherkennung mit Whisper Tiny und FastConformer CTC. Präzise: Canary 180M Flash. Alles läuft auf deinem Smartphone.</string>
+    <string name="model_details">Automatisch: Spracherkennung mit Whisper Tiny und Canary 180M Flash (lizenzklar). Präzise: Canary 180M Flash mit gewählter Sprache. Alles läuft auf deinem Smartphone.</string>
     <string name="licenses">Lizenzen und Hinweise</string>
     <string name="clear_data">Sprich-Daten löschen</string>
     <string name="clear_data_question">Sprich-Daten löschen?</string>
@@ -156,6 +157,22 @@
     <string name="ime_undo_action">Löschen rückgängig machen</string>
     <string name="ime_finishing">Letzte Wörter werden geschrieben</string>
     <string name="ime_insert_retry">Tippe auf das Feld und versuch es erneut</string>
+    <string name="correction_conflict">Bereits anders gelernt</string>
+    <string name="ime_correct_word">Wort korrigieren</string>
+    <string name="correction_title">„%1$s“ korrigieren</string>
+    <string name="correction_replace_label">Ersatz</string>
+    <string name="correction_apply">Übernehmen</string>
+    <string name="correction_undo">Rückgängig</string>
+    <string name="correction_dictate">Ersatz diktieren</string>
+    <string name="correction_listening">Höre zu … sprich den Ersatz</string>
+    <string name="correction_remember">Schreibweise merken</string>
+    <string name="correction_remembered">Schreibweise gemerkt</string>
+    <string name="correction_close">Schließen</string>
+    <string name="ime_kept_retry">Nicht eingefügt – behalten. Du findest den Text auf der Sprich-Startseite.</string>
+    <string name="recovery_title">Diktat aufbewahrt</string>
+    <string name="recovery_hint">Kehre zum Feld zurück und tippe auf Wiederholen, oder verwerfe den Text hier.</string>
+    <string name="recovery_insert">Hier einfügen</string>
+    <string name="recovery_discard">Verwerfen</string>
     <string name="download_failed">Download fehlgeschlagen. Prüfe deine Verbindung und versuch es erneut.</string>
     <string name="download_storage">Nicht genug Speicherplatz. Gib Speicher frei und versuch es erneut.</string>
     <string name="download_invalid">Der Download konnte nicht geprüft werden. Versuch es bitte erneut.</string>
@@ -358,7 +375,6 @@
     <string name="notice_description_kissfft">Frequenzanalyse in der Sprachlaufzeit.</string>
     <string name="notice_description_llvm">Native C++-Unterstützung für Sprich und seine Abhängigkeiten. Der vollständige Hinweis der exakt verwendeten Android-NDK-Version ist enthalten.</string>
     <string name="notice_description_whisper">Erkennt die Sprache für den Modus Automatisch. Wird separat heruntergeladen und ist nicht in der APK enthalten.</string>
-    <string name="notice_description_fastconformer">Erkennungsmodell für Automatisch. Wird separat heruntergeladen und ist nicht in der APK enthalten. Die Modellkarte nennt NGC-Bedingungen, nicht die Apache-Lizenz des Trainings- oder Konvertierungscodes.</string>
-    <string name="notice_description_canary">Erkennungsmodell für Präzise. Wird separat heruntergeladen und ist nicht in der APK enthalten.</string>
+    <string name="notice_description_canary">Erkennungsmodell für Automatisch und Genau. Wird separat heruntergeladen und ist nicht in der APK enthalten.</string>
     <string name="notice_description_silero">Erkennt Anfang und Ende der Sprache. Dieses kleine Modell ist in Sprich enthalten und läuft lokal. Das exakte Modell ist in docs/MODELS.md im Sprich-Repository festgelegt.</string>
 </resources>

@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.sprich.app.BuildConfig
 import com.sprich.app.R
@@ -38,7 +39,6 @@ import com.sprich.app.ui.theme.VoiceMark
     val manager = remember { ModelManager(context) }
     val config by prefs.runtimeConfigSnapshot.collectAsState(initial = null)
     val lid by manager.lidStatus.collectAsState()
-    val fast by manager.fastConformerStatus.collectAsState()
     val accurate by manager.canaryStatus.collectAsState()
     val automatic = config?.speechLanguage !is SpeechLanguage.Fixed
     val api = config?.transcriptionMode == TranscriptionMode.API_PRIMARY
@@ -47,11 +47,13 @@ import com.sprich.app.ui.theme.VoiceMark
         value = if (!api) true else voiceChoice?.let { !ApiSecretStore(context).loadBoundSecret(it.credentialRef, it.providerId, it.endpoint).isNullOrBlank() } == true
     }
     val cleanup = config?.refinementMode?.let { it != RefinementMode.OFF } == true
-    val modelsReady = if (automatic) lid is ModelStatus.Ready && fast is ModelStatus.Ready else accurate is ModelStatus.Ready
+    val modelsReady = if (automatic) lid is ModelStatus.Ready && accurate is ModelStatus.Ready else accurate is ModelStatus.Ready
     val keyboard = rememberKeyboardState()
-    val ready = config != null && keyboard.enabled && keyboard.microphone && (if (api) keyAvailable == true else modelsReady)
+    // Plan §9.2: never expose the practice field as ready while another keyboard remains selected.
+    val ready = config != null && keyboard.enabled && keyboard.selected && keyboard.microphone && (if (api) keyAvailable == true else modelsReady)
     // Dictation is deliberately ephemeral, including across process recreation.
-    var trial by remember { mutableStateOf("") }
+    // TextFieldValue (not String) so recovery insert lands at the live cursor.
+    var trial by remember { mutableStateOf(TextFieldValue("")) }
     val colors = MaterialTheme.colorScheme
     Column(
         Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp),
@@ -71,6 +73,32 @@ import com.sprich.app.ui.theme.VoiceMark
         Surface(shape = RoundedCornerShape(50), color = colors.surfaceContainer, border = BorderStroke(1.dp, colors.outlineVariant)) {
             Text(stringResource(when { api && cleanup -> R.string.path_api_cleanup; api -> R.string.path_api; cleanup -> R.string.path_local_cleanup; else -> R.string.path_local }),
                 style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+        }
+        // U03 recovery: recognized-but-never-inserted text, kept ≤120 s in memory.
+        // Review + discard here; insert into the newly selected valid field here,
+        // or re-insert at the field via the IME retry button. No clipboard involved.
+        val app = context.applicationContext as? com.sprich.app.SprichApp
+        val recoveryRev by remember(app) { app?.recoveryRevision ?: kotlinx.coroutines.flow.MutableStateFlow(0L) }.collectAsState()
+        val recoveryDraft = remember(recoveryRev) { app?.recoveryDrafts?.peek() }
+        if (recoveryDraft != null) {
+            Surface(shape = RoundedCornerShape(28.dp), color = colors.surfaceContainerLow, border = BorderStroke(1.dp, colors.outlineVariant), shadowElevation = 2.dp) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.recovery_title), style = MaterialTheme.typography.titleSmall)
+                    Text(recoveryDraft.take(140), style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.recovery_hint), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            val live = app?.recoveryDrafts?.peek()
+                            if (recoveryInsertTargetValid(live, false) && live != null) {
+                                trial = insertRecoveryDraft(trial, live)
+                                app?.recoveryDrafts?.consume()
+                                app?.noteRecoveryChanged()
+                            }
+                        }) { Text(stringResource(R.string.recovery_insert)) }
+                        TextButton(onClick = { app?.recoveryDrafts?.discard(); app?.noteRecoveryChanged() }) { Text(stringResource(R.string.recovery_discard)) }
+                    }
+                }
+            }
         }
         if (ready) {
             Surface(shape = RoundedCornerShape(28.dp), color = colors.surfaceContainerLow, border = BorderStroke(1.dp, colors.outlineVariant), shadowElevation = 2.dp) {
